@@ -1,0 +1,30 @@
+# Build output
+/bin/
+*.exe
+*.test
+
+# Coverage
+coverage.out
+coverage.html
+
+# Go workspace files — machine-local, must not be shared
+go.work
+go.work.sum
+
+# Fuzzing corpora found by CI or local runs. Crashers worth keeping are
+# committed deliberately under testdata/fuzz/, not swept in wholesale.
+/**/testdata/fuzz/*/[0-9a-f]*
+
+# Secrets. Nothing in this repo should ever hold a live key; treasury and
+# signer material lives in KMS. This is a backstop, not a policy.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+*~
