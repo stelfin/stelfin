@@ -10,68 +10,34 @@ import (
 	"testing"
 	"time"
 
-	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ezedike-evan/stelfin/internal/money"
+	"github.com/ezedike-evan/stelfin/internal/pgtest"
 )
 
-const testDSN = "postgres://stelfin:stelfin@localhost:54329/stelfin_test?sslmode=disable"
+// testPGPort is this package's own Postgres port. `go test ./...` runs packages
+// in parallel, so every package that needs a database must claim a distinct one.
+const testPGPort = 54329
 
 var testPool *pgxpool.Pool
 
 // TestMain runs the whole package against a real Postgres. The invariants under
-// test are database constraints, so an in-memory fake or a mocked driver would
-// verify nothing — the binary is downloaded once and cached under $HOME.
+// test are database constraints, so a fake driver would verify nothing.
 func TestMain(m *testing.M) {
-	// A fresh data directory per run. Reusing one would carry over singleton
-	// accounts and spent idempotency keys from the previous run, so a suite
-	// that passed only because of leftover state would look green.
-	dataDir, err := os.MkdirTemp("", "stelfin-ledger-test-*")
+	db, err := pgtest.Start(testPGPort, Migrate)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "create temp data dir: %v\n", err)
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	defer os.RemoveAll(dataDir)
+	testPool = db.Pool
 
-	pg := embeddedpostgres.NewDatabase(
-		embeddedpostgres.DefaultConfig().
-			Username("stelfin").
-			Password("stelfin").
-			Database("stelfin_test").
-			Port(54329).
-			DataPath(dataDir),
-	)
-	if err := pg.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "start embedded postgres: %v\n", err)
-		os.RemoveAll(dataDir)
-		os.Exit(1)
+	code := m.Run()
+
+	if err := db.Stop(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 	}
-
-	code := run(m)
-
-	if err := pg.Stop(); err != nil {
-		fmt.Fprintf(os.Stderr, "stop embedded postgres: %v\n", err)
-	}
-	os.RemoveAll(dataDir)
 	os.Exit(code)
-}
-
-func run(m *testing.M) int {
-	if err := Migrate(testDSN); err != nil {
-		fmt.Fprintf(os.Stderr, "migrate: %v\n", err)
-		return 1
-	}
-
-	pool, err := pgxpool.New(context.Background(), testDSN)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "connect: %v\n", err)
-		return 1
-	}
-	defer pool.Close()
-	testPool = pool
-
-	return m.Run()
 }
 
 // fixture is an isolated set of accounts and assets for one test. Every test
