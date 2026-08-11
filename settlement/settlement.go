@@ -45,14 +45,15 @@ type Config struct {
 
 // Client is a handle on a Stellar network.
 type Client struct {
-	horizon horizonAPI
+	horizon HorizonAPI
 	network string
 	baseFee int64
 }
 
-// horizonAPI is the slice of horizonclient.Client this package uses. Narrowing
-// it keeps the surface testable without standing up a Horizon instance.
-type horizonAPI interface {
+// HorizonAPI is the slice of horizonclient.Client this package uses. Narrowing
+// it keeps the surface testable without standing up a Horizon instance, and
+// lets a caller substitute a caching or self-hosted transport.
+type HorizonAPI interface {
 	AccountDetail(horizonclient.AccountRequest) (horizon.Account, error)
 	SubmitTransactionWithOptions(*txnbuild.Transaction, horizonclient.SubmitTxOpts) (horizon.Transaction, error)
 	SubmitFeeBumpTransactionWithOptions(*txnbuild.FeeBumpTransaction, horizonclient.SubmitTxOpts) (horizon.Transaction, error)
@@ -61,21 +62,33 @@ type horizonAPI interface {
 
 // New returns a Client for the network described by cfg.
 func New(cfg Config) (*Client, error) {
+	cfg2, err := validate(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return NewWith(&horizonclient.Client{HorizonURL: cfg.HorizonURL}, cfg2)
+}
+
+// NewWith returns a Client backed by a caller-supplied Horizon transport.
+func NewWith(h HorizonAPI, cfg Config) (*Client, error) {
+	cfg, err := validate(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{horizon: h, network: cfg.NetworkPassphrase, baseFee: cfg.BaseFee}, nil
+}
+
+func validate(cfg Config) (Config, error) {
 	if cfg.HorizonURL == "" {
-		return nil, errors.New("settlement: horizon url is required")
+		return Config{}, errors.New("settlement: horizon url is required")
 	}
 	if cfg.NetworkPassphrase == "" {
-		return nil, errors.New("settlement: network passphrase is required")
+		return Config{}, errors.New("settlement: network passphrase is required")
 	}
-	fee := cfg.BaseFee
-	if fee == 0 {
-		fee = DefaultBaseFee
+	if cfg.BaseFee == 0 {
+		cfg.BaseFee = DefaultBaseFee
 	}
-	return &Client{
-		horizon: &horizonclient.Client{HorizonURL: cfg.HorizonURL},
-		network: cfg.NetworkPassphrase,
-		baseFee: fee,
-	}, nil
+	return cfg, nil
 }
 
 // Network returns the passphrase this client signs with.

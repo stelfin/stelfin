@@ -49,7 +49,7 @@ func (f *fakeHorizon) TransactionDetail(string) (horizon.Transaction, error) {
 	return f.detailResp, f.detailErr
 }
 
-func testClient(h horizonAPI) *Client {
+func testClient(h HorizonAPI) *Client {
 	return &Client{horizon: h, network: network.TestNetworkPassphrase, baseFee: DefaultBaseFee}
 }
 
