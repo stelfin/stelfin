@@ -120,6 +120,52 @@ func (s Stroops) String() string {
 	return fmt.Sprintf("%s%d.%0*d", sign, whole, Precision, frac)
 }
 
+// Display renders the amount for a human: thousands grouped, at least two
+// decimal places, and trailing zeros beyond the second dropped.
+//
+// It is derived from the exact stroop count and never rounds. A tenth of a
+// stroop cannot exist, so every digit shown is real — "5,000.50" and
+// "0.0000001" are both exact, not approximations. Never parse this back; String
+// is the canonical wire form and the only one Parse accepts.
+func (s Stroops) Display() string {
+	u, neg := s.abs()
+	whole, frac := u/uint64(One), u%uint64(One)
+
+	digits := fmt.Sprintf("%0*d", Precision, frac)
+	// Keep at least two places, then drop trailing zeros beyond them.
+	trimmed := strings.TrimRight(digits, "0")
+	if len(trimmed) < 2 {
+		trimmed = digits[:2]
+	}
+
+	sign := ""
+	if neg {
+		sign = "-"
+	}
+	return sign + group(whole) + "." + trimmed
+}
+
+// group inserts thousands separators into a decimal integer.
+func group(n uint64) string {
+	plain := strconv.FormatUint(n, 10)
+	if len(plain) <= 3 {
+		return plain
+	}
+
+	var b strings.Builder
+	lead := len(plain) % 3
+	if lead > 0 {
+		b.WriteString(plain[:lead])
+	}
+	for i := lead; i < len(plain); i += 3 {
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(plain[i : i+3])
+	}
+	return b.String()
+}
+
 // abs returns the magnitude as a uint64 along with the sign. Going through
 // uint64 is what makes the most-negative int64 representable: -(-1<<63) would
 // overflow back to itself in signed arithmetic.

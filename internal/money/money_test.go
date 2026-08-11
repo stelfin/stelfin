@@ -250,3 +250,41 @@ const (
 	maxInt64 = 1<<63 - 1
 	minInt64 = -1 << 63
 )
+
+func TestDisplay(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"0", "0.00"},
+		{"1", "1.00"},
+		{"5000", "5,000.00"},
+		{"5000.5", "5,000.50"},
+		{"5000.55", "5,000.55"},
+		{"5000.555", "5,000.555"},
+		{"0.0000001", "0.0000001"},
+		{"123", "123.00"},
+		{"1234", "1,234.00"},
+		{"1234567.89", "1,234,567.89"},
+		{"-5000.5", "-5,000.50"},
+		{"922337203685.4775807", "922,337,203,685.4775807"},
+	}
+	for _, c := range cases {
+		if got := MustParse(c.in).Display(); got != c.want {
+			t.Errorf("Parse(%q).Display() = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestDisplayNeverRounds: every digit shown must be real. A display that
+// rounded would tell the user they are sending an amount they are not.
+func TestDisplayNeverRounds(t *testing.T) {
+	oneStroopShort := MustParse("1") - 1
+	if got := oneStroopShort.Display(); got == "1.00" {
+		t.Errorf("Display() = %q for %d stroops, which is not one whole unit",
+			got, int64(oneStroopShort))
+	}
+	if want := "0.9999999"; oneStroopShort.Display() != want {
+		t.Errorf("Display() = %q, want %q", oneStroopShort.Display(), want)
+	}
+}
