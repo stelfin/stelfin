@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/stellar/go-stellar-sdk/txnbuild"
@@ -12,6 +14,10 @@ import (
 
 // ServerConfig wires the HTTP surface.
 type ServerConfig struct {
+	// BaseURL is where the confirmation page is served from.
+	BaseURL string
+	// Messenger delivers replies over WhatsApp.
+	Messenger Messenger
 	// AppSecret verifies webhook signatures.
 	AppSecret []byte
 	// VerifyToken answers Meta's subscription challenge.
@@ -49,6 +55,10 @@ func NewServer(svc *Service, tokens *ConfirmTokens, cfg ServerConfig) (*Server, 
 		return nil, errors.New("api: treasury address is required")
 	case cfg.SignFeeBump == nil:
 		return nil, errors.New("api: fee-bump signer is required")
+	case cfg.BaseURL == "":
+		return nil, errors.New("api: base url is required")
+	case cfg.Messenger == nil:
+		return nil, errors.New("api: messenger is required")
 	}
 
 	log := cfg.Logger
@@ -98,13 +108,41 @@ func (s *Server) handleInbound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Acknowledge before doing anything with the contents.
-	w.WriteHeader(http.StatusOK)
+	messages, err := ParseInbound(body)
+	if err != nil {
+		// The signature was valid, so this came from Meta — a shape we cannot
+		// read is our problem to fix, not a request to reject. Acknowledge so
+		// Meta stops retrying something a retry will not fix.
+		s.log.Error("unparseable webhook payload", "error", err)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 
-	// The body is verified but its contents are still untrusted user input;
-	// everything downstream treats it as such.
-	s.log.Info("webhook delivery accepted", "bytes", len(body))
+	// Acknowledge before doing the work. Meta retries a slow response, and a
+	// retry would start the same payment flow again.
+	w.WriteHeader(http.StatusOK)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+
+	// The request context is cancelled once the handler returns, so the work
+	// gets its own with a bound of its own.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), inboundTimeout)
+		defer cancel()
+
+		for _, m := range messages {
+			if err := s.svc.HandleInbound(ctx, m, s.cfg.Messenger, s); err != nil {
+				// Logged, not retried: the message is already claimed, and
+				// replaying it would risk a second confirmation.
+				s.log.Error("inbound message failed", "message_id", m.ID, "error", err)
+			}
+		}
+	}()
 }
+
+// inboundTimeout bounds work that outlives the request it arrived on.
+const inboundTimeout = 60 * time.Second
 
 // handleConfirm returns what the user is being asked to approve.
 //
@@ -236,10 +274,10 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, body any) {
 // The token goes in the fragment, not the query string: fragments are not sent
 // to the server on page load and do not appear in access logs, proxy logs, or
 // Referer headers when the page links out.
-func (s *Server) IssueConfirmLink(baseURL, ownerRef, hash string, expiresAt time.Time) (string, error) {
+func (s *Server) IssueConfirmLink(ownerRef, hash string, expiresAt time.Time) (string, error) {
 	token, err := s.tokens.Issue(ownerRef, hash, expiresAt)
 	if err != nil {
 		return "", err
 	}
-	return baseURL + "/confirm#" + token, nil
+	return strings.TrimSuffix(s.cfg.BaseURL, "/") + "/confirm#" + token, nil
 }

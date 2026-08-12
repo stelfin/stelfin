@@ -22,6 +22,8 @@ func newServer(t *testing.T, f *fixture, treasury *keypair.Full) *Server {
 	t.Helper()
 	tokens := newTokens(t)
 	srv, err := NewServer(f.svc, tokens, ServerConfig{
+		BaseURL:         "https://stelfin.example",
+		Messenger:       &fakeMessenger{},
 		AppSecret:       testSecret,
 		VerifyToken:     testVerifyToken,
 		TreasuryAddress: treasury.Address(),
@@ -275,8 +277,7 @@ func TestConfirmLinkPutsTokenInTheFragment(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	srv := newServer(t, f, keypair.MustRandom())
 
-	link, err := srv.IssueConfirmLink("https://stelfin.example", f.owner,
-		strings.Repeat("a", 64), time.Now().Add(time.Hour))
+	link, err := srv.IssueConfirmLink(f.owner, strings.Repeat("a", 64), time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("IssueConfirmLink: %v", err)
 	}

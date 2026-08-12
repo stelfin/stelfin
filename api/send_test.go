@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"testing"
 	"time"
@@ -97,8 +98,21 @@ type fixture struct {
 
 func newFixture(t *testing.T, decoded intent.Decoded) *fixture {
 	t.Helper()
+	return newFixtureFor(t, decoded, t.Name())
+}
+
+// phoneFor derives a stable, unique E.164 number for a test, so tests whose
+// flow goes through phone-shaped owner refs do not collide with each other.
+func phoneFor(t *testing.T) string {
+	t.Helper()
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(t.Name()))
+	return fmt.Sprintf("+234%010d", h.Sum64()%1_0000_000_000)
+}
+
+func newFixtureFor(t *testing.T, decoded intent.Decoded, owner string) *fixture {
+	t.Helper()
 	ctx := context.Background()
-	owner := t.Name()
 
 	store := ledger.New(testPool)
 	account, err := store.EnsureAccount(ctx, ledger.AccountUser, owner, "user "+owner)
