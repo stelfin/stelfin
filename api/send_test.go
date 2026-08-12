@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stellar/go-stellar-sdk/clients/horizonclient"
@@ -63,7 +64,9 @@ func (f *fakeHorizon) SubmitTransactionWithOptions(
 func (f *fakeHorizon) SubmitFeeBumpTransactionWithOptions(
 	*txnbuild.FeeBumpTransaction, horizonclient.SubmitTxOpts,
 ) (horizon.Transaction, error) {
-	return horizon.Transaction{}, errors.New("not used")
+	return horizon.Transaction{
+		Hash: "feebumped", Ledger: 12, LedgerCloseTime: time.Unix(1700000000, 0),
+	}, nil
 }
 
 func (f *fakeHorizon) TransactionDetail(string) (horizon.Transaction, error) {
@@ -118,6 +121,11 @@ func newFixture(t *testing.T, decoded intent.Decoded) *fixture {
 	}
 
 	asset := txnbuild.CreditAsset{Code: "USDC", Issuer: testIssuer}
+	assetID, err := store.EnsureAsset(ctx, "USDC", testIssuer)
+	if err != nil {
+		t.Fatalf("ensure asset: %v", err)
+	}
+
 	settle, err := settlement.NewWith(&fakeHorizon{sequence: 42}, settlement.Config{
 		HorizonURL:        "https://horizon-testnet.stellar.org",
 		NetworkPassphrase: network.TestNetworkPassphrase,
@@ -128,7 +136,7 @@ func newFixture(t *testing.T, decoded intent.Decoded) *fixture {
 
 	svc, err := NewService(testPool, fixedDecoder{decoded: decoded},
 		intent.NewResolver(testPool), settle,
-		Config{Asset: asset, AssetCode: "USDC"})
+		Config{Asset: asset, AssetCode: "USDC", AssetID: int16(assetID)})
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}

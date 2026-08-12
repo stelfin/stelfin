@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -57,6 +58,9 @@ type Config struct {
 	// AssetCode is that asset's display code, checked against what the built
 	// transaction actually carries.
 	AssetCode string
+	// AssetID is the ledger's id for that asset, recorded against pending
+	// sends so the approval is auditable alongside the ledger entries.
+	AssetID int16
 }
 
 // Service prepares payments for approval.
@@ -177,7 +181,7 @@ func (s *Service) PrepareSend(ctx context.Context, ownerRef string, turns []stri
 		return nil, fmt.Errorf("api: encode transaction: %w", err)
 	}
 
-	return &Confirmation{
+	confirmation := &Confirmation{
 		Amount:          desc.Amount,
 		AmountDisplay:   desc.Amount.Display(),
 		AssetCode:       desc.AssetCode,
@@ -188,7 +192,16 @@ func (s *Service) PrepareSend(ctx context.Context, ownerRef string, turns []stri
 		XDR:             xdr,
 		SaidAmount:      grounded.AmountText,
 		SaidDestination: grounded.DestinationText,
-	}, nil
+	}
+
+	// Record it before returning. A confirmation the server has not recorded
+	// cannot be submitted later, so issuing one without recording it would
+	// hand the user an envelope that is guaranteed to be refused.
+	expiresAt := time.Unix(tx.Timebounds().MaxTime, 0).UTC()
+	if err := s.recordPending(ctx, ownerRef, confirmation, s.cfg.AssetID, expiresAt); err != nil {
+		return nil, err
+	}
+	return confirmation, nil
 }
 
 // agrees checks the built transaction against the instruction it came from.
