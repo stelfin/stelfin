@@ -16,11 +16,24 @@ CREATE TABLE pending_sends (
     hash        text        PRIMARY KEY CHECK (hash ~ '^[0-9a-f]{64}$'),
     owner_ref   text        NOT NULL,
 
+    -- The unsigned envelope, base64 XDR. The confirmation screen is rebuilt
+    -- from this rather than from stored display strings: re-deriving what to
+    -- show from the artifact under signature keeps the two from drifting, the
+    -- same reason settlement.Describe reads a transaction back rather than
+    -- trusting the request that built it.
+    envelope_xdr text       NOT NULL CHECK (envelope_xdr <> ''),
+
     -- What the user was shown, kept so the audit trail records the approval
     -- and not just the envelope.
     amount      bigint      NOT NULL CHECK (amount > 0),
     asset_id    smallint    NOT NULL REFERENCES assets (id),
     destination text        NOT NULL CHECK (destination ~ '^G[A-Z2-7]{55}$'),
+
+    -- Display-only context: the recipient's saved label and the user's own
+    -- words. Never used to build or check a transaction.
+    to_label         text   NOT NULL DEFAULT '',
+    said_amount      text   NOT NULL DEFAULT '',
+    said_destination text   NOT NULL DEFAULT '',
 
     created_at  timestamptz NOT NULL DEFAULT now(),
     -- Mirrors the transaction's own time bounds. A submission after this is

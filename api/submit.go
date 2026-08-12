@@ -49,10 +49,13 @@ func (s *Service) recordPending(
 	ctx context.Context, ownerRef string, c *Confirmation, asset int16, expiresAt time.Time,
 ) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO pending_sends (hash, owner_ref, amount, asset_id, destination, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO pending_sends
+			(hash, owner_ref, envelope_xdr, amount, asset_id, destination,
+			 to_label, said_amount, said_destination, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (hash) DO NOTHING`,
-		c.Hash, ownerRef, int64(c.Amount), asset, c.ToAddress, expiresAt,
+		c.Hash, ownerRef, c.XDR, int64(c.Amount), asset, c.ToAddress,
+		c.ToLabel, c.SaidAmount, c.SaidDestination, expiresAt,
 	)
 	if err != nil {
 		return fmt.Errorf("api: record pending send %s: %w", c.Hash, err)
