@@ -14,6 +14,8 @@ import (
 	"github.com/stellar/go-stellar-sdk/keypair"
 	"github.com/stellar/go-stellar-sdk/network"
 	"github.com/stellar/go-stellar-sdk/txnbuild"
+
+	"github.com/ezedike-evan/stelfin/web"
 )
 
 const testVerifyToken = "verify-me"
@@ -22,12 +24,13 @@ func newServer(t *testing.T, f *fixture, treasury *keypair.Full) *Server {
 	t.Helper()
 	tokens := newTokens(t)
 	srv, err := NewServer(f.svc, tokens, ServerConfig{
-		BaseURL:         "https://stelfin.example",
-		Messenger:       &fakeMessenger{},
-		AppSecret:       testSecret,
-		VerifyToken:     testVerifyToken,
-		TreasuryAddress: treasury.Address(),
-		SignFeeBump:     signWith(treasury),
+		BaseURL:           "https://stelfin.example",
+		Messenger:         &fakeMessenger{},
+		AppSecret:         testSecret,
+		VerifyToken:       testVerifyToken,
+		TreasuryAddress:   treasury.Address(),
+		SignFeeBump:       signWith(treasury),
+		NetworkPassphrase: network.TestNetworkPassphrase,
 		// Discard logs so refused-request warnings don't clutter test output.
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
@@ -314,5 +317,79 @@ func TestNewServerValidatesConfig(t *testing.T) {
 	}
 	if _, err := NewServer(f.svc, nil, full); err == nil {
 		t.Error("expected an error when tokens are missing")
+	}
+}
+
+func TestConfirmPageIsServedWithAStrictPolicy(t *testing.T) {
+	f := newFixture(t, sendDecoded())
+	tokens := newTokens(t)
+	treasury := keypair.MustRandom()
+
+	srv, err := NewServer(f.svc, tokens, ServerConfig{
+		BaseURL:           "https://stelfin.example",
+		Messenger:         &fakeMessenger{},
+		AppSecret:         testSecret,
+		VerifyToken:       testVerifyToken,
+		TreasuryAddress:   treasury.Address(),
+		SignFeeBump:       signWith(treasury),
+		NetworkPassphrase: network.TestNetworkPassphrase,
+		Assets:            web.Handler(),
+		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	rec := do(t, srv, httptest.NewRequest(http.MethodGet, "/confirm", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Confirm this payment") {
+		t.Error("the confirmation page was not served")
+	}
+
+	csp := rec.Header().Get("Content-Security-Policy")
+	if csp == "" {
+		t.Fatal("no content security policy")
+	}
+	// An inline script would force the policy open and remove most of its
+	// value, which is why the page's script lives in its own file.
+	if strings.Contains(csp, "script-src") && strings.Contains(csp, "'unsafe-inline'") {
+		before, _, _ := strings.Cut(csp, "style-src")
+		if strings.Contains(before, "'unsafe-inline'") {
+			t.Errorf("script-src allows inline script: %s", csp)
+		}
+	}
+	// A script that ran despite the policy still must not be able to send a
+	// signing key to another host.
+	if !strings.Contains(csp, "connect-src 'self'") {
+		t.Errorf("connect-src is not restricted to the origin: %s", csp)
+	}
+	if got := rec.Header().Get("Referrer-Policy"); got != "no-referrer" {
+		t.Errorf("Referrer-Policy = %q, want no-referrer: the token rides in the fragment", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); !strings.Contains(got, "no-store") {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+}
+
+// TestConfirmResponseCarriesTheNetwork: the page parses the envelope itself and
+// must do it against the same network the server signed for.
+func TestConfirmResponseCarriesTheNetwork(t *testing.T) {
+	f := newFixture(t, sendDecoded())
+	srv := newServer(t, f, keypair.MustRandom())
+
+	c, err := f.svc.PrepareSend(t.Context(), f.owner, []string{sendMessage})
+	if err != nil {
+		t.Fatalf("PrepareSend: %v", err)
+	}
+	rec := do(t, srv, authed(t, srv, http.MethodGet, "/v1/confirm", f.owner, c.Hash, ""))
+
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["network_passphrase"] != network.TestNetworkPassphrase {
+		t.Errorf("network_passphrase = %v, want the test network", got["network_passphrase"])
 	}
 }

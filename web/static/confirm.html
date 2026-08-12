@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Confirm a payment.
+
+  The one property this page exists to provide: what the user reads is derived
+  from the transaction they are about to sign, not from what the server said
+  about it. The server sends both a display summary and the envelope; this page
+  parses the envelope itself, renders from that, and refuses to show a confirm
+  button if the two disagree. A compromised or buggy server can therefore
+  mis-describe a payment, but it cannot get that description signed.
+
+  Referrer-Policy keeps the fragment-borne token out of any outbound request.
+-->
+<meta name="referrer" content="no-referrer">
+<title>Confirm payment · stelfin</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #16181d; --muted: #5c6370;
+    --line: #e3e6ea; --accent: #14713d; --danger: #a4291f; --danger-bg: #fdf2f1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --fg: #f0f2f5; --muted: #9aa3af;
+      --line: #2a2e36; --accent: #4ec27f; --danger: #ff8b80; --danger-bg: #2a1b1a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; justify-content: center; padding: 24px 16px 48px;
+  }
+  main { width: 100%; max-width: 26rem; }
+  h1 { font-size: 1.05rem; font-weight: 600; margin: 0 0 1.25rem; color: var(--muted); }
+  .amount { font-size: 2.25rem; font-weight: 650; letter-spacing: -0.02em; margin: 0; }
+  .asset { font-size: 1rem; font-weight: 500; color: var(--muted); margin-left: 0.35rem; }
+  .to { margin: 0.35rem 0 1.5rem; font-size: 1.05rem; }
+  .to span { color: var(--muted); }
+  dl { border-top: 1px solid var(--line); margin: 0 0 1.5rem; padding-top: 0.75rem; }
+  .row { display: flex; justify-content: space-between; gap: 1rem; padding: 0.4rem 0; font-size: 0.9rem; }
+  .row dt { color: var(--muted); margin: 0; flex: none; }
+  .row dd { margin: 0; text-align: right; word-break: break-all; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; }
+  button {
+    width: 100%; padding: 0.85rem 1rem; font: inherit; font-weight: 600;
+    color: #fff; background: var(--accent); border: 0; border-radius: 10px; cursor: pointer;
+  }
+  button[disabled] { opacity: 0.5; cursor: not-allowed; }
+  .note { font-size: 0.85rem; color: var(--muted); margin-top: 0.85rem; text-align: center; }
+  .alert {
+    background: var(--danger-bg); border: 1px solid var(--danger); color: var(--danger);
+    border-radius: 10px; padding: 0.85rem 1rem; margin-bottom: 1.25rem; font-size: 0.9rem;
+  }
+  .alert strong { display: block; margin-bottom: 0.25rem; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div id="alert" class="alert" hidden></div>
+
+  <section id="payment" hidden>
+    <h1>Confirm this payment</h1>
+    <p class="amount"><span id="amount"></span><span class="asset" id="asset"></span></p>
+    <p class="to">to <strong id="toLabel"></strong> <span id="toShort"></span></p>
+
+    <dl>
+      <div class="row"><dt>You said</dt><dd id="said"></dd></div>
+      <div class="row"><dt>Recipient</dt><dd><code id="toAddress"></code></dd></div>
+      <div class="row"><dt>Reference</dt><dd><code id="hashShort"></code></dd></div>
+    </dl>
+
+    <button id="confirm" type="button">Send</button>
+    <p class="note">Check the amount and recipient before sending. Payments cannot be reversed.</p>
+  </section>
+</main>
+
+<script src="/static/stellar-sdk.min.js"></script>
+<script src="/static/confirm.js"></script>
+</body>
+</html>

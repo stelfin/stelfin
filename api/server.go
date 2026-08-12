@@ -28,6 +28,12 @@ type ServerConfig struct {
 	// than a key so the treasury's signing material can live behind a KMS or
 	// HSM without this package ever holding it.
 	SignFeeBump func(*txnbuild.FeeBumpTransaction) (*txnbuild.FeeBumpTransaction, error)
+	// NetworkPassphrase is echoed to the confirmation page so it parses the
+	// envelope against the same network the server signed for. A page that
+	// guessed would fail to verify a perfectly good transaction.
+	NetworkPassphrase string
+	// Assets serves the confirmation page. Nil serves no page.
+	Assets http.Handler
 	// Logger receives request-scoped logs. Nil uses the default.
 	Logger *slog.Logger
 }
@@ -59,6 +65,8 @@ func NewServer(svc *Service, tokens *ConfirmTokens, cfg ServerConfig) (*Server, 
 		return nil, errors.New("api: base url is required")
 	case cfg.Messenger == nil:
 		return nil, errors.New("api: messenger is required")
+	case cfg.NetworkPassphrase == "":
+		return nil, errors.New("api: network passphrase is required")
 	}
 
 	log := cfg.Logger
@@ -78,6 +86,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	if s.cfg.Assets != nil {
+		mux.Handle("GET /confirm", s.cfg.Assets)
+		mux.Handle("GET /static/", s.cfg.Assets)
+	}
 	return mux
 }
 
@@ -170,6 +182,10 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 		"from_address":     confirmation.FromAddress,
 		"said_amount":      confirmation.SaidAmount,
 		"said_destination": confirmation.SaidDestination,
+		// The page parses the envelope itself and needs the same network to
+		// do it. Sending it here means the page never has to be configured
+		// separately from the server it talks to.
+		"network_passphrase": s.cfg.NetworkPassphrase,
 	})
 }
 

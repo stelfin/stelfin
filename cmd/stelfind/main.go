@@ -27,6 +27,7 @@ import (
 	"github.com/ezedike-evan/stelfin/internal/whatsapp"
 	"github.com/ezedike-evan/stelfin/ledger"
 	"github.com/ezedike-evan/stelfin/settlement"
+	"github.com/ezedike-evan/stelfin/web"
 )
 
 func main() {
@@ -131,7 +132,9 @@ func run(log *slog.Logger) error {
 		SignFeeBump: func(tx *txnbuild.FeeBumpTransaction) (*txnbuild.FeeBumpTransaction, error) {
 			return tx.Sign(cfg.NetworkPassphrase, treasury)
 		},
-		Logger: log,
+		NetworkPassphrase: cfg.NetworkPassphrase,
+		Assets:            web.Handler(),
+		Logger:            log,
 	})
 	if err != nil {
 		return err
