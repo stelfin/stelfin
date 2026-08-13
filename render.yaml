@@ -25,7 +25,7 @@ services:
     name: stelfin
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: starter # free tier will not keep ingestion running — see note above
+    plan: free # ingestion will not keep running while the service sleeps — see note above
     healthCheckPath: /health
     envVars:
       # Render injects PORT for the container to listen on; STELFIN_HTTP_ADDR
