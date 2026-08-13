@@ -4,46 +4,26 @@ import { motion, useScroll, useTransform } from "framer-motion";
 import { useRef } from "react";
 import { Reveal } from "@/components/interactive/reveal";
 import { MaskReveal } from "@/components/interactive/mask-reveal";
-import { StaticBubble, ReceiptCard } from "@/components/ui/chat-mockup";
 
 const STEPS = [
-  {
-    n: "1",
-    title: "Message stelfin",
-    body: '"send 5,000 to my brother" — plain language, no addresses to copy.',
-    visual: (
-      <div className="w-full max-w-[220px]">
-        <StaticBubble side="out" time="9:14">send 5,000 to my brother</StaticBubble>
-      </div>
-    ),
-  },
-  {
-    n: "2",
-    title: "Confirm on your device",
-    body: "A link opens the exact payment for you to sign — amount and recipient, read straight from the transaction, nothing hidden.",
-    visual: <ConfirmPreview />,
-  },
-  {
-    n: "3",
-    title: "It lands on Stellar",
-    body: "Settled on-chain in seconds, sponsored so you never need to hold XLM.",
-    visual: (
-      <div className="flex w-full max-w-[220px] justify-end">
-        <ReceiptCard status="Sent" statusTone="confirmed" amount="5,000.00 USDC" detail="to Brother" time="9:15" />
-      </div>
-    ),
-  },
+  { n: "1", title: "Message stelfin", body: '"send 5,000 to my brother" — plain language.', icon: <MessageGlyph /> },
+  { n: "2", title: "Confirm on your device", body: "The exact amount and recipient, nothing hidden.", icon: <DeviceGlyph /> },
+  { n: "3", title: "It lands on Stellar", body: "Settled on-chain in seconds, sponsored.", icon: <ChainGlyph /> },
 ];
 
 export function HowItWorksSection() {
-  const ref = useRef<HTMLDivElement | null>(null);
-  const { scrollYProgress } = useScroll({ target: ref, offset: ["start end", "start start"] });
-  const backgroundColor = useTransform(scrollYProgress, [0, 1], ["#fafaf9", "#eaf7ef"]);
+  const sectionRef = useRef<HTMLDivElement | null>(null);
+  const { scrollYProgress: bgProgress } = useScroll({ target: sectionRef, offset: ["start end", "start start"] });
+  const backgroundColor = useTransform(bgProgress, [0, 1], ["#fafaf9", "#eaf7ef"]);
+
+  const lineRef = useRef<HTMLDivElement | null>(null);
+  const { scrollYProgress: lineProgress } = useScroll({ target: lineRef, offset: ["start 65%", "end 65%"] });
+  const lineScale = useTransform(lineProgress, [0, 1], [0, 1]);
 
   return (
-    <motion.section id="how-it-works" ref={ref} style={{ backgroundColor }} className="relative py-20 md:py-28">
-      <div className="mx-auto max-w-[1100px] px-6">
-        <div className="max-w-[640px]">
+    <motion.section id="how-it-works" ref={sectionRef} style={{ backgroundColor }} className="relative py-20 md:py-28">
+      <div className="mx-auto max-w-[1000px] px-6">
+        <div className="mx-auto max-w-[560px] text-center">
           <Reveal>
             <span className="font-mono text-xs uppercase tracking-[0.2em] text-ink-400">How it works</span>
           </Reveal>
@@ -51,47 +31,66 @@ export function HowItWorksSection() {
             as="h2"
             text="Three steps, no forms"
             accent="no forms"
-            className="mt-4 font-display text-[32px] font-medium leading-[1.04] tracking-[-0.02em] text-ink-900 md:text-[48px]"
+            className="mt-4 justify-center text-center font-display text-[32px] font-medium leading-[1.04] tracking-[-0.02em] text-ink-900 md:text-[48px]"
           />
-          <Reveal delay={0.15}>
-            <p className="mt-5 text-base leading-relaxed text-ink-700 md:text-lg">
-              From message to money, without ever leaving the chat.
-            </p>
-          </Reveal>
         </div>
 
-        <div className="mt-14 grid gap-6 md:mt-20 md:grid-cols-3 md:gap-8">
-          {STEPS.map((step, i) => (
-            <Reveal key={step.n} delay={i * 0.12}>
-              <article className="flex h-full flex-col gap-6 rounded-[24px] border border-ink-200/70 bg-white p-6 md:p-7">
-                <div className="flex min-h-[140px] items-center justify-center rounded-2xl bg-surface-100 px-4 py-6">
-                  {step.visual}
-                </div>
-                <div>
-                  <div className="flex items-center gap-3">
-                    <span className="grid h-7 w-7 place-items-center rounded-full bg-accent-500 text-sm font-semibold text-white">
-                      {step.n}
-                    </span>
-                    <h3 className="text-lg font-medium tracking-tight text-ink-900">{step.title}</h3>
+        <div ref={lineRef} className="relative mt-20 md:mt-28">
+          {/* The connecting line: a static track plus a scroll-filled overlay
+              that draws left to right (desktop) as the section scrolls by. */}
+          <div className="absolute left-[10%] right-[10%] top-8 hidden h-[2px] -translate-y-1/2 bg-ink-200 md:block" />
+          <motion.div
+            style={{ scaleX: lineScale }}
+            className="absolute left-[10%] right-[10%] top-8 hidden h-[2px] origin-left -translate-y-1/2 bg-accent-500 md:block"
+          />
+          {/* Mobile: the same idea, vertical. */}
+          <div className="absolute bottom-0 left-8 top-0 w-[2px] bg-ink-200 md:hidden" />
+          <motion.div style={{ scaleY: lineScale }} className="absolute bottom-0 left-8 top-0 w-[2px] origin-top bg-accent-500 md:hidden" />
+
+          <div className="relative grid gap-14 md:grid-cols-3 md:gap-8">
+            {STEPS.map((step, i) => (
+              <Reveal key={step.n} delay={i * 0.15}>
+                <div className="flex items-start gap-5 md:flex-col md:items-center md:text-center">
+                  <div className="relative z-10 flex h-16 w-16 flex-none items-center justify-center rounded-full border-2 border-accent-500 bg-white text-accent-600 shadow-soft">
+                    {step.icon}
                   </div>
-                  <p className="mt-3 text-[15px] leading-relaxed text-ink-500">{step.body}</p>
+                  <div className="md:mt-6">
+                    <h3 className="text-lg font-medium tracking-tight text-ink-900">
+                      <span className="mr-1.5 text-accent-500">{step.n}.</span>
+                      {step.title}
+                    </h3>
+                    <p className="mt-1.5 max-w-[220px] text-[15px] leading-relaxed text-ink-500 md:mx-auto">{step.body}</p>
+                  </div>
                 </div>
-              </article>
-            </Reveal>
-          ))}
+              </Reveal>
+            ))}
+          </div>
         </div>
       </div>
     </motion.section>
   );
 }
 
-function ConfirmPreview() {
+function MessageGlyph() {
   return (
-    <div className="w-full max-w-[220px] rounded-2xl border border-ink-200 bg-white p-3.5 shadow-sm">
-      <p className="text-[10px] uppercase tracking-wider text-ink-400">Confirm this payment</p>
-      <p className="mt-1 text-xl font-semibold tabular-nums text-ink-900">5,000.00 <span className="text-sm font-medium text-ink-400">USDC</span></p>
-      <p className="mt-0.5 text-[11px] text-ink-500">to Brother</p>
-      <div className="mt-3 rounded-lg bg-accent-500 py-1.5 text-center text-[11px] font-semibold text-white">Send</div>
-    </div>
+    <svg viewBox="0 0 32 32" className="h-7 w-7" aria-hidden="true">
+      <path d="M6 8h20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H14l-6 5v-5H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2Z" stroke="currentColor" strokeWidth="1.6" fill="none" strokeLinejoin="round" />
+    </svg>
+  );
+}
+function DeviceGlyph() {
+  return (
+    <svg viewBox="0 0 32 32" className="h-7 w-7" aria-hidden="true">
+      <rect x="9" y="4" width="14" height="24" rx="2.5" stroke="currentColor" strokeWidth="1.6" fill="none" />
+      <path d="m12.5 16 2.5 2.5 5-5.5" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+    </svg>
+  );
+}
+function ChainGlyph() {
+  return (
+    <svg viewBox="0 0 32 32" className="h-7 w-7" aria-hidden="true">
+      <rect x="6" y="13" width="11" height="9" rx="4" stroke="currentColor" strokeWidth="1.6" fill="none" />
+      <rect x="15" y="10" width="11" height="9" rx="4" stroke="currentColor" strokeWidth="1.6" fill="none" />
+    </svg>
   );
 }

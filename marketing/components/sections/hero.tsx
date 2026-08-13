@@ -3,36 +3,31 @@
 import { motion, useScroll, useTransform } from "framer-motion";
 import { useRef } from "react";
 import { MagneticCta } from "@/components/ui/magnetic-cta";
-import { PhoneFrame } from "@/components/ui/phone-frame";
-import { LiveChatThread } from "@/components/illustrations/live-chat-thread";
+import { WorldConnections } from "@/components/ui/world-connections";
 import { MaskReveal } from "@/components/interactive/mask-reveal";
-import { EASE, fadeUp, stagger } from "@/lib/animation/variants";
-import { useTilt } from "@/lib/hooks/use-tilt";
+import { fadeUp, stagger } from "@/lib/animation/variants";
 import { SITE } from "@/lib/data/site";
 
 export function Hero() {
   const ref = useRef<HTMLDivElement | null>(null);
   const { scrollYProgress } = useScroll({ target: ref, offset: ["start start", "end start"] });
 
-  const phoneY = useTransform(scrollYProgress, [0, 1], [0, -120]);
   const headlineY = useTransform(scrollYProgress, [0, 1], [0, -40]);
-  const auroraY = useTransform(scrollYProgress, [0, 1], [0, 140]);
+  const mapOpacity = useTransform(scrollYProgress, [0, 1], [1, 0.3]);
   const cueOpacity = useTransform(scrollYProgress, [0, 0.12], [1, 0]);
 
   return (
     <section ref={ref} className="relative overflow-hidden px-[10px] pt-[14px] sm:px-[72px] lg:h-screen">
-      <motion.div aria-hidden style={{ y: auroraY }} className="pointer-events-none absolute inset-0 -z-10">
-        <div className="animate-drift-slow absolute -left-24 top-24 h-[420px] w-[420px] rounded-full bg-accent-300/45 blur-[90px]" />
-        <div className="animate-drift-slow absolute right-[-6rem] top-1/3 h-[360px] w-[360px] rounded-full bg-accent-500/25 blur-[100px]" style={{ animationDelay: "-5s" }} />
-        <div className="animate-drift-slow absolute bottom-0 left-1/3 h-[280px] w-[280px] rounded-full bg-accent-300/25 blur-[85px]" style={{ animationDelay: "-8s" }} />
+      <motion.div aria-hidden style={{ opacity: mapOpacity }} className="pointer-events-none absolute inset-0 -z-10">
+        <WorldConnections />
       </motion.div>
       <div aria-hidden className="bg-grain pointer-events-none absolute inset-0 -z-10" />
 
-      <div className="mx-auto grid h-full max-w-[1400px] items-center gap-8 px-6 lg:grid-cols-12 lg:gap-12">
-        <motion.div style={{ y: headlineY }} initial="hidden" animate="visible" className="lg:col-span-7 lg:max-w-[720px]">
+      <div className="mx-auto flex h-full max-w-[900px] flex-col items-center justify-center px-6 py-24 text-center lg:py-0">
+        <motion.div style={{ y: headlineY }} initial="hidden" animate="visible" className="flex flex-col items-center">
           <motion.div
             variants={fadeUp(0)}
-            className="mb-5 inline-flex items-center gap-2 rounded-full border border-ink-900/10 bg-white/60 px-3.5 py-1.5 text-xs font-medium text-ink-700 backdrop-blur-sm md:text-sm"
+            className="mb-6 inline-flex items-center gap-2 rounded-full border border-ink-900/10 bg-white/70 px-3.5 py-1.5 text-xs font-medium text-ink-700 backdrop-blur-sm md:text-sm"
           >
             <span className="relative flex h-1.5 w-1.5">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-500 opacity-75" />
@@ -47,16 +42,14 @@ export function Hero() {
             delay={0.12}
             text="Send stablecoins on Stellar, right from WhatsApp"
             accent="right from WhatsApp"
-            className="text-[40px] font-medium leading-[1.02] tracking-[-0.02em] text-ink-900 sm:text-[52px] lg:max-w-[640px] lg:text-[64px] xl:text-[72px]"
+            className="justify-center text-center text-[44px] font-medium leading-[1.0] tracking-[-0.02em] text-ink-900 sm:text-[64px] md:text-[76px] lg:text-[92px]"
           />
 
-          <motion.p variants={fadeUp(0.55)} className="mt-7 max-w-xl text-base leading-relaxed text-ink-700 md:text-xl">
-            stelfin is a non-custodial stablecoin wallet you talk to instead of
-            open. No app to install, no seed phrase to guard — your key stays
-            on your device, every time.
+          <motion.p variants={fadeUp(0.5)} className="mt-7 max-w-md text-base leading-relaxed text-ink-700 md:text-lg">
+            A non-custodial wallet you talk to instead of open.
           </motion.p>
 
-          <motion.div variants={fadeUp(0.68)} className="mt-9 flex flex-wrap items-center gap-5 md:mt-11 md:gap-6">
+          <motion.div variants={fadeUp(0.62)} className="mt-9 flex flex-wrap items-center justify-center gap-5 md:mt-11 md:gap-6">
             <MagneticCta
               href={SITE.whatsappLink}
               target="_blank"
@@ -85,32 +78,11 @@ export function Hero() {
             </a>
           </motion.div>
 
-          <motion.div variants={stagger(0.08, 0.85)} className="mt-12 hidden flex-wrap items-center gap-x-6 gap-y-3 text-[15px] text-ink-700 lg:flex md:text-base">
+          <motion.div variants={stagger(0.08, 0.8)} className="mt-12 flex flex-wrap items-center justify-center gap-x-6 gap-y-3 text-[15px] text-ink-700 md:text-base">
             <TrustItem icon={<LockGlyph />} label="Non-custodial" />
             <TrustItem icon={<SponsorGlyph />} label="Sponsored — no XLM needed" />
             <TrustItem icon={<CheckGlyph />} label="Every claim verified" />
           </motion.div>
-        </motion.div>
-
-        <motion.div
-          style={{ y: phoneY }}
-          initial={{ opacity: 0, y: 40 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 1, delay: 0.4, ease: EASE }}
-          className="relative lg:col-span-5"
-        >
-          <HeroPhone />
-        </motion.div>
-
-        <motion.div
-          variants={stagger(0.08, 0.2)}
-          initial="hidden"
-          animate="visible"
-          className="flex flex-wrap items-center justify-center gap-4 text-center text-[15px] text-ink-700 lg:hidden"
-        >
-          <TrustItem icon={<LockGlyph />} label="Non-custodial" />
-          <TrustItem icon={<SponsorGlyph />} label="Sponsored — no XLM needed" />
-          <TrustItem icon={<CheckGlyph />} label="Every claim verified" />
         </motion.div>
       </div>
 
@@ -134,54 +106,6 @@ function TrustItem({ icon, label }: { icon: React.ReactNode; label: string }) {
       {icon}
       {label}
     </motion.span>
-  );
-}
-
-function HeroPhone() {
-  const { rotateX, rotateY, onMouseMove, onMouseLeave } = useTilt({ max: 7 });
-
-  return (
-    <div className="relative mx-auto w-fit">
-      <motion.div
-        initial={{ opacity: 0, y: 20, x: -10 }}
-        animate={{ opacity: 1, y: 0, x: 0 }}
-        transition={{ duration: 0.8, delay: 1.2, ease: EASE }}
-        className="animate-drift-slow absolute -left-20 top-28 z-10 hidden w-40 items-center gap-3 rounded-2xl bg-white p-3 shadow-card ring-1 ring-ink-200/30 lg:-left-16 lg:flex xl:-left-20"
-      >
-        <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-accent-50 text-xs font-semibold text-accent-600">
-          <LockGlyph />
-        </div>
-        <div className="flex-1 leading-tight">
-          <p className="text-[10px] uppercase tracking-wider text-ink-400">Signed by</p>
-          <p className="font-sans text-base font-semibold leading-none text-ink-900">Your device</p>
-          <p className="text-[10px] text-ink-500">never the server</p>
-        </div>
-      </motion.div>
-
-      <motion.div
-        initial={{ opacity: 0, y: 20, x: 10 }}
-        animate={{ opacity: 1, y: 0, x: 0 }}
-        transition={{ duration: 0.8, delay: 1.4, ease: EASE }}
-        className="animate-drift-slow absolute -right-8 bottom-8 z-10 hidden w-44 rounded-2xl bg-ink-900 p-4 text-surface-50 shadow-card ring-1 ring-white/10 lg:-bottom-2 lg:-right-12 lg:block"
-        style={{ animationDelay: "-3s" }}
-      >
-        <p className="font-sans text-3xl font-semibold leading-none">0</p>
-        <p className="mt-2 text-[11px] leading-tight text-surface-50/60">XLM you ever need to hold</p>
-      </motion.div>
-
-      <motion.div
-        onMouseMove={onMouseMove}
-        onMouseLeave={onMouseLeave}
-        style={{ rotateX, rotateY, transformPerspective: 1200, transformStyle: "preserve-3d" }}
-        className="will-change-transform"
-      >
-        <PhoneFrame className="lg:!w-[340px] xl:!w-[368px]">
-          <LiveChatThread />
-        </PhoneFrame>
-      </motion.div>
-
-      <div aria-hidden className="absolute -bottom-6 left-1/2 -z-10 h-10 w-[70%] -translate-x-1/2 rounded-[100%] bg-ink-900/15 blur-2xl" />
-    </div>
   );
 }
 

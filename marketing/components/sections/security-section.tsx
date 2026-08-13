@@ -10,7 +10,7 @@ const PILLARS = [
     id: "key",
     title: "Your key never leaves your device",
     body: "stelfin cannot move your funds. Every send is signed by you — the server never holds a spending key, so there's nothing here to steal or subpoena.",
-    illustration: <KeyGlyph />,
+    illustration: <KeyLockAnimation />,
   },
   {
     id: "confirm",
@@ -45,9 +45,8 @@ export function SecuritySection() {
             className="mt-8 justify-center font-display text-[34px] font-normal leading-[1.02] tracking-[-0.03em] md:text-[56px] lg:text-[64px]"
           />
           <Reveal delay={0.15}>
-            <p className="mx-auto mt-6 max-w-2xl text-base leading-relaxed text-surface-50/60 md:text-xl">
-              A custodial wallet moving money for you is a business holding
-              your funds. stelfin is software you hold the key to instead.
+            <p className="mx-auto mt-6 max-w-xl text-base leading-relaxed text-surface-50/60 md:text-xl">
+              Software you hold the key to — not a business holding your funds.
             </p>
           </Reveal>
         </div>
@@ -72,11 +71,21 @@ export function SecuritySection() {
   );
 }
 
-function KeyGlyph() {
+// The key slides down and turns into the lock, on a loop — a small,
+// literal illustration of the claim in the copy beside it, rather than a
+// static padlock glyph.
+function KeyLockAnimation() {
   return (
-    <svg viewBox="0 0 32 32" className="h-7 w-7" aria-hidden="true">
-      <circle cx="11" cy="11" r="5" stroke="currentColor" strokeWidth="1.5" fill="none" />
-      <path d="M15 15l11 11m-4-11 4 4m-8-1 3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+    <svg viewBox="0 0 32 32" className="h-7 w-7 overflow-visible" aria-hidden="true">
+      <g className="animate-lock-pulse" style={{ transformOrigin: "16px 21px" }}>
+        <rect x="7" y="15" width="18" height="13" rx="3" stroke="currentColor" strokeWidth="1.6" fill="none" />
+        <circle cx="16" cy="20.5" r="1.6" fill="currentColor" />
+        <path d="M16 22v2.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      </g>
+      <g className="animate-key-slide">
+        <circle cx="16" cy="7" r="3.2" stroke="currentColor" strokeWidth="1.6" fill="none" />
+        <path d="M16 10.2V16M16.2 13h2M16.2 14.6h1.4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      </g>
     </svg>
   );
 }

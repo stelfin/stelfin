@@ -82,6 +82,27 @@ h1, h2, h3 {
   animation: drift-slow 12s ease-in-out infinite;
 }
 
+/* Security pillar #1: a key sliding down and turning into the lock, then a
+   small "click" pulse on the body, holding before it loops. Four acts in one
+   3.6s loop: slide in (0-30%), turn (30-45%), hold turned (45-70%), pulse +
+   reset (70-100%). */
+@keyframes key-slide {
+  0%   { transform: translate(0, -14px) rotate(0deg); opacity: 0; }
+  12%  { opacity: 1; }
+  30%  { transform: translate(0, 0) rotate(0deg); opacity: 1; }
+  45%  { transform: translate(0, 0) rotate(35deg); }
+  70%  { transform: translate(0, 0) rotate(35deg); }
+  88%  { opacity: 0; }
+  100% { transform: translate(0, -14px) rotate(0deg); opacity: 0; }
+}
+@keyframes lock-pulse {
+  0%, 44% { transform: scale(1); }
+  47%     { transform: scale(1.08); }
+  50%, 100% { transform: scale(1); }
+}
+.animate-key-slide { animation: key-slide 3.6s ease-in-out infinite; transform-origin: 16px 13px; }
+.animate-lock-pulse { animation: lock-pulse 3.6s ease-in-out infinite; }
+
 /* Faint grain — breaks up flat gradients so the hero doesn't look like a
    solid-color render. Kept extremely subtle (3.5% opacity). */
 .bg-grain {
