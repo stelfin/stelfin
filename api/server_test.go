@@ -569,6 +569,45 @@ func TestLandingPageIsServedAtRoot(t *testing.T) {
 	}
 }
 
+// TestStaticAssetsAreServed pins the bug every page-serving test above missed:
+// they check that /confirm and /enroll return 200 and mention the right text,
+// but never that the <script src="/static/..."> files those pages actually
+// reference resolve. Static() returns a filesystem already rooted at
+// static/, so the /static/ prefix has to be stripped before reaching it —
+// without that, every script tag 404s and none of confirm.js, enroll.js or
+// index.js ever runs in a real browser, silently, since the HTML page itself
+// still serves fine either way.
+func TestStaticAssetsAreServed(t *testing.T) {
+	f := newFixture(t, sendDecoded())
+	tokens := newTokens(t)
+	enrollTokens := newEnrollTokens(t)
+	treasury := keypair.MustRandom()
+
+	srv, err := NewServer(f.svc, tokens, enrollTokens, ServerConfig{
+		BaseURL: "https://stelfin.example", Messenger: &fakeMessenger{},
+		AppSecret: testSecret, VerifyToken: testVerifyToken,
+		TreasuryAddress: treasury.Address(), SignFeeBump: signWith(treasury), SignProvision: signProvisionWith(treasury),
+		NetworkPassphrase: network.TestNetworkPassphrase,
+		Assets:            web.Handler(),
+		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	for _, path := range []string{
+		"/static/confirm.js", "/static/enroll.js", "/static/index.js", "/static/stellar-sdk.min.js",
+	} {
+		rec := do(t, srv, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: status = %d, want 200", path, rec.Code)
+		}
+		if rec.Body.Len() == 0 {
+			t.Errorf("%s: empty body", path)
+		}
+	}
+}
+
 // TestConfirmResponseCarriesTheNetwork: the page parses the envelope itself and
 // must do it against the same network the server signed for.
 func TestConfirmResponseCarriesTheNetwork(t *testing.T) {
