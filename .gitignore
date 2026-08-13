@@ -28,3 +28,6 @@ go.work.sum
 .idea/
 .DS_Store
 *~
+
+# Working design record — kept local for now, not part of the repo yet.
+/DESIGN.md
