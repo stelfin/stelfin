@@ -532,6 +532,43 @@ func TestConfirmPageIsServedWithAStrictPolicy(t *testing.T) {
 	}
 }
 
+// TestLandingPageIsServedAtRoot: unlike /confirm and /enroll, the root path
+// carries no token and no authority — it's the one page a stranger is meant
+// to land on directly.
+func TestLandingPageIsServedAtRoot(t *testing.T) {
+	f := newFixture(t, sendDecoded())
+	tokens := newTokens(t)
+	enrollTokens := newEnrollTokens(t)
+	treasury := keypair.MustRandom()
+
+	srv, err := NewServer(f.svc, tokens, enrollTokens, ServerConfig{
+		BaseURL: "https://stelfin.example", Messenger: &fakeMessenger{},
+		AppSecret: testSecret, VerifyToken: testVerifyToken,
+		TreasuryAddress: treasury.Address(), SignFeeBump: signWith(treasury), SignProvision: signProvisionWith(treasury),
+		NetworkPassphrase: network.TestNetworkPassphrase,
+		Assets:            web.Handler(),
+		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	rec := do(t, srv, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "stelfin") {
+		t.Error("the landing page was not served")
+	}
+
+	// An unmatched path must still 404, not fall through to something
+	// unexpected now that "/" is a catch-all pattern.
+	miss := do(t, srv, httptest.NewRequest(http.MethodGet, "/this-does-not-exist", nil))
+	if miss.Code != http.StatusNotFound {
+		t.Errorf("unmatched path status = %d, want 404", miss.Code)
+	}
+}
+
 // TestConfirmResponseCarriesTheNetwork: the page parses the envelope itself and
 // must do it against the same network the server signed for.
 func TestConfirmResponseCarriesTheNetwork(t *testing.T) {

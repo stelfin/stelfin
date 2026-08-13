@@ -100,6 +100,7 @@ func (s *Server) Routes() http.Handler {
 		w.WriteHeader(http.StatusOK)
 	})
 	if s.cfg.Assets != nil {
+		mux.Handle("GET /", s.cfg.Assets)
 		mux.Handle("GET /confirm", s.cfg.Assets)
 		mux.Handle("GET /enroll", s.cfg.Assets)
 		mux.Handle("GET /static/", s.cfg.Assets)
