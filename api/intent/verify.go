@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ezedike-evan/stelfin/internal/money"
+	"github.com/stelfin/stelfin/internal/money"
 )
 
 // Action is what the user is asking for.

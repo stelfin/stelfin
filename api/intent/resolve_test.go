@@ -10,8 +10,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stellar/go-stellar-sdk/keypair"
 
-	"github.com/ezedike-evan/stelfin/internal/pgtest"
-	"github.com/ezedike-evan/stelfin/ledger"
+	"github.com/stelfin/stelfin/internal/pgtest"
+	"github.com/stelfin/stelfin/ledger"
 )
 
 // testPGPort must differ from every other package's: `go test ./...` runs

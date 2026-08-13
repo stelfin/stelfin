@@ -1,4 +1,4 @@
-module github.com/ezedike-evan/stelfin
+module github.com/stelfin/stelfin
 
 go 1.25.9
 

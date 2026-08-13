@@ -9,8 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 
-	"github.com/ezedike-evan/stelfin/ledger"
-	"github.com/ezedike-evan/stelfin/settlement"
+	"github.com/stelfin/stelfin/ledger"
+	"github.com/stelfin/stelfin/settlement"
 )
 
 // Enrollment turns a fresh device-generated keypair into a live, funded-by-

@@ -19,7 +19,7 @@ for a typical web app — read this before opening a pull request.
 ## Development setup
 
 ```bash
-git clone https://github.com/ezedike-evan/stelfin.git
+git clone https://github.com/stelfin/stelfin.git
 cd stelfin
 cp .env.example .env   # fill in real values, or use test defaults where noted
 make check              # fmt + vet + full test suite

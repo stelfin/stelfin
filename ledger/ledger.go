@@ -25,7 +25,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/ezedike-evan/stelfin/internal/money"
+	"github.com/stelfin/stelfin/internal/money"
 )
 
 // SQLSTATE codes raised by the ledger's triggers. Custom codes let us classify

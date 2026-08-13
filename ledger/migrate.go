@@ -9,7 +9,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 
-	"github.com/ezedike-evan/stelfin/ledger/migrations"
+	"github.com/stelfin/stelfin/ledger/migrations"
 )
 
 // Migrate applies every pending ledger migration to the database at dsn.

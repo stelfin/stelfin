@@ -10,7 +10,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 
-	"github.com/ezedike-evan/stelfin/api/intent"
+	"github.com/stelfin/stelfin/api/intent"
 )
 
 // fakeMessages stands in for the Anthropic API. It records the request so the

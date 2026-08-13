@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 
-	"github.com/ezedike-evan/stelfin/internal/money"
+	"github.com/stelfin/stelfin/internal/money"
 )
 
 // Submission is deliberately not "accept any signed envelope and send it".

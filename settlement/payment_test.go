@@ -8,7 +8,7 @@ import (
 	"github.com/stellar/go-stellar-sdk/network"
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 
-	"github.com/ezedike-evan/stelfin/internal/money"
+	"github.com/stelfin/stelfin/internal/money"
 )
 
 func usdcAsset(issuer string) txnbuild.Asset {

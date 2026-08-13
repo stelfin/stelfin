@@ -54,13 +54,13 @@ first payment.
 
 ## Tech stack
 
-| Layer          | Technology                                  |
-| -------------- | -------------------------------------------- |
-| Language       | Go 1.25                                      |
-| Blockchain     | `github.com/stellar/go-stellar-sdk`          |
-| Database       | PostgreSQL via `pgx/v5`, migrations via `goose` |
-| Messaging      | Meta WhatsApp Cloud API                      |
-| Intent decoding| Anthropic Claude (`anthropic-sdk-go`)        |
+| Layer           | Technology                                      |
+| --------------- | ----------------------------------------------- |
+| Language        | Go 1.25                                         |
+| Blockchain      | `github.com/stellar/go-stellar-sdk`             |
+| Database        | PostgreSQL via `pgx/v5`, migrations via `goose` |
+| Messaging       | Meta WhatsApp Cloud API                         |
+| Intent decoding | Anthropic Claude (`anthropic-sdk-go`)           |
 
 ## Getting started
 
@@ -69,7 +69,7 @@ their own embedded instance on first run (see `internal/pgtest`).
 
 ```bash
 # Clone the repository
-git clone https://github.com/ezedike-evan/stelfin.git
+git clone https://github.com/stelfin/stelfin.git
 cd stelfin
 
 # Copy the example environment file and fill in your values
@@ -92,39 +92,39 @@ validates configuration at boot (`internal/config`) and refuses to start rather
 than run with a placeholder secret. See `.env.example` for the full list with
 descriptions; the essentials:
 
-| Variable                       | Required | Description                                                        |
-| ------------------------------- | -------- | -------------------------------------------------------------------- |
-| `STELFIN_BASE_URL`              | Yes      | Where the confirmation page is served from. Must be https (or `http://localhost`). |
-| `STELFIN_DATABASE_URL`          | Yes      | Postgres connection string.                                         |
-| `STELFIN_NETWORK`               | No       | `testnet` (default) or `public`.                                    |
-| `STELFIN_TREASURY_SEED`         | Yes      | Pays fees, sponsors reserves. Testnet-only as an env var — move to KMS/HSM for mainnet. |
-| `STELFIN_ASSET_CODE` / `_ISSUER`| Yes      | The asset users transact in (network-specific issuer).              |
-| `STELFIN_META_*`                | Yes      | Meta WhatsApp Cloud API credentials.                                 |
-| `STELFIN_CONFIRM_TOKEN_SECRET`  | Yes      | Signs confirmation links. `openssl rand -hex 32`.                   |
-| `ANTHROPIC_API_KEY`             | No       | Omit to let the Anthropic SDK resolve credentials itself.           |
+| Variable                         | Required | Description                                                                             |
+| -------------------------------- | -------- | --------------------------------------------------------------------------------------- |
+| `STELFIN_BASE_URL`               | Yes      | Where the confirmation page is served from. Must be https (or `http://localhost`).      |
+| `STELFIN_DATABASE_URL`           | Yes      | Postgres connection string.                                                             |
+| `STELFIN_NETWORK`                | No       | `testnet` (default) or `public`.                                                        |
+| `STELFIN_TREASURY_SEED`          | Yes      | Pays fees, sponsors reserves. Testnet-only as an env var — move to KMS/HSM for mainnet. |
+| `STELFIN_ASSET_CODE` / `_ISSUER` | Yes      | The asset users transact in (network-specific issuer).                                  |
+| `STELFIN_META_*`                 | Yes      | Meta WhatsApp Cloud API credentials.                                                    |
+| `STELFIN_CONFIRM_TOKEN_SECRET`   | Yes      | Signs confirmation links. `openssl rand -hex 32`.                                       |
+| `ANTHROPIC_API_KEY`              | No       | Omit to let the Anthropic SDK resolve credentials itself.                               |
 
 ## Project layout
 
-| Path              | What it is                                                        |
-| ----------------- | ------------------------------------------------------------------- |
-| `api/`            | HTTP server, webhook handling, submission, orchestration.          |
-| `api/intent`      | Tokenizer, verifier, normalizer, resolver for user intents.        |
-| `api/decoder`     | Claude-backed free-text → structured-intent decoder.               |
-| `internal/money`  | Exact fixed-point money type.                                      |
-| `ledger/`         | Append-only, double-entry Postgres ledger and migrations.          |
-| `settlement/`     | Stellar transaction building and submission.                       |
-| `ingestion/`      | Horizon → ledger reconciliation worker.                            |
-| `internal/whatsapp`| Meta WhatsApp Cloud API client.                                    |
-| `internal/config` | Environment loading and validation.                                |
-| `web/`            | Confirmation and enrollment pages served to the user.               |
-| `cmd/stelfind`    | Server entrypoint — wires everything above together.               |
+| Path                | What it is                                                  |
+| ------------------- | ----------------------------------------------------------- |
+| `api/`              | HTTP server, webhook handling, submission, orchestration.   |
+| `api/intent`        | Tokenizer, verifier, normalizer, resolver for user intents. |
+| `api/decoder`       | Claude-backed free-text → structured-intent decoder.        |
+| `internal/money`    | Exact fixed-point money type.                               |
+| `ledger/`           | Append-only, double-entry Postgres ledger and migrations.   |
+| `settlement/`       | Stellar transaction building and submission.                |
+| `ingestion/`        | Horizon → ledger reconciliation worker.                     |
+| `internal/whatsapp` | Meta WhatsApp Cloud API client.                             |
+| `internal/config`   | Environment loading and validation.                         |
+| `web/`              | Confirmation and enrollment pages served to the user.       |
+| `cmd/stelfind`      | Server entrypoint — wires everything above together.        |
 
 ## Documentation
 
-| Document                                   | What it covers                                                        |
-| ------------------------------------------- | ------------------------------------------------------------------------ |
-| [DESIGN.md](DESIGN.md)                     | Full design record: custody decision, auth model, intent-verification scheme, accepted tradeoffs, open questions. |
-| [docs/architecture.md](docs/architecture.md)| Architecture plan and how this project relates to its two predecessors. |
+| Document                                     | What it covers                                                                                                    |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| [DESIGN.md](DESIGN.md)                       | Full design record: custody decision, auth model, intent-verification scheme, accepted tradeoffs, open questions. |
+| [docs/architecture.md](docs/architecture.md) | Architecture plan and how this project relates to its two predecessors.                                           |
 
 ## Contributing
 

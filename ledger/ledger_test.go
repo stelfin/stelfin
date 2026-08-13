@@ -12,8 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/ezedike-evan/stelfin/internal/money"
-	"github.com/ezedike-evan/stelfin/internal/pgtest"
+	"github.com/stelfin/stelfin/internal/money"
+	"github.com/stelfin/stelfin/internal/pgtest"
 )
 
 // testPGPort is this package's own Postgres port. `go test ./...` runs packages

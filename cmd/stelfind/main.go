@@ -19,15 +19,15 @@ import (
 	"github.com/stellar/go-stellar-sdk/keypair"
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 
-	"github.com/ezedike-evan/stelfin/api"
-	"github.com/ezedike-evan/stelfin/api/decoder"
-	"github.com/ezedike-evan/stelfin/api/intent"
-	"github.com/ezedike-evan/stelfin/ingestion"
-	"github.com/ezedike-evan/stelfin/internal/config"
-	"github.com/ezedike-evan/stelfin/internal/whatsapp"
-	"github.com/ezedike-evan/stelfin/ledger"
-	"github.com/ezedike-evan/stelfin/settlement"
-	"github.com/ezedike-evan/stelfin/web"
+	"github.com/stelfin/stelfin/api"
+	"github.com/stelfin/stelfin/api/decoder"
+	"github.com/stelfin/stelfin/api/intent"
+	"github.com/stelfin/stelfin/ingestion"
+	"github.com/stelfin/stelfin/internal/config"
+	"github.com/stelfin/stelfin/internal/whatsapp"
+	"github.com/stelfin/stelfin/ledger"
+	"github.com/stelfin/stelfin/settlement"
+	"github.com/stelfin/stelfin/web"
 )
 
 func main() {

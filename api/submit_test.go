@@ -11,7 +11,7 @@ import (
 	"github.com/stellar/go-stellar-sdk/network"
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 
-	"github.com/ezedike-evan/stelfin/internal/money"
+	"github.com/stelfin/stelfin/internal/money"
 )
 
 // signWith returns a fee-bump signer for the given treasury key.

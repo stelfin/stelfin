@@ -14,9 +14,9 @@ import (
 	"github.com/stellar/go-stellar-sdk/protocols/horizon/base"
 	"github.com/stellar/go-stellar-sdk/protocols/horizon/operations"
 
-	"github.com/ezedike-evan/stelfin/internal/money"
-	"github.com/ezedike-evan/stelfin/internal/pgtest"
-	"github.com/ezedike-evan/stelfin/ledger"
+	"github.com/stelfin/stelfin/internal/money"
+	"github.com/stelfin/stelfin/internal/pgtest"
+	"github.com/stelfin/stelfin/ledger"
 )
 
 // testPGPort must differ from every other package's: `go test ./...` runs

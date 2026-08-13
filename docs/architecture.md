@@ -2,23 +2,7 @@
 
 ## Context
 
-stelfin is a WhatsApp-native stablecoin wallet on Stellar. It is the third iteration of
-an idea already built twice:
-
-- `../arc/tella` — Next.js + Circle developer-controlled wallets on Arc. Custodial, NLU
-  delegated to an external `sendam-ai` service, one test file, Vercel `after()` used to
-  work around serverless lifetime limits.
-- `../send am/efchain (Copy)` (SendAm) — Express + Prisma + BullMQ, direct-custody
-  Stellar, already rewritten once (`sendam-backup-preRewrite-2026-07-26.git`).
-
-Both hit the same ceiling: a TypeScript/serverless stack carrying a money-movement
-workload it was not shaped for, with custody as the default and correctness bolted on.
-
-stelfin reverses both defaults. It is **non-custodial** and **Go-first**. The explicit
-mandate is precision over shipping speed — over-engineering is wanted, extra work is
-accepted. Goals: (a) the operator cannot move user funds, (b) no single lost device or
-forgotten secret loses funds, (c) an LLM in the payment path is an untrusted extractor,
-never an authority.
+stelfin is a WhatsApp-native stablecoin wallet on Stellar.
 
 ## Settled decisions
 

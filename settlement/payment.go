@@ -7,7 +7,7 @@ import (
 
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 
-	"github.com/ezedike-evan/stelfin/internal/money"
+	"github.com/stelfin/stelfin/internal/money"
 )
 
 // ErrIndescribable reports a transaction this package will not summarise for a

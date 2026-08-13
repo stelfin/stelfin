@@ -10,8 +10,8 @@ import (
 	"github.com/stellar/go-stellar-sdk/network"
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 
-	"github.com/ezedike-evan/stelfin/api/intent"
-	"github.com/ezedike-evan/stelfin/settlement"
+	"github.com/stelfin/stelfin/api/intent"
+	"github.com/stelfin/stelfin/settlement"
 )
 
 // newUnenrolledService returns a Service and a fresh phone number with no

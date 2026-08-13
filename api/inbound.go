@@ -10,7 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/ezedike-evan/stelfin/api/intent"
+	"github.com/stelfin/stelfin/api/intent"
 )
 
 // Inbound handling: the WhatsApp payload, and what to do with it.
