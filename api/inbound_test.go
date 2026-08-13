@@ -6,6 +6,12 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stellar/go-stellar-sdk/network"
+	"github.com/stellar/go-stellar-sdk/txnbuild"
+
+	"github.com/ezedike-evan/stelfin/api/intent"
+	"github.com/ezedike-evan/stelfin/settlement"
 )
 
 // fakeMessenger records replies instead of sending them.
@@ -33,11 +39,15 @@ func (m *fakeMessenger) messages() []struct{ To, Body string } {
 	return out
 }
 
-// stubLinker mints a predictable link so replies can be asserted on.
+// stubLinker mints predictable links so replies can be asserted on.
 type stubLinker struct{}
 
 func (stubLinker) IssueConfirmLink(_, hash string, _ time.Time) (string, error) {
 	return "https://stelfin.example/confirm#token-for-" + hash, nil
+}
+
+func (stubLinker) IssueEnrollLink(ownerRef string, _ time.Time) (string, error) {
+	return "https://stelfin.example/enroll#token-for-" + ownerRef, nil
 }
 
 const metaTextPayload = `{
@@ -226,6 +236,45 @@ func TestHandleInboundExplainsFailures(t *testing.T) {
 				t.Errorf("reply %q does not contain %q", sent[0].Body, c.want)
 			}
 		})
+	}
+}
+
+// TestHandleInboundOffersEnrollmentBeforeAnAccountExists: an unenrolled phone
+// number gets a wallet-creation link instead of stelfin trying — and failing
+// — to decode a payment it has no "from" account to build.
+func TestHandleInboundOffersEnrollmentBeforeAnAccountExists(t *testing.T) {
+	ctx := context.Background()
+	owner := t.Name()
+
+	settle, err := settlement.NewWith(&fakeHorizon{sequence: 1}, settlement.Config{
+		HorizonURL:        "https://horizon-testnet.stellar.org",
+		NetworkPassphrase: network.TestNetworkPassphrase,
+	})
+	if err != nil {
+		t.Fatalf("settlement client: %v", err)
+	}
+	svc, err := NewService(testPool, fixedDecoder{decoded: sendDecoded()},
+		intent.NewResolver(testPool), settle,
+		Config{Asset: txnbuild.CreditAsset{Code: "USDC", Issuer: testIssuer}, AssetCode: "USDC"})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	msgr := &fakeMessenger{}
+	msg := InboundMessage{ID: "wamid.enroll", From: strings.TrimPrefix(owner, "+"), Text: sendMessage}
+	if err := svc.HandleInbound(ctx, msg, msgr, stubLinker{}); err != nil {
+		t.Fatalf("HandleInbound: %v", err)
+	}
+
+	sent := msgr.messages()
+	if len(sent) != 1 {
+		t.Fatalf("sent %d replies, want 1", len(sent))
+	}
+	if !strings.Contains(sent[0].Body, "/enroll#") {
+		t.Errorf("reply does not carry an enroll link:\n%s", sent[0].Body)
+	}
+	if strings.Contains(sent[0].Body, "confirm#") {
+		t.Errorf("an unenrolled user was offered a payment confirmation:\n%s", sent[0].Body)
 	}
 }
 

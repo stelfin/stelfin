@@ -126,7 +126,7 @@ func (s *Service) claimMessage(ctx context.Context, m InboundMessage) (bool, err
 // something it cannot act on — because the caller's job is to keep the webhook
 // healthy, not to surface every non-event as a failure.
 func (s *Service) HandleInbound(
-	ctx context.Context, m InboundMessage, msgr Messenger, links ConfirmLinker,
+	ctx context.Context, m InboundMessage, msgr Messenger, links Linker,
 ) error {
 	claimed, err := s.claimMessage(ctx, m)
 	if err != nil {
@@ -139,6 +139,18 @@ func (s *Service) HandleInbound(
 	}
 
 	ownerRef := "+" + strings.TrimPrefix(m.From, "+")
+
+	// An unenrolled phone number has nothing PrepareSend could resolve "from",
+	// and running the decoder for it would spend an LLM call to reject
+	// something the account state already rules out. Checked first, deciding
+	// before any message content is even looked at.
+	enrolled, err := s.hasStellarAccount(ctx, ownerRef)
+	if err != nil {
+		return err
+	}
+	if !enrolled {
+		return s.replyWithEnrollLink(ctx, msgr, links, ownerRef)
+	}
 
 	confirmation, err := s.PrepareSend(ctx, ownerRef, []string{m.Text})
 	if err != nil {
@@ -162,14 +174,38 @@ func (s *Service) HandleInbound(
 	return msgr.Send(ctx, ownerRef, body)
 }
 
+// replyWithEnrollLink sends a new (or not-yet-enrolled) user the link that
+// creates their account.
+func (s *Service) replyWithEnrollLink(ctx context.Context, msgr Messenger, links Linker, ownerRef string) error {
+	link, err := links.IssueEnrollLink(ownerRef, time.Now().Add(enrollLinkLifetime))
+	if err != nil {
+		return err
+	}
+	body := fmt.Sprintf(
+		"Let's get your wallet set up first — it only takes a moment. Tap the link below:\n%s\n\n"+
+			"Once that's done, message me again with what you'd like to send.",
+		link,
+	)
+	return msgr.Send(ctx, ownerRef, body)
+}
+
 // confirmLinkLifetime bounds how long a confirmation link is usable. It is
 // shorter than the transaction's own time bounds so an abandoned link stops
 // working before the envelope does.
 const confirmLinkLifetime = 10 * time.Minute
 
-// ConfirmLinker mints the confirmation URL. The Server implements it.
-type ConfirmLinker interface {
+// enrollLinkLifetime is shorter than confirmLinkLifetime: the provisioning
+// transaction it names carries settlement.DefaultTimeout (180s) of on-chain
+// validity from the moment it is built, not from when the link is tapped, so
+// the link must expire well inside that window rather than at a round number
+// chosen independently of it.
+const enrollLinkLifetime = 2 * time.Minute
+
+// Linker mints the links a WhatsApp reply carries authority through. The
+// Server implements it.
+type Linker interface {
 	IssueConfirmLink(ownerRef, hash string, expiresAt time.Time) (string, error)
+	IssueEnrollLink(ownerRef string, expiresAt time.Time) (string, error)
 }
 
 // replyWithProblem turns a failure into something the user can act on.
