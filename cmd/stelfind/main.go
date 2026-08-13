@@ -122,14 +122,25 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// Deliberately keyed with the same secret as ConfirmTokens: the version
+	// each signs into its MAC is what keeps an enroll token from ever
+	// verifying as a confirm token or vice versa, so a second secret would add
+	// deployment friction without adding safety.
+	enrollTokens, err := api.NewEnrollTokens(cfg.ConfirmTokenSecret)
+	if err != nil {
+		return err
+	}
 
-	server, err := api.NewServer(svc, tokens, api.ServerConfig{
+	server, err := api.NewServer(svc, tokens, enrollTokens, api.ServerConfig{
 		BaseURL:         cfg.BaseURL,
 		Messenger:       messenger,
 		AppSecret:       cfg.MetaAppSecret,
 		VerifyToken:     cfg.MetaVerifyToken,
 		TreasuryAddress: treasury.Address(),
 		SignFeeBump: func(tx *txnbuild.FeeBumpTransaction) (*txnbuild.FeeBumpTransaction, error) {
+			return tx.Sign(cfg.NetworkPassphrase, treasury)
+		},
+		SignProvision: func(tx *txnbuild.Transaction) (*txnbuild.Transaction, error) {
 			return tx.Sign(cfg.NetworkPassphrase, treasury)
 		},
 		NetworkPassphrase: cfg.NetworkPassphrase,

@@ -28,6 +28,12 @@ type ServerConfig struct {
 	// than a key so the treasury's signing material can live behind a KMS or
 	// HSM without this package ever holding it.
 	SignFeeBump func(*txnbuild.FeeBumpTransaction) (*txnbuild.FeeBumpTransaction, error)
+	// SignProvision signs a provisioning transaction as the treasury. Separate
+	// from SignFeeBump because a provisioning transaction is not fee-bumped —
+	// the treasury is its source account directly — but the same reasoning
+	// applies: a function, not a key, so signing material can live behind a
+	// KMS or HSM.
+	SignProvision func(*txnbuild.Transaction) (*txnbuild.Transaction, error)
 	// NetworkPassphrase is echoed to the confirmation page so it parses the
 	// envelope against the same network the server signed for. A page that
 	// guessed would fail to verify a perfectly good transaction.
@@ -40,19 +46,22 @@ type ServerConfig struct {
 
 // Server exposes the service over HTTP.
 type Server struct {
-	svc    *Service
-	tokens *ConfirmTokens
-	cfg    ServerConfig
-	log    *slog.Logger
+	svc          *Service
+	tokens       *ConfirmTokens
+	enrollTokens *EnrollTokens
+	cfg          ServerConfig
+	log          *slog.Logger
 }
 
 // NewServer returns a Server.
-func NewServer(svc *Service, tokens *ConfirmTokens, cfg ServerConfig) (*Server, error) {
+func NewServer(svc *Service, tokens *ConfirmTokens, enrollTokens *EnrollTokens, cfg ServerConfig) (*Server, error) {
 	switch {
 	case svc == nil:
 		return nil, errors.New("api: service is required")
 	case tokens == nil:
 		return nil, errors.New("api: confirmation tokens are required")
+	case enrollTokens == nil:
+		return nil, errors.New("api: enroll tokens are required")
 	case len(cfg.AppSecret) == 0:
 		return nil, errors.New("api: webhook app secret is required")
 	case cfg.VerifyToken == "":
@@ -61,6 +70,8 @@ func NewServer(svc *Service, tokens *ConfirmTokens, cfg ServerConfig) (*Server, 
 		return nil, errors.New("api: treasury address is required")
 	case cfg.SignFeeBump == nil:
 		return nil, errors.New("api: fee-bump signer is required")
+	case cfg.SignProvision == nil:
+		return nil, errors.New("api: provisioning signer is required")
 	case cfg.BaseURL == "":
 		return nil, errors.New("api: base url is required")
 	case cfg.Messenger == nil:
@@ -73,7 +84,7 @@ func NewServer(svc *Service, tokens *ConfirmTokens, cfg ServerConfig) (*Server, 
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{svc: svc, tokens: tokens, cfg: cfg, log: log}, nil
+	return &Server{svc: svc, tokens: tokens, enrollTokens: enrollTokens, cfg: cfg, log: log}, nil
 }
 
 // Routes returns the HTTP handler.
@@ -83,11 +94,14 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /webhook/whatsapp", s.handleInbound)
 	mux.HandleFunc("GET /v1/confirm", s.handleConfirm)
 	mux.HandleFunc("POST /v1/submit", s.handleSubmit)
+	mux.HandleFunc("POST /v1/enroll", s.handleEnroll)
+	mux.HandleFunc("POST /v1/enroll/submit", s.handleEnrollSubmit)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 	if s.cfg.Assets != nil {
 		mux.Handle("GET /confirm", s.cfg.Assets)
+		mux.Handle("GET /enroll", s.cfg.Assets)
 		mux.Handle("GET /static/", s.cfg.Assets)
 	}
 	return mux
@@ -249,6 +263,93 @@ func (s *Server) authorise(w http.ResponseWriter, r *http.Request) (ownerRef, ha
 	return ownerRef, hash, true
 }
 
+type enrollRequest struct {
+	Address string `json:"address"`
+}
+
+// handleEnroll builds the provisioning transaction for a device-generated
+// address and returns it for the device to sign.
+func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
+	ownerRef, ok := s.authoriseEnroll(w, r)
+	if !ok {
+		return
+	}
+
+	var req enrollRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		http.Error(w, "malformed request", http.StatusBadRequest)
+		return
+	}
+	if req.Address == "" {
+		http.Error(w, "address is required", http.StatusBadRequest)
+		return
+	}
+
+	enrollment, err := s.svc.PrepareEnrollment(r.Context(), ownerRef, req.Address, s.cfg.TreasuryAddress)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"address":            enrollment.Address,
+		"xdr":                enrollment.XDR,
+		"network_passphrase": enrollment.NetworkPassphrase,
+	})
+}
+
+type enrollSubmitRequest struct {
+	SignedXDR string `json:"signed_xdr"`
+}
+
+// handleEnrollSubmit accepts the device-signed provisioning envelope and
+// submits it, bringing the account into existence.
+func (s *Server) handleEnrollSubmit(w http.ResponseWriter, r *http.Request) {
+	ownerRef, ok := s.authoriseEnroll(w, r)
+	if !ok {
+		return
+	}
+
+	var req enrollSubmitRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		http.Error(w, "malformed request", http.StatusBadRequest)
+		return
+	}
+	if req.SignedXDR == "" {
+		http.Error(w, "signed_xdr is required", http.StatusBadRequest)
+		return
+	}
+
+	res, err := s.svc.SubmitEnrollment(r.Context(), ownerRef, req.SignedXDR,
+		s.cfg.TreasuryAddress, s.cfg.SignProvision)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"address":       res.Address,
+		"hash":          res.Hash,
+		"ledger":        res.Ledger,
+		"already_known": res.AlreadyKnown,
+	})
+}
+
+// authoriseEnroll verifies the enroll token and reports the phone number it
+// authorises.
+func (s *Server) authoriseEnroll(w http.ResponseWriter, r *http.Request) (ownerRef string, ok bool) {
+	token := bearer(r.Header.Get("Authorization"))
+	if token == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return "", false
+	}
+	ownerRef, err := s.enrollTokens.Verify(token)
+	if err != nil {
+		s.log.Warn("enroll token refused", "error", err)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return "", false
+	}
+	return ownerRef, true
+}
+
 func bearer(header string) string {
 	const prefix = "Bearer "
 	if len(header) <= len(prefix) || header[:len(prefix)] != prefix {
@@ -271,6 +372,8 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 		http.Error(w, "expired", http.StatusGone)
 	case errors.Is(err, ErrUnsigned):
 		http.Error(w, "transaction is not signed", http.StatusBadRequest)
+	case errors.Is(err, ErrAlreadyEnrolled):
+		http.Error(w, "already enrolled", http.StatusConflict)
 	default:
 		s.log.Error("request failed", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -296,4 +399,14 @@ func (s *Server) IssueConfirmLink(ownerRef, hash string, expiresAt time.Time) (s
 		return "", err
 	}
 	return strings.TrimSuffix(s.cfg.BaseURL, "/") + "/confirm#" + token, nil
+}
+
+// IssueEnrollLink mints the URL sent to a not-yet-enrolled user over
+// WhatsApp. Same fragment placement, same reasoning as IssueConfirmLink.
+func (s *Server) IssueEnrollLink(ownerRef string, expiresAt time.Time) (string, error) {
+	token, err := s.enrollTokens.Issue(ownerRef, expiresAt)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(s.cfg.BaseURL, "/") + "/enroll#" + token, nil
 }

@@ -23,13 +23,15 @@ const testVerifyToken = "verify-me"
 func newServer(t *testing.T, f *fixture, treasury *keypair.Full) *Server {
 	t.Helper()
 	tokens := newTokens(t)
-	srv, err := NewServer(f.svc, tokens, ServerConfig{
+	enrollTokens := newEnrollTokens(t)
+	srv, err := NewServer(f.svc, tokens, enrollTokens, ServerConfig{
 		BaseURL:           "https://stelfin.example",
 		Messenger:         &fakeMessenger{},
 		AppSecret:         testSecret,
 		VerifyToken:       testVerifyToken,
 		TreasuryAddress:   treasury.Address(),
 		SignFeeBump:       signWith(treasury),
+		SignProvision:     signProvisionWith(treasury),
 		NetworkPassphrase: network.TestNetworkPassphrase,
 		// Discard logs so refused-request warnings don't clutter test output.
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -189,9 +191,9 @@ func TestEndpointsRequireAToken(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	srv := newServer(t, f, keypair.MustRandom())
 
-	for _, path := range []string{"/v1/confirm", "/v1/submit"} {
+	for _, path := range []string{"/v1/confirm", "/v1/submit", "/v1/enroll", "/v1/enroll/submit"} {
 		method := http.MethodGet
-		if path == "/v1/submit" {
+		if path != "/v1/confirm" {
 			method = http.MethodPost
 		}
 		req := httptest.NewRequest(method, path, strings.NewReader(`{}`))
@@ -205,6 +207,45 @@ func TestEndpointsRequireAToken(t *testing.T) {
 			t.Errorf("%s with a bad token: status = %d, want 401", path, rec.Code)
 		}
 	}
+}
+
+// TestEnrollEndpointsRejectAConfirmToken and its mirror guard the reason
+// EnrollTokens is a distinct type: a token minted for one purpose must not
+// open the other, even where the HTTP layer's Bearer-header handling is
+// identical.
+func TestEnrollEndpointsRejectAConfirmToken(t *testing.T) {
+	f := newFixture(t, sendDecoded())
+	srv := newServer(t, f, keypair.MustRandom())
+
+	confirmToken, err := srv.tokens.Issue(f.owner, strings.Repeat("a", 64), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/enroll", strings.NewReader(`{"address":"`+f.toAddr+`"}`))
+	req.Header.Set("Authorization", "Bearer "+confirmToken)
+	if rec := do(t, srv, req); rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401: a confirm token must not authorise enrollment", rec.Code)
+	}
+}
+
+func TestConfirmEndpointRejectsAnEnrollToken(t *testing.T) {
+	f := newFixture(t, sendDecoded())
+	srv := newServer(t, f, keypair.MustRandom())
+
+	c, err := f.svc.PrepareSend(t.Context(), f.owner, []string{sendMessage})
+	if err != nil {
+		t.Fatalf("PrepareSend: %v", err)
+	}
+	enrollToken, err := srv.enrollTokens.Issue(f.owner, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1/confirm", nil)
+	req.Header.Set("Authorization", "Bearer "+enrollToken)
+	if rec := do(t, srv, req); rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401: an enroll token must not authorise reading a payment", rec.Code)
+	}
+	_ = c
 }
 
 func TestSubmitEndpoint(t *testing.T) {
@@ -292,9 +333,120 @@ func TestConfirmLinkPutsTokenInTheFragment(t *testing.T) {
 	}
 }
 
+// TestEnrollLinkPutsTokenInTheFragment mirrors TestConfirmLinkPutsTokenInTheFragment.
+func TestEnrollLinkPutsTokenInTheFragment(t *testing.T) {
+	f := newFixture(t, sendDecoded())
+	srv := newServer(t, f, keypair.MustRandom())
+
+	link, err := srv.IssueEnrollLink("+2348012345678", time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("IssueEnrollLink: %v", err)
+	}
+	if !strings.Contains(link, "/enroll#") {
+		t.Fatalf("link %q does not carry the enroll fragment", link)
+	}
+	if strings.Contains(link, "?") {
+		t.Errorf("link %q carries a query string; the token would reach server logs", link)
+	}
+}
+
+func authedEnroll(t *testing.T, srv *Server, method, path, owner, body string) *http.Request {
+	t.Helper()
+	token, err := srv.enrollTokens.Issue(owner, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	var r io.Reader
+	if body != "" {
+		r = strings.NewReader(body)
+	}
+	req := httptest.NewRequest(method, path, r)
+	req.Header.Set("Authorization", "Bearer "+token)
+	return req
+}
+
+func TestEnrollEndpoint(t *testing.T) {
+	svc, owner := newUnenrolledService(t)
+	treasury := keypair.MustRandom()
+	tokens := newTokens(t)
+	enrollTokens := newEnrollTokens(t)
+	srv, err := NewServer(svc, tokens, enrollTokens, ServerConfig{
+		BaseURL: "https://stelfin.example", Messenger: &fakeMessenger{},
+		AppSecret: testSecret, VerifyToken: testVerifyToken,
+		TreasuryAddress: treasury.Address(), SignFeeBump: signWith(treasury), SignProvision: signProvisionWith(treasury),
+		NetworkPassphrase: network.TestNetworkPassphrase,
+		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	userKey := keypair.MustRandom()
+	body, err := json.Marshal(enrollRequest{Address: userKey.Address()})
+	if err != nil {
+		t.Fatalf("encode request: %v", err)
+	}
+	rec := do(t, srv, authedEnroll(t, srv, http.MethodPost, "/v1/enroll", owner, string(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["address"] != userKey.Address() {
+		t.Errorf("address = %v, want %s", got["address"], userKey.Address())
+	}
+	if got["xdr"] == "" || got["xdr"] == nil {
+		t.Error("response carries no transaction")
+	}
+}
+
+func TestEnrollSubmitEndpoint(t *testing.T) {
+	svc, owner := newUnenrolledService(t)
+	treasury := keypair.MustRandom()
+	tokens := newTokens(t)
+	enrollTokens := newEnrollTokens(t)
+	srv, err := NewServer(svc, tokens, enrollTokens, ServerConfig{
+		BaseURL: "https://stelfin.example", Messenger: &fakeMessenger{},
+		AppSecret: testSecret, VerifyToken: testVerifyToken,
+		TreasuryAddress: treasury.Address(), SignFeeBump: signWith(treasury), SignProvision: signProvisionWith(treasury),
+		NetworkPassphrase: network.TestNetworkPassphrase,
+		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	userKey := keypair.MustRandom()
+	_, signedXDR := prepareAndSign(t, svc, owner, treasury.Address(), userKey)
+
+	body, err := json.Marshal(enrollSubmitRequest{SignedXDR: signedXDR})
+	if err != nil {
+		t.Fatalf("encode request: %v", err)
+	}
+	rec := do(t, srv, authedEnroll(t, srv, http.MethodPost, "/v1/enroll/submit", owner, string(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["ledger"] != float64(7) {
+		t.Errorf("ledger = %v, want 7", got["ledger"])
+	}
+	if got["address"] != userKey.Address() {
+		t.Errorf("address = %v, want %s", got["address"], userKey.Address())
+	}
+}
+
 func TestNewServerValidatesConfig(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	tokens := newTokens(t)
+	enrollTokens := newEnrollTokens(t)
 	treasury := keypair.MustRandom()
 
 	full := ServerConfig{
@@ -302,36 +454,43 @@ func TestNewServerValidatesConfig(t *testing.T) {
 		VerifyToken:     testVerifyToken,
 		TreasuryAddress: treasury.Address(),
 		SignFeeBump:     signWith(treasury),
+		SignProvision:   signProvisionWith(treasury),
 	}
 	for name, mutate := range map[string]func(*ServerConfig){
-		"no app secret":   func(c *ServerConfig) { c.AppSecret = nil },
-		"no verify token": func(c *ServerConfig) { c.VerifyToken = "" },
-		"no treasury":     func(c *ServerConfig) { c.TreasuryAddress = "" },
-		"no signer":       func(c *ServerConfig) { c.SignFeeBump = nil },
+		"no app secret":       func(c *ServerConfig) { c.AppSecret = nil },
+		"no verify token":     func(c *ServerConfig) { c.VerifyToken = "" },
+		"no treasury":         func(c *ServerConfig) { c.TreasuryAddress = "" },
+		"no fee-bump signer":  func(c *ServerConfig) { c.SignFeeBump = nil },
+		"no provision signer": func(c *ServerConfig) { c.SignProvision = nil },
 	} {
 		cfg := full
 		mutate(&cfg)
-		if _, err := NewServer(f.svc, tokens, cfg); err == nil {
+		if _, err := NewServer(f.svc, tokens, enrollTokens, cfg); err == nil {
 			t.Errorf("%s: expected an error", name)
 		}
 	}
-	if _, err := NewServer(f.svc, nil, full); err == nil {
-		t.Error("expected an error when tokens are missing")
+	if _, err := NewServer(f.svc, nil, enrollTokens, full); err == nil {
+		t.Error("expected an error when confirm tokens are missing")
+	}
+	if _, err := NewServer(f.svc, tokens, nil, full); err == nil {
+		t.Error("expected an error when enroll tokens are missing")
 	}
 }
 
 func TestConfirmPageIsServedWithAStrictPolicy(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	tokens := newTokens(t)
+	enrollTokens := newEnrollTokens(t)
 	treasury := keypair.MustRandom()
 
-	srv, err := NewServer(f.svc, tokens, ServerConfig{
+	srv, err := NewServer(f.svc, tokens, enrollTokens, ServerConfig{
 		BaseURL:           "https://stelfin.example",
 		Messenger:         &fakeMessenger{},
 		AppSecret:         testSecret,
 		VerifyToken:       testVerifyToken,
 		TreasuryAddress:   treasury.Address(),
 		SignFeeBump:       signWith(treasury),
+		SignProvision:     signProvisionWith(treasury),
 		NetworkPassphrase: network.TestNetworkPassphrase,
 		Assets:            web.Handler(),
 		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
