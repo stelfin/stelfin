@@ -99,14 +99,26 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	// "/{$}" matches only the exact root path, not a catch-all subtree — the
+	// marketing site lives elsewhere now (a separate Next.js app), so this
+	// binary's job at "/" is just to send a stray visitor there rather than
+	// 404 or serve a stale duplicate landing page.
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, marketingURL, http.StatusFound)
+	})
 	if s.cfg.Assets != nil {
-		mux.Handle("GET /", s.cfg.Assets)
 		mux.Handle("GET /confirm", s.cfg.Assets)
 		mux.Handle("GET /enroll", s.cfg.Assets)
 		mux.Handle("GET /static/", s.cfg.Assets)
 	}
 	return mux
 }
+
+// marketingURL is the product's public front door — a Next.js app deployed
+// separately, not embedded in this binary. Not config-driven: unlike
+// STELFIN_BASE_URL, getting this wrong costs a dead redirect, not a payment
+// authorised against the wrong origin, so a constant is enough.
+const marketingURL = "https://stelfin.vercel.app"
 
 func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	challenge, err := VerifyChallenge(s.cfg.VerifyToken, r.URL.Query())

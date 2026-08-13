@@ -532,37 +532,23 @@ func TestConfirmPageIsServedWithAStrictPolicy(t *testing.T) {
 	}
 }
 
-// TestLandingPageIsServedAtRoot: unlike /confirm and /enroll, the root path
-// carries no token and no authority — it's the one page a stranger is meant
-// to land on directly.
-func TestLandingPageIsServedAtRoot(t *testing.T) {
+// TestRootRedirectsToMarketingSite: the binary's own "/" has no landing page
+// of its own any more — the marketing site is a separate Next.js app — so a
+// stray visitor should land there rather than see a 404 or a stale duplicate.
+func TestRootRedirectsToMarketingSite(t *testing.T) {
 	f := newFixture(t, sendDecoded())
-	tokens := newTokens(t)
-	enrollTokens := newEnrollTokens(t)
-	treasury := keypair.MustRandom()
-
-	srv, err := NewServer(f.svc, tokens, enrollTokens, ServerConfig{
-		BaseURL: "https://stelfin.example", Messenger: &fakeMessenger{},
-		AppSecret: testSecret, VerifyToken: testVerifyToken,
-		TreasuryAddress: treasury.Address(), SignFeeBump: signWith(treasury), SignProvision: signProvisionWith(treasury),
-		NetworkPassphrase: network.TestNetworkPassphrase,
-		Assets:            web.Handler(),
-		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
+	srv := newServer(t, f, keypair.MustRandom())
 
 	rec := do(t, srv, httptest.NewRequest(http.MethodGet, "/", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "stelfin") {
-		t.Error("the landing page was not served")
+	if got := rec.Header().Get("Location"); got != marketingURL {
+		t.Errorf("Location = %q, want %q", got, marketingURL)
 	}
 
-	// An unmatched path must still 404, not fall through to something
-	// unexpected now that "/" is a catch-all pattern.
+	// "/{$}" matches only the exact root path — confirm an unmatched path
+	// still 404s rather than being swallowed by the redirect.
 	miss := do(t, srv, httptest.NewRequest(http.MethodGet, "/this-does-not-exist", nil))
 	if miss.Code != http.StatusNotFound {
 		t.Errorf("unmatched path status = %d, want 404", miss.Code)
@@ -574,9 +560,9 @@ func TestLandingPageIsServedAtRoot(t *testing.T) {
 // but never that the <script src="/static/..."> files those pages actually
 // reference resolve. Static() returns a filesystem already rooted at
 // static/, so the /static/ prefix has to be stripped before reaching it —
-// without that, every script tag 404s and none of confirm.js, enroll.js or
-// index.js ever runs in a real browser, silently, since the HTML page itself
-// still serves fine either way.
+// without that, every script tag 404s and neither confirm.js nor enroll.js
+// ever runs in a real browser, silently, since the HTML page itself still
+// serves fine either way.
 func TestStaticAssetsAreServed(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	tokens := newTokens(t)
@@ -595,9 +581,7 @@ func TestStaticAssetsAreServed(t *testing.T) {
 		t.Fatalf("NewServer: %v", err)
 	}
 
-	for _, path := range []string{
-		"/static/confirm.js", "/static/enroll.js", "/static/index.js", "/static/stellar-sdk.min.js",
-	} {
+	for _, path := range []string{"/static/confirm.js", "/static/enroll.js", "/static/stellar-sdk.min.js"} {
 		rec := do(t, srv, httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusOK {
 			t.Errorf("%s: status = %d, want 200", path, rec.Code)
