@@ -26,6 +26,7 @@ import (
 
 	"github.com/ezedike-evan/stelfin/api/intent"
 	"github.com/ezedike-evan/stelfin/internal/money"
+	"github.com/ezedike-evan/stelfin/ledger"
 	"github.com/ezedike-evan/stelfin/settlement"
 )
 
@@ -65,11 +66,12 @@ type Config struct {
 
 // Service prepares payments for approval.
 type Service struct {
-	pool     *pgxpool.Pool
-	decoder  Decoder
-	resolver *intent.Resolver
-	settle   *settlement.Client
-	cfg      Config
+	pool        *pgxpool.Pool
+	decoder     Decoder
+	resolver    *intent.Resolver
+	settle      *settlement.Client
+	ledgerStore *ledger.Store
+	cfg         Config
 }
 
 // NewService returns a Service.
@@ -82,7 +84,7 @@ func NewService(
 	if cfg.AssetCode == "" {
 		return nil, errors.New("api: asset code is required")
 	}
-	return &Service{pool: pool, decoder: d, resolver: r, settle: s, cfg: cfg}, nil
+	return &Service{pool: pool, decoder: d, resolver: r, settle: s, ledgerStore: ledger.New(pool), cfg: cfg}, nil
 }
 
 // Confirmation is what the user is asked to approve.

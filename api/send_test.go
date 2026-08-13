@@ -59,7 +59,9 @@ func (f *fakeHorizon) AccountDetail(req horizonclient.AccountRequest) (horizon.A
 func (f *fakeHorizon) SubmitTransactionWithOptions(
 	*txnbuild.Transaction, horizonclient.SubmitTxOpts,
 ) (horizon.Transaction, error) {
-	return horizon.Transaction{}, errors.New("not used")
+	return horizon.Transaction{
+		Hash: "provisioned", Ledger: 7, LedgerCloseTime: time.Unix(1700000000, 0),
+	}, nil
 }
 
 func (f *fakeHorizon) SubmitFeeBumpTransactionWithOptions(

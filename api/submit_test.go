@@ -21,6 +21,13 @@ func signWith(kp *keypair.Full) func(*txnbuild.FeeBumpTransaction) (*txnbuild.Fe
 	}
 }
 
+// signProvisionWith returns a provisioning signer for the given treasury key.
+func signProvisionWith(kp *keypair.Full) func(*txnbuild.Transaction) (*txnbuild.Transaction, error) {
+	return func(tx *txnbuild.Transaction) (*txnbuild.Transaction, error) {
+		return tx.Sign(network.TestNetworkPassphrase, kp)
+	}
+}
+
 // issueAndSign prepares a send and signs it as the user would.
 func issueAndSign(t *testing.T, f *fixture, userKey *keypair.Full) (*Confirmation, string) {
 	t.Helper()
