@@ -1,0 +1,13 @@
+.git/
+bin/
+*.exe
+*.test
+coverage.out
+coverage.html
+.vscode/
+.idea/
+.DS_Store
+DESIGN.md
+.env
+.env.*
+!.env.example

@@ -1,0 +1,83 @@
+# Render Blueprint. Creates the stelfind web service and its Postgres
+# database together — see https://render.com/docs/blueprint-spec.
+#
+# `sync: false` marks a value Render will prompt for in the dashboard
+# instead of reading from this file: every real secret is marked that way,
+# since this file is committed to the repo and nothing here should ever be
+# a live key, the same rule config.go enforces at startup.
+#
+# Free-tier note: Render's free web service instance type spins down after
+# 15 minutes without an inbound HTTP request. stelfind runs Horizon
+# ingestion continuously in a background goroutine inside the same process —
+# on the free tier that goroutine freezes with the rest of the process
+# whenever it spins down, so payments stop being indexed while it sleeps.
+# Fine for poking at a deploy; move to a paid instance type before this is
+# something a real user relies on being up.
+
+databases:
+  - name: stelfin-db
+    databaseName: stelfin
+    user: stelfin
+    plan: free # check Render's current free-tier expiry policy before relying on this
+
+services:
+  - type: web
+    name: stelfin
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter # free tier will not keep ingestion running — see note above
+    healthCheckPath: /health
+    envVars:
+      # Render injects PORT for the container to listen on; STELFIN_HTTP_ADDR
+      # must match it since the app does not read PORT itself.
+      - key: PORT
+        value: "10000"
+      - key: STELFIN_HTTP_ADDR
+        value: ":10000"
+
+      # Not known until the first deploy assigns a *.onrender.com URL (or a
+      # custom domain is attached) — set this in the dashboard afterward.
+      # Confirmation and enroll links carry payment/account authority, so
+      # this must be the real public URL, not a placeholder left stale.
+      - key: STELFIN_BASE_URL
+        sync: false
+
+      - key: STELFIN_DATABASE_URL
+        fromDatabase:
+          name: stelfin-db
+          property: connectionString
+
+      - key: STELFIN_NETWORK
+        value: testnet
+      - key: STELFIN_HORIZON_URL
+        value: https://horizon-testnet.stellar.org
+      - key: STELFIN_ASSET_CODE
+        value: USDC
+      - key: STELFIN_ASSET_ISSUER
+        sync: false
+
+      # Testnet-acceptable per config.go's own warning; move to an HSM/KMS
+      # signer before this ever points at mainnet.
+      - key: STELFIN_TREASURY_SEED
+        sync: false
+
+      - key: STELFIN_META_APP_SECRET
+        sync: false
+      - key: STELFIN_META_VERIFY_TOKEN
+        sync: false
+      - key: STELFIN_META_ACCESS_TOKEN
+        sync: false
+      - key: STELFIN_META_PHONE_NUMBER_ID
+        sync: false
+
+      # openssl rand -hex 32 — at least 32 bytes, signs both confirm and
+      # enroll links.
+      - key: STELFIN_CONFIRM_TOKEN_SECRET
+        sync: false
+
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: STELFIN_DECODER_EFFORT
+        value: ""
+      - key: STELFIN_SHUTDOWN_GRACE
+        value: 20s
