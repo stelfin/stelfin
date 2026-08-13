@@ -1,9 +1,8 @@
-// A dot-matrix world map with a handful of animated arcs radiating from
-// Lagos — the "message becomes a payment, anywhere" visual the hero needed
-// once the phone mockup came out. Deterministic (no Math.random) so server
-// and client render identically; the motion itself is native SVG
-// <animateMotion>, not JS, so this needs no "use client" and ships no extra
-// script.
+// A dot-matrix world map with animated arcs between several city pairs — "a
+// message becomes a payment, anywhere" as a visual instead of a device
+// screenshot. Deterministic (no Math.random) so server and client render
+// identically; the motion itself is native SVG <animateMotion>, not JS, so
+// this needs no "use client" and ships no extra script.
 
 interface Point {
   x: number;
@@ -11,7 +10,7 @@ interface Point {
 }
 
 // Rough continent silhouettes as simple polygons — stylised, not surveyed.
-// This is a faint background texture, not an atlas.
+// This is a background texture, not an atlas.
 const CONTINENTS: Point[][] = [
   // North America
   [
@@ -74,15 +73,24 @@ function buildDots(): Point[] {
 
 const DOTS = buildDots();
 
-// Lagos as the hub every arc radiates from — the product's actual target
-// market — reaching four points spanning the kind of distance "anywhere"
-// implies: London, New York, Dubai, Singapore.
-const LAGOS: Point = { x: 468, y: 272 };
-const DESTINATIONS: { point: Point; duration: string; delay: string }[] = [
-  { point: { x: 478, y: 92 }, duration: "3.2s", delay: "0s" }, // London
-  { point: { x: 182, y: 152 }, duration: "4s", delay: "0.8s" }, // New York
-  { point: { x: 622, y: 192 }, duration: "2.6s", delay: "1.6s" }, // Dubai
-  { point: { x: 782, y: 262 }, duration: "3.6s", delay: "2.4s" }, // Singapore
+// Six points, none of them the sole origin — traffic moves between varied
+// pairs, the way real corridors do, rather than fanning from one hub.
+const CITIES = {
+  lagos: { x: 468, y: 272 },
+  london: { x: 478, y: 92 },
+  newYork: { x: 182, y: 152 },
+  dubai: { x: 622, y: 192 },
+  singapore: { x: 782, y: 262 },
+  nairobi: { x: 560, y: 300 },
+};
+
+const ARCS: { from: Point; to: Point; duration: string; delay: string }[] = [
+  { from: CITIES.lagos, to: CITIES.london, duration: "3.2s", delay: "0s" },
+  { from: CITIES.newYork, to: CITIES.london, duration: "3.8s", delay: "0.6s" },
+  { from: CITIES.dubai, to: CITIES.singapore, duration: "2.8s", delay: "1.2s" },
+  { from: CITIES.lagos, to: CITIES.dubai, duration: "3.4s", delay: "1.8s" },
+  { from: CITIES.newYork, to: CITIES.lagos, duration: "4.2s", delay: "2.4s" },
+  { from: CITIES.singapore, to: CITIES.nairobi, duration: "3s", delay: "3s" },
 ];
 
 // Quadratic control point lifted above the midpoint — reads as a great-circle
@@ -103,28 +111,24 @@ export function WorldConnections() {
       aria-hidden="true"
     >
       {DOTS.map((d, i) => (
-        <circle key={i} cx={d.x} cy={d.y} r={1.6} className="fill-ink-900/[0.09]" />
+        <circle key={i} cx={d.x} cy={d.y} r={1.7} className="fill-ink-900/[0.22]" />
       ))}
 
-      {DESTINATIONS.map(({ point, duration, delay }, i) => {
-        const path = arcPath(LAGOS, point);
+      {ARCS.map(({ from, to, duration, delay }, i) => {
+        const path = arcPath(from, to);
         return (
           <g key={i}>
-            <path d={path} fill="none" stroke="currentColor" strokeWidth={1} className="text-accent-500/25" />
+            <path d={path} fill="none" stroke="currentColor" strokeWidth={1} className="text-accent-500/30" />
             <circle r={2.6} className="fill-accent-500">
               <animateMotion dur={duration} begin={delay} repeatCount="indefinite" path={path} />
             </circle>
-            <circle cx={point.x} cy={point.y} r={2.5} className="fill-accent-500/70" />
           </g>
         );
       })}
 
-      {/* Lagos — the origin every message becomes a payment from. */}
-      <circle cx={LAGOS.x} cy={LAGOS.y} r={4} className="fill-accent-500" />
-      <circle cx={LAGOS.x} cy={LAGOS.y} r={4} className="fill-accent-500/40">
-        <animate attributeName="r" values="4;16;4" dur="2.4s" repeatCount="indefinite" />
-        <animate attributeName="opacity" values="0.5;0;0.5" dur="2.4s" repeatCount="indefinite" />
-      </circle>
+      {Object.values(CITIES).map((c, i) => (
+        <circle key={i} cx={c.x} cy={c.y} r={2.8} className="fill-accent-500/80" />
+      ))}
     </svg>
   );
 }

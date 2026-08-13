@@ -89,21 +89,43 @@ function KeyLockAnimation() {
     </svg>
   );
 }
+// The checkmark draws itself onto the document, on a loop — "verified"
+// happening repeatedly, rather than a static check glyph.
 function ConfirmGlyph() {
   return (
     <svg viewBox="0 0 32 32" className="h-7 w-7" aria-hidden="true">
       <rect x="7" y="5" width="18" height="24" rx="2.5" stroke="currentColor" strokeWidth="1.5" fill="none" />
-      <path d="m11.5 17 4 4 7-9" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+      <path
+        d="m11.5 17 4 4 7-9"
+        pathLength={1}
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+        className="animate-check-draw"
+      />
     </svg>
   );
 }
+// A scan line sweeps the model's face, top to bottom, on a loop — reading
+// continuously, deciding nothing, matching "it extracts; it never
+// authorizes" in the copy beside it.
 function ModelGlyph() {
   return (
     <svg viewBox="0 0 32 32" className="h-7 w-7" aria-hidden="true">
+      <defs>
+        <clipPath id="model-face-clip">
+          <rect x="6" y="10" width="20" height="14" rx="4" />
+        </clipPath>
+      </defs>
       <rect x="6" y="10" width="20" height="14" rx="4" stroke="currentColor" strokeWidth="1.5" fill="none" />
       <circle cx="12.5" cy="17" r="1.6" fill="currentColor" />
       <circle cx="19.5" cy="17" r="1.6" fill="currentColor" />
       <path d="M16 10V6m-3 0h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <g clipPath="url(#model-face-clip)">
+        <rect x="6" y="10" width="20" height="3" fill="currentColor" className="animate-scan-sweep" />
+      </g>
     </svg>
   );
 }

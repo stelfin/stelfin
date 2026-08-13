@@ -14,7 +14,6 @@ export function Hero() {
 
   const headlineY = useTransform(scrollYProgress, [0, 1], [0, -40]);
   const mapOpacity = useTransform(scrollYProgress, [0, 1], [1, 0.3]);
-  const cueOpacity = useTransform(scrollYProgress, [0, 0.12], [1, 0]);
 
   return (
     <section ref={ref} className="relative overflow-hidden px-[10px] pt-[14px] sm:px-[72px] lg:h-screen">
@@ -25,21 +24,10 @@ export function Hero() {
 
       <div className="mx-auto flex h-full max-w-[900px] flex-col items-center justify-center px-6 py-24 text-center lg:py-0">
         <motion.div style={{ y: headlineY }} initial="hidden" animate="visible" className="flex flex-col items-center">
-          <motion.div
-            variants={fadeUp(0)}
-            className="mb-6 inline-flex items-center gap-2 rounded-full border border-ink-900/10 bg-white/70 px-3.5 py-1.5 text-xs font-medium text-ink-700 backdrop-blur-sm md:text-sm"
-          >
-            <span className="relative flex h-1.5 w-1.5">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-500 opacity-75" />
-              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-amber-500" />
-            </span>
-            Testnet demo — not yet accepting real funds
-          </motion.div>
-
           <MaskReveal
             as="h1"
             trigger="mount"
-            delay={0.12}
+            delay={0}
             text="Send stablecoins on Stellar, right from WhatsApp"
             accent="right from WhatsApp"
             className="justify-center text-center text-[44px] font-medium leading-[1.0] tracking-[-0.02em] text-ink-900 sm:text-[64px] md:text-[76px] lg:text-[92px]"
@@ -85,17 +73,6 @@ export function Hero() {
           </motion.div>
         </motion.div>
       </div>
-
-      <motion.div style={{ opacity: cueOpacity }} className="pointer-events-none absolute inset-x-0 bottom-6 hidden flex-col items-center gap-2 text-ink-400 lg:flex">
-        <span className="text-[10px] uppercase tracking-[0.22em]">Scroll</span>
-        <span className="flex h-7 w-[18px] justify-center rounded-full border border-ink-300/70 pt-1.5">
-          <motion.span
-            className="h-1.5 w-1 rounded-full bg-ink-400"
-            animate={{ y: [0, 6, 0], opacity: [1, 0.3, 1] }}
-            transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
-          />
-        </span>
-      </motion.div>
     </section>
   );
 }

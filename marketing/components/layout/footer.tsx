@@ -60,8 +60,11 @@ export function Footer() {
         <motion.span
           style={{
             y,
-            fontSize: "clamp(3rem, 14vw, 14rem)",
-            letterSpacing: "0.01em",
+            fontSize: "clamp(2.5rem, 9vw, 9rem)",
+            // Spread as wide as the wordmark can go while staying one line —
+            // it's meant to read as texture spanning the footer, not as a
+            // tightly-set logotype.
+            letterSpacing: "0.6em",
             maskImage: "linear-gradient(to bottom, transparent, black 55%)",
             WebkitMaskImage: "linear-gradient(to bottom, transparent, black 55%)",
           }}

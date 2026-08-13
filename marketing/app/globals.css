@@ -103,6 +103,32 @@ h1, h2, h3 {
 .animate-key-slide { animation: key-slide 3.6s ease-in-out infinite; transform-origin: 16px 13px; }
 .animate-lock-pulse { animation: lock-pulse 3.6s ease-in-out infinite; }
 
+/* Security pillar #2: a checkmark drawing itself onto the document, holding,
+   then fading to redraw — "verified", repeatedly. Uses pathLength="1" on the
+   check's own <path> so stroke-dasharray/dashoffset are trivial regardless
+   of the path's real geometry. */
+@keyframes check-draw {
+  0%   { stroke-dashoffset: 1; opacity: 0; }
+  10%  { opacity: 1; }
+  40%  { stroke-dashoffset: 0; }
+  75%  { stroke-dashoffset: 0; opacity: 1; }
+  92%  { opacity: 0; }
+  100% { stroke-dashoffset: 1; opacity: 0; }
+}
+.animate-check-draw { animation: check-draw 3.6s ease-in-out infinite; stroke-dasharray: 1; }
+
+/* Security pillar #3: a scan line sweeping the model's face, top to bottom —
+   reading continuously, deciding nothing. Clipped to the rounded rect so it
+   never spills past the glyph's own bounds. */
+@keyframes scan-sweep {
+  0%   { transform: translateY(0); opacity: 0; }
+  10%  { opacity: 0.4; }
+  50%  { transform: translateY(11px); opacity: 0.4; }
+  90%  { opacity: 0.4; }
+  100% { transform: translateY(0); opacity: 0; }
+}
+.animate-scan-sweep { animation: scan-sweep 3.6s ease-in-out infinite; }
+
 /* Faint grain — breaks up flat gradients so the hero doesn't look like a
    solid-color render. Kept extremely subtle (3.5% opacity). */
 .bg-grain {
