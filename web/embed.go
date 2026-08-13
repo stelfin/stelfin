@@ -65,10 +65,14 @@ func Handler() http.Handler {
 		h.Set("Cache-Control", "no-store")
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
 
-		// /confirm is the page itself; everything else is an asset.
-		if r.URL.Path == "/confirm" || r.URL.Path == "/confirm/" {
+		// /confirm and /enroll are pages; everything else is an asset.
+		switch r.URL.Path {
+		case "/confirm", "/confirm/":
 			r = r.Clone(r.Context())
 			r.URL.Path = "/confirm.html"
+		case "/enroll", "/enroll/":
+			r = r.Clone(r.Context())
+			r.URL.Path = "/enroll.html"
 		}
 		files.ServeHTTP(w, r)
 	})
