@@ -10,18 +10,24 @@ import (
 	"time"
 
 	"github.com/stellar/go-stellar-sdk/txnbuild"
+
+	"github.com/stelfin/stelfin/chat"
 )
 
 // ServerConfig wires the HTTP surface.
 type ServerConfig struct {
 	// BaseURL is where the confirmation page is served from.
 	BaseURL string
-	// Messenger delivers replies over WhatsApp.
-	Messenger Messenger
-	// AppSecret verifies webhook signatures.
-	AppSecret []byte
-	// VerifyToken answers Meta's subscription challenge.
-	VerifyToken string
+	// Transports holds the chat platforms this deployment serves. It both
+	// routes an inbound webhook to the transport that can authenticate it and
+	// delivers every reply — including the refusal to post a link carrying
+	// payment authority anywhere bystanders could tap it.
+	//
+	// A registry with no transports registered is valid: the HTTP surface still
+	// serves the signing pages, and /webhook/{channel} answers 404 for
+	// everything. That is the state between removing one platform and adding
+	// the next.
+	Transports *chat.Registry
 	// TreasuryAddress pays fees via fee-bump.
 	TreasuryAddress string
 	// SignFeeBump signs the treasury's outer envelope. It is a function rather
@@ -62,10 +68,6 @@ func NewServer(svc *Service, tokens *ConfirmTokens, enrollTokens *EnrollTokens, 
 		return nil, errors.New("api: confirmation tokens are required")
 	case enrollTokens == nil:
 		return nil, errors.New("api: enroll tokens are required")
-	case len(cfg.AppSecret) == 0:
-		return nil, errors.New("api: webhook app secret is required")
-	case cfg.VerifyToken == "":
-		return nil, errors.New("api: webhook verify token is required")
 	case cfg.TreasuryAddress == "":
 		return nil, errors.New("api: treasury address is required")
 	case cfg.SignFeeBump == nil:
@@ -74,8 +76,8 @@ func NewServer(svc *Service, tokens *ConfirmTokens, enrollTokens *EnrollTokens, 
 		return nil, errors.New("api: provisioning signer is required")
 	case cfg.BaseURL == "":
 		return nil, errors.New("api: base url is required")
-	case cfg.Messenger == nil:
-		return nil, errors.New("api: messenger is required")
+	case cfg.Transports == nil:
+		return nil, errors.New("api: transport registry is required")
 	case cfg.NetworkPassphrase == "":
 		return nil, errors.New("api: network passphrase is required")
 	}
@@ -90,8 +92,10 @@ func NewServer(svc *Service, tokens *ConfirmTokens, enrollTokens *EnrollTokens, 
 // Routes returns the HTTP handler.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /webhook/whatsapp", s.handleChallenge)
-	mux.HandleFunc("POST /webhook/whatsapp", s.handleInbound)
+	// One route for every platform. The channel is a path segment resolved by
+	// an exact lookup against the registry built at startup, so an unknown
+	// segment is a 404 before a single byte of the body is read.
+	mux.HandleFunc("POST /webhook/{channel}", s.handleWebhook)
 	mux.HandleFunc("GET /v1/confirm", s.handleConfirm)
 	mux.HandleFunc("POST /v1/submit", s.handleSubmit)
 	mux.HandleFunc("POST /v1/enroll", s.handleEnroll)
@@ -120,48 +124,46 @@ func (s *Server) Routes() http.Handler {
 // authorised against the wrong origin, so a constant is enough.
 const marketingURL = "https://stelfin.vercel.app"
 
-func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
-	challenge, err := VerifyChallenge(s.cfg.VerifyToken, r.URL.Query())
+// handleWebhook accepts a delivery from one chat platform.
+//
+// The order of the three steps is the security argument: nothing is parsed that
+// was not authenticated, nothing is acted on that was not parsed, and the
+// acknowledgement is written before any of the work begins.
+//
+// Acknowledging first is not an optimisation. Discord declares an interaction
+// failed if it has not been answered within three seconds, and Telegram retries
+// a slow response — which would start the same payment flow twice.
+func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
+	channel := chat.Channel(r.PathValue("channel"))
+	transport, ok := s.cfg.Transports.Lookup(channel)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	body, err := transport.Verify(r)
 	if err != nil {
 		// Deliberately terse: an unauthenticated caller learns only that it
 		// failed, not which check it failed.
-		s.log.Warn("webhook challenge refused", "error", err)
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-	w.Header().Set("Content-Type", "text/plain")
-	_, _ = w.Write([]byte(challenge))
-}
-
-// handleInbound accepts a verified webhook delivery.
-//
-// It acknowledges immediately and does the work afterwards. Meta retries on a
-// slow or failed response, so processing inline would turn one message into
-// several — and a payment flow is not something to run more than once per
-// message.
-func (s *Server) handleInbound(w http.ResponseWriter, r *http.Request) {
-	body, err := ReadVerifiedBody(s.cfg.AppSecret, r)
-	if err != nil {
-		s.log.Warn("webhook delivery refused", "error", err)
+		s.log.Warn("webhook delivery refused", "channel", channel, "error", err)
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
-	messages, err := ParseInbound(body)
+	delivery, err := transport.Parse(body)
 	if err != nil {
-		// The signature was valid, so this came from Meta — a shape we cannot
+		// It authenticated, so it came from the platform — a shape we cannot
 		// read is our problem to fix, not a request to reject. Acknowledge so
-		// Meta stops retrying something a retry will not fix.
-		s.log.Error("unparseable webhook payload", "error", err)
+		// the platform stops retrying something a retry will not fix.
+		s.log.Error("unparseable webhook delivery", "channel", channel, "error", err)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	// Acknowledge before doing the work. Meta retries a slow response, and a
-	// retry would start the same payment flow again.
-	w.WriteHeader(http.StatusOK)
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
+	writeAck(w, delivery.Ack)
+
+	if len(delivery.Messages) == 0 {
+		return
 	}
 
 	// The request context is cancelled once the handler returns, so the work
@@ -170,14 +172,34 @@ func (s *Server) handleInbound(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), inboundTimeout)
 		defer cancel()
 
-		for _, m := range messages {
-			if err := s.svc.HandleInbound(ctx, m, s.cfg.Messenger, s); err != nil {
+		for _, m := range delivery.Messages {
+			if err := s.svc.HandleInbound(ctx, m, s.cfg.Transports, s); err != nil {
 				// Logged, not retried: the message is already claimed, and
 				// replaying it would risk a second confirmation.
-				s.log.Error("inbound message failed", "message_id", m.ID, "error", err)
+				s.log.Error("inbound message failed",
+					"channel", channel, "dedupe_id", m.DedupeID, "error", err)
 			}
 		}
 	}()
+}
+
+// writeAck sends the platform's acknowledgement and flushes it, so the response
+// is on the wire before the work starts rather than when the handler returns.
+func writeAck(w http.ResponseWriter, ack chat.Ack) {
+	status := ack.Status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	if ack.ContentType != "" {
+		w.Header().Set("Content-Type", ack.ContentType)
+	}
+	w.WriteHeader(status)
+	if len(ack.Body) > 0 {
+		_, _ = w.Write(ack.Body)
+	}
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // inboundTimeout bounds work that outlives the request it arrived on.
@@ -346,7 +368,7 @@ func (s *Server) handleEnrollSubmit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// authoriseEnroll verifies the enroll token and reports the phone number it
+// authoriseEnroll verifies the enroll token and reports the owner it
 // authorises.
 func (s *Server) authoriseEnroll(w http.ResponseWriter, r *http.Request) (ownerRef string, ok bool) {
 	token := bearer(r.Header.Get("Authorization"))
@@ -401,7 +423,7 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, body any) {
 	}
 }
 
-// IssueConfirmLink mints the URL sent to a user over WhatsApp.
+// IssueConfirmLink mints the URL a reply carries payment authority through.
 //
 // The token goes in the fragment, not the query string: fragments are not sent
 // to the server on page load and do not appear in access logs, proxy logs, or
@@ -414,8 +436,8 @@ func (s *Server) IssueConfirmLink(ownerRef, hash string, expiresAt time.Time) (s
 	return strings.TrimSuffix(s.cfg.BaseURL, "/") + "/confirm#" + token, nil
 }
 
-// IssueEnrollLink mints the URL sent to a not-yet-enrolled user over
-// WhatsApp. Same fragment placement, same reasoning as IssueConfirmLink.
+// IssueEnrollLink mints the URL sent to a not-yet-enrolled user. Same fragment
+// placement, same reasoning as IssueConfirmLink.
 func (s *Server) IssueEnrollLink(ownerRef string, expiresAt time.Time) (string, error) {
 	token, err := s.enrollTokens.Issue(ownerRef, expiresAt)
 	if err != nil {
