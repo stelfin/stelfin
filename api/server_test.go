@@ -15,20 +15,31 @@ import (
 	"github.com/stellar/go-stellar-sdk/network"
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 
+	"github.com/stelfin/stelfin/chat"
+	"github.com/stelfin/stelfin/chat/chattest"
 	"github.com/stelfin/stelfin/web"
 )
 
-const testVerifyToken = "verify-me"
+// testTransports returns a registry carrying one fake transport, plus the fake
+// itself so a test can inspect what was delivered.
+func testTransports(t *testing.T) (*chat.Registry, *chattest.Fake) {
+	t.Helper()
+	f := chattest.NewFake(chat.Telegram)
+	reg, err := chat.NewRegistry("https://stelfin.example", f)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	return reg, f
+}
 
 func newServer(t *testing.T, f *fixture, treasury *keypair.Full) *Server {
 	t.Helper()
 	tokens := newTokens(t)
 	enrollTokens := newEnrollTokens(t)
+	transports, _ := testTransports(t)
 	srv, err := NewServer(f.svc, tokens, enrollTokens, ServerConfig{
 		BaseURL:           "https://stelfin.example",
-		Messenger:         &fakeMessenger{},
-		AppSecret:         testSecret,
-		VerifyToken:       testVerifyToken,
+		Transports:        transports,
 		TreasuryAddress:   treasury.Address(),
 		SignFeeBump:       signWith(treasury),
 		SignProvision:     signProvisionWith(treasury),
@@ -42,6 +53,14 @@ func newServer(t *testing.T, f *fixture, treasury *keypair.Full) *Server {
 	return srv
 }
 
+// mustRegistry returns a registry with one fake transport, for tests that do
+// not care which platform a message came from.
+func mustRegistry(t *testing.T) *chat.Registry {
+	t.Helper()
+	reg, _ := testTransports(t)
+	return reg
+}
+
 func do(t *testing.T, srv *Server, req *http.Request) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
@@ -49,53 +68,97 @@ func do(t *testing.T, srv *Server, req *http.Request) *httptest.ResponseRecorder
 	return rec
 }
 
-func TestChallengeEndpoint(t *testing.T) {
+// TestWebhookRoutesByChannel: the channel is a path segment, so an unknown one
+// must be refused by an exact lookup against the registry built at startup —
+// before a single byte of the body is read.
+func TestWebhookRoutesByChannel(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	srv := newServer(t, f, keypair.MustRandom())
 
-	req := httptest.NewRequest(http.MethodGet,
-		"/webhook/whatsapp?hub.mode=subscribe&hub.verify_token="+testVerifyToken+"&hub.challenge=42", nil)
-	rec := do(t, srv, req)
+	body := chattest.Envelope(t)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
+	authentic := chattest.SignedRequest(t, body)
+	if rec := do(t, srv, authentic); rec.Code != http.StatusOK {
+		t.Errorf("authenticated delivery status = %d, want 200", rec.Code)
 	}
-	if got := rec.Body.String(); got != "42" {
-		t.Errorf("body = %q, want %q", got, "42")
+
+	for _, path := range []string{"/webhook/discord", "/webhook/whatsapp", "/webhook/../etc", "/webhook/"} {
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+		req.Header.Set(chattest.FakeAuthHeader, chattest.FakeSecret)
+		if rec := do(t, srv, req); rec.Code == http.StatusOK {
+			t.Errorf("%s: status = %d, want a refusal for an unregistered channel", path, rec.Code)
+		}
 	}
 }
 
-func TestChallengeRejectsWrongToken(t *testing.T) {
+// TestWebhookRefusesUnauthenticatedDeliveries: verification runs before parsing
+// and before any work, and a caller that fails it learns only that it failed.
+func TestWebhookRefusesUnauthenticatedDeliveries(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	srv := newServer(t, f, keypair.MustRandom())
+	body := chattest.Envelope(t)
 
-	req := httptest.NewRequest(http.MethodGet,
-		"/webhook/whatsapp?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=42", nil)
-	if rec := do(t, srv, req); rec.Code != http.StatusForbidden {
+	unauthenticated := httptest.NewRequest(http.MethodPost, "/webhook/telegram", bytes.NewReader(body))
+	rec := do(t, srv, unauthenticated)
+	if rec.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want 403", rec.Code)
 	}
+	if strings.Contains(rec.Body.String(), "secret") || strings.Contains(rec.Body.String(), "header") {
+		t.Errorf("the refusal names which check failed: %q", rec.Body.String())
+	}
+
+	wrongSecret := httptest.NewRequest(http.MethodPost, "/webhook/telegram", bytes.NewReader(body))
+	wrongSecret.Header.Set(chattest.FakeAuthHeader, "not-the-secret")
+	if rec := do(t, srv, wrongSecret); rec.Code != http.StatusForbidden {
+		t.Errorf("wrong secret status = %d, want 403", rec.Code)
+	}
 }
 
-func TestInboundRequiresValidSignature(t *testing.T) {
+// TestWebhookAcknowledgesAnUnreadableDelivery: it authenticated, so it came
+// from the platform. A shape we cannot read is ours to fix, and retrying it
+// would not fix it — so acknowledge rather than invite a retry storm.
+func TestWebhookAcknowledgesAnUnreadableDelivery(t *testing.T) {
+	f := newFixture(t, sendDecoded())
+	tokens, enrollTokens := newTokens(t), newEnrollTokens(t)
+	treasury := keypair.MustRandom()
+
+	fake := chattest.NewFake(chat.Telegram)
+	fake.FailParse = true
+	reg, err := chat.NewRegistry("https://stelfin.example", fake)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	srv, err := NewServer(f.svc, tokens, enrollTokens, ServerConfig{
+		BaseURL: "https://stelfin.example", Transports: reg,
+		TreasuryAddress: treasury.Address(), SignFeeBump: signWith(treasury),
+		SignProvision:     signProvisionWith(treasury),
+		NetworkPassphrase: network.TestNetworkPassphrase,
+		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+
+	rec := do(t, srv, chattest.SignedRequest(t, chattest.Envelope(t)))
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 — a retry cannot fix a shape we cannot read", rec.Code)
+	}
+}
+
+// TestWebhookWritesThePlatformsAck: the acknowledgement comes from the
+// transport, not from this package. Discord answers an interaction with a JSON
+// body it will reject if it is wrong, and a bare 200 would fail the
+// three-second interaction deadline in a way nothing here would notice.
+func TestWebhookWritesThePlatformsAck(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	srv := newServer(t, f, keypair.MustRandom())
-	body := []byte(`{"entry":[]}`)
 
-	signed := httptest.NewRequest(http.MethodPost, "/webhook/whatsapp", bytes.NewReader(body))
-	signed.Header.Set("X-Hub-Signature-256", sign(testSecret, body))
-	if rec := do(t, srv, signed); rec.Code != http.StatusOK {
-		t.Errorf("signed delivery status = %d, want 200", rec.Code)
+	rec := do(t, srv, chattest.SignedRequest(t, chattest.Envelope(t)))
+	if got := rec.Body.String(); got != `{"ok":true}` {
+		t.Errorf("ack body = %q, want the transport's own", got)
 	}
-
-	unsigned := httptest.NewRequest(http.MethodPost, "/webhook/whatsapp", bytes.NewReader(body))
-	if rec := do(t, srv, unsigned); rec.Code != http.StatusForbidden {
-		t.Errorf("unsigned delivery status = %d, want 403", rec.Code)
-	}
-
-	forged := httptest.NewRequest(http.MethodPost, "/webhook/whatsapp", bytes.NewReader(body))
-	forged.Header.Set("X-Hub-Signature-256", sign([]byte("ffffffffffffffffffffffffffffffff"), body))
-	if rec := do(t, srv, forged); rec.Code != http.StatusForbidden {
-		t.Errorf("forged delivery status = %d, want 403", rec.Code)
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("ack content type = %q", got)
 	}
 }
 
@@ -371,8 +434,7 @@ func TestEnrollEndpoint(t *testing.T) {
 	tokens := newTokens(t)
 	enrollTokens := newEnrollTokens(t)
 	srv, err := NewServer(svc, tokens, enrollTokens, ServerConfig{
-		BaseURL: "https://stelfin.example", Messenger: &fakeMessenger{},
-		AppSecret: testSecret, VerifyToken: testVerifyToken,
+		BaseURL: "https://stelfin.example", Transports: mustRegistry(t),
 		TreasuryAddress: treasury.Address(), SignFeeBump: signWith(treasury), SignProvision: signProvisionWith(treasury),
 		NetworkPassphrase: network.TestNetworkPassphrase,
 		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -409,8 +471,7 @@ func TestEnrollSubmitEndpoint(t *testing.T) {
 	tokens := newTokens(t)
 	enrollTokens := newEnrollTokens(t)
 	srv, err := NewServer(svc, tokens, enrollTokens, ServerConfig{
-		BaseURL: "https://stelfin.example", Messenger: &fakeMessenger{},
-		AppSecret: testSecret, VerifyToken: testVerifyToken,
+		BaseURL: "https://stelfin.example", Transports: mustRegistry(t),
 		TreasuryAddress: treasury.Address(), SignFeeBump: signWith(treasury), SignProvision: signProvisionWith(treasury),
 		NetworkPassphrase: network.TestNetworkPassphrase,
 		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -450,15 +511,17 @@ func TestNewServerValidatesConfig(t *testing.T) {
 	treasury := keypair.MustRandom()
 
 	full := ServerConfig{
-		AppSecret:       testSecret,
-		VerifyToken:     testVerifyToken,
-		TreasuryAddress: treasury.Address(),
-		SignFeeBump:     signWith(treasury),
-		SignProvision:   signProvisionWith(treasury),
+		BaseURL:           "https://stelfin.example",
+		Transports:        mustRegistry(t),
+		NetworkPassphrase: network.TestNetworkPassphrase,
+		TreasuryAddress:   treasury.Address(),
+		SignFeeBump:       signWith(treasury),
+		SignProvision:     signProvisionWith(treasury),
 	}
 	for name, mutate := range map[string]func(*ServerConfig){
-		"no app secret":       func(c *ServerConfig) { c.AppSecret = nil },
-		"no verify token":     func(c *ServerConfig) { c.VerifyToken = "" },
+		"no transports":       func(c *ServerConfig) { c.Transports = nil },
+		"no base url":         func(c *ServerConfig) { c.BaseURL = "" },
+		"no network":          func(c *ServerConfig) { c.NetworkPassphrase = "" },
 		"no treasury":         func(c *ServerConfig) { c.TreasuryAddress = "" },
 		"no fee-bump signer":  func(c *ServerConfig) { c.SignFeeBump = nil },
 		"no provision signer": func(c *ServerConfig) { c.SignProvision = nil },
@@ -485,9 +548,7 @@ func TestConfirmPageIsServedWithAStrictPolicy(t *testing.T) {
 
 	srv, err := NewServer(f.svc, tokens, enrollTokens, ServerConfig{
 		BaseURL:           "https://stelfin.example",
-		Messenger:         &fakeMessenger{},
-		AppSecret:         testSecret,
-		VerifyToken:       testVerifyToken,
+		Transports:        mustRegistry(t),
 		TreasuryAddress:   treasury.Address(),
 		SignFeeBump:       signWith(treasury),
 		SignProvision:     signProvisionWith(treasury),
@@ -570,8 +631,7 @@ func TestStaticAssetsAreServed(t *testing.T) {
 	treasury := keypair.MustRandom()
 
 	srv, err := NewServer(f.svc, tokens, enrollTokens, ServerConfig{
-		BaseURL: "https://stelfin.example", Messenger: &fakeMessenger{},
-		AppSecret: testSecret, VerifyToken: testVerifyToken,
+		BaseURL: "https://stelfin.example", Transports: mustRegistry(t),
 		TreasuryAddress: treasury.Address(), SignFeeBump: signWith(treasury), SignProvision: signProvisionWith(treasury),
 		NetworkPassphrase: network.TestNetworkPassphrase,
 		Assets:            web.Handler(),

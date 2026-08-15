@@ -11,32 +11,42 @@ import (
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 
 	"github.com/stelfin/stelfin/api/intent"
+	"github.com/stelfin/stelfin/chat"
 	"github.com/stelfin/stelfin/settlement"
 )
 
-// fakeMessenger records replies instead of sending them.
-type fakeMessenger struct {
+// fakeReplier records replies instead of sending them.
+type fakeReplier struct {
 	mu   sync.Mutex
-	sent []struct{ To, Body string }
+	sent []chat.Reply
 	err  error
 }
 
-func (m *fakeMessenger) Send(_ context.Context, to, body string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.err != nil {
-		return m.err
+func (r *fakeReplier) Send(_ context.Context, _ chat.Conversation, _ chat.Actor, m chat.Reply) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.err != nil {
+		return r.err
 	}
-	m.sent = append(m.sent, struct{ To, Body string }{to, body})
+	r.sent = append(r.sent, m)
 	return nil
 }
 
-func (m *fakeMessenger) messages() []struct{ To, Body string } {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]struct{ To, Body string }, len(m.sent))
-	copy(out, m.sent)
-	return out
+func (r *fakeReplier) replies() []chat.Reply {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]chat.Reply(nil), r.sent...)
+}
+
+// only returns the single reply a test expects, failing if there was any other
+// number of them.
+func (r *fakeReplier) only(t *testing.T) chat.Reply {
+	t.Helper()
+	sent := r.replies()
+	if len(sent) != 1 {
+		t.Fatalf("sent %d replies, want 1", len(sent))
+	}
+	return sent[0]
 }
 
 // stubLinker mints predictable links so replies can be asserted on.
@@ -50,92 +60,39 @@ func (stubLinker) IssueEnrollLink(ownerRef string, _ time.Time) (string, error) 
 	return "https://stelfin.example/enroll#token-for-" + ownerRef, nil
 }
 
-const metaTextPayload = `{
-  "object": "whatsapp_business_account",
-  "entry": [{
-    "id": "123",
-    "changes": [{
-      "field": "messages",
-      "value": {
-        "messaging_product": "whatsapp",
-        "messages": [{
-          "id": "wamid.ABC",
-          "from": "2348012345678",
-          "timestamp": "1700000000",
-          "type": "text",
-          "text": {"body": "send 5,000 to brother"}
-        }]
-      }
-    }]
-  }]
-}`
-
-func TestParseInbound(t *testing.T) {
-	got, err := ParseInbound([]byte(metaTextPayload))
-	if err != nil {
-		t.Fatalf("ParseInbound: %v", err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("got %d messages, want 1", len(got))
-	}
-	if got[0].ID != "wamid.ABC" || got[0].From != "2348012345678" {
-		t.Errorf("message = %+v", got[0])
-	}
-	if got[0].Text != "send 5,000 to brother" {
-		t.Errorf("text = %q", got[0].Text)
-	}
+// actorFor derives a stable actor for a test. Its Ref is the owner reference
+// the fixture is keyed on, so a test's messages and its ledger rows agree.
+func actorFor(t *testing.T) chat.Actor {
+	t.Helper()
+	return chat.Actor{Channel: chat.Telegram, UserID: t.Name(), Handle: "tester"}
 }
 
-// TestParseInboundSkipsWhatWeCannotAct: status callbacks and non-text messages
-// are ordinary deliveries, not failures. Erroring on them would make the
-// webhook look broken during normal operation.
-func TestParseInboundSkipsWhatWeCannotAct(t *testing.T) {
-	cases := map[string]string{
-		"status callback": `{"entry":[{"changes":[{"field":"statuses","value":{
-			"statuses":[{"id":"wamid.X","status":"delivered"}]}}]}]}`,
-		"audio message": `{"entry":[{"changes":[{"field":"messages","value":{
-			"messages":[{"id":"wamid.Y","from":"234801","type":"audio","audio":{"id":"a"}}]}}]}]}`,
-		"no message id": `{"entry":[{"changes":[{"field":"messages","value":{
-			"messages":[{"from":"234801","type":"text","text":{"body":"hi"}}]}}]}]}`,
-		"empty entry": `{"entry":[]}`,
-		"no entry":    `{"object":"whatsapp_business_account"}`,
-	}
-	for name, body := range cases {
-		got, err := ParseInbound([]byte(body))
-		if err != nil {
-			t.Errorf("%s: ParseInbound returned an error: %v", name, err)
-			continue
-		}
-		if len(got) != 0 {
-			t.Errorf("%s: got %d messages, want 0", name, len(got))
-		}
-	}
-}
-
-func TestParseInboundRejectsGarbage(t *testing.T) {
-	if _, err := ParseInbound([]byte("not json")); err == nil {
-		t.Fatal("expected an error for an unparseable payload")
+// inboundFor builds a message from an actor, in a group rather than a DM: the
+// harder case, and the one every reply-visibility rule exists for.
+func inboundFor(a chat.Actor, dedupeID, text string) chat.Inbound {
+	return chat.Inbound{
+		DedupeID: dedupeID,
+		Actor:    a,
+		Conversation: chat.Conversation{
+			Channel: a.Channel,
+			SpaceID: "-1001234567890",
+		},
+		Args:       text,
+		ReceivedAt: time.Now(),
 	}
 }
 
 func TestHandleInboundRepliesWithAConfirmLink(t *testing.T) {
-	// Meta reports the sender without a leading '+', and HandleInbound
-	// normalizes to E.164 — so the fixture's user must be keyed the same way.
-	phone := phoneFor(t)
-	f := newFixtureFor(t, sendDecoded(), phone)
-	msgr := &fakeMessenger{}
+	actor := actorFor(t)
+	f := newFixtureFor(t, sendDecoded(), actor.Ref())
+	out := &fakeReplier{}
 
-	msg := InboundMessage{ID: "wamid.1", From: strings.TrimPrefix(phone, "+"), Text: sendMessage}
-
-	if err := f.svc.HandleInbound(t.Context(), msg, msgr, stubLinker{}); err != nil {
+	msg := inboundFor(actor, "telegram:1", sendMessage)
+	if err := f.svc.HandleInbound(t.Context(), msg, out, stubLinker{}); err != nil {
 		t.Fatalf("HandleInbound: %v", err)
 	}
 
-	sent := msgr.messages()
-	if len(sent) != 1 {
-		t.Fatalf("sent %d replies, want 1", len(sent))
-	}
-	body := sent[0].Body
+	body := out.only(t).Text
 	for _, want := range []string{"5,000.00", "USDC", "Brother", "confirm#token-for-"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("reply does not mention %q:\n%s", want, body)
@@ -148,31 +105,94 @@ func TestHandleInboundRepliesWithAConfirmLink(t *testing.T) {
 	}
 }
 
-// TestHandleInboundIsIdempotent: Meta retries deliveries, and one instruction
-// must not produce two confirmations.
+// TestRepliesAreAlwaysEphemeral is the group-chat rule.
+//
+// A confirmation link is single-use payment authority, and the messages that do
+// not carry one still quote the user's payment instruction back at them.
+// Neither belongs in a room several hundred people can read. The registry
+// refuses an authority link that reaches it without this flag, but the flag has
+// to be set here for that refusal never to fire in production.
+func TestRepliesAreAlwaysEphemeral(t *testing.T) {
+	actor := actorFor(t)
+	f := newFixtureFor(t, sendDecoded(), actor.Ref())
+	out := &fakeReplier{}
+
+	// One success and one failure, so both reply paths are covered.
+	if err := f.svc.HandleInbound(t.Context(), inboundFor(actor, "telegram:ok", sendMessage), out, stubLinker{}); err != nil {
+		t.Fatalf("HandleInbound: %v", err)
+	}
+	if err := f.svc.replyWithProblem(t.Context(), out, inboundFor(actor, "telegram:bad", "x"),
+		intent.ErrDestinationNotFound); err != nil {
+		t.Fatalf("replyWithProblem: %v", err)
+	}
+
+	for i, m := range out.replies() {
+		if !m.Ephemeral {
+			t.Errorf("reply %d was not ephemeral:\n%s", i, m.Text)
+		}
+	}
+}
+
+// TestHandleInboundIsIdempotent: platforms retry deliveries, and one
+// instruction must not produce two confirmations.
 func TestHandleInboundIsIdempotent(t *testing.T) {
-	phone := phoneFor(t)
-	f := newFixtureFor(t, sendDecoded(), phone)
-	msgr := &fakeMessenger{}
-	msg := InboundMessage{ID: "wamid.dup", From: strings.TrimPrefix(phone, "+"), Text: sendMessage}
+	actor := actorFor(t)
+	f := newFixtureFor(t, sendDecoded(), actor.Ref())
+	out := &fakeReplier{}
+	msg := inboundFor(actor, "telegram:dup", sendMessage)
 
 	for i := 0; i < 3; i++ {
-		if err := f.svc.HandleInbound(t.Context(), msg, msgr, stubLinker{}); err != nil {
+		if err := f.svc.HandleInbound(t.Context(), msg, out, stubLinker{}); err != nil {
 			t.Fatalf("delivery %d: %v", i, err)
 		}
 	}
-	if got := len(msgr.messages()); got != 1 {
+	if got := len(out.replies()); got != 1 {
 		t.Errorf("sent %d replies for 3 deliveries of one message, want 1", got)
+	}
+}
+
+// TestDedupeIsChannelScoped: the same numeric id on two platforms is two
+// different messages from two different people, and collapsing them would drop
+// one of them silently.
+func TestDedupeIsChannelScoped(t *testing.T) {
+	actor := actorFor(t)
+	f := newFixtureFor(t, sendDecoded(), actor.Ref())
+	out := &fakeReplier{}
+
+	for _, id := range []string{"telegram:7", "discord:7"} {
+		if err := f.svc.HandleInbound(t.Context(), inboundFor(actor, id, sendMessage), out, stubLinker{}); err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+	}
+	if got := len(out.replies()); got != 2 {
+		t.Errorf("sent %d replies for two messages from different platforms, want 2", got)
+	}
+}
+
+// TestHandleInboundRefusesAMessageWithNoDedupeID: without one, the claim that
+// makes retries safe cannot be made, so the message must not be processed at
+// all rather than processed unprotected.
+func TestHandleInboundRefusesAMessageWithNoDedupeID(t *testing.T) {
+	actor := actorFor(t)
+	f := newFixtureFor(t, sendDecoded(), actor.Ref())
+	out := &fakeReplier{}
+
+	msg := inboundFor(actor, "", sendMessage)
+	if err := f.svc.HandleInbound(t.Context(), msg, out, stubLinker{}); err == nil {
+		t.Fatal("a message with no dedupe id was accepted")
+	}
+	if got := len(out.replies()); got != 0 {
+		t.Errorf("sent %d replies for a message that should not have been processed", got)
 	}
 }
 
 // TestConcurrentDeliveriesReplyOnce: two retries arriving together must not
 // both win the claim.
 func TestConcurrentDeliveriesReplyOnce(t *testing.T) {
-	phone := phoneFor(t)
-	f := newFixtureFor(t, sendDecoded(), phone)
-	msgr := &fakeMessenger{}
-	msg := InboundMessage{ID: "wamid.race", From: strings.TrimPrefix(phone, "+"), Text: sendMessage}
+	actor := actorFor(t)
+	f := newFixtureFor(t, sendDecoded(), actor.Ref())
+	out := &fakeReplier{}
+	msg := inboundFor(actor, "telegram:race", sendMessage)
 
 	const workers = 8
 	var wg sync.WaitGroup
@@ -180,14 +200,14 @@ func TestConcurrentDeliveriesReplyOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := f.svc.HandleInbound(context.Background(), msg, msgr, stubLinker{}); err != nil {
+			if err := f.svc.HandleInbound(context.Background(), msg, out, stubLinker{}); err != nil {
 				t.Errorf("HandleInbound: %v", err)
 			}
 		}()
 	}
 	wg.Wait()
 
-	if got := len(msgr.messages()); got != 1 {
+	if got := len(out.replies()); got != 1 {
 		t.Errorf("sent %d replies for %d concurrent deliveries, want 1", got, workers)
 	}
 }
@@ -220,31 +240,27 @@ func TestHandleInboundExplainsFailures(t *testing.T) {
 				decoded.Action.Text = "hello"
 			}
 
-			phone := phoneFor(t)
-			f := newFixtureFor(t, decoded, phone)
-			msgr := &fakeMessenger{}
-			msg := InboundMessage{ID: "wamid." + name, From: strings.TrimPrefix(phone, "+"), Text: c.message}
+			actor := actorFor(t)
+			f := newFixtureFor(t, decoded, actor.Ref())
+			out := &fakeReplier{}
 
-			if err := f.svc.HandleInbound(t.Context(), msg, msgr, stubLinker{}); err != nil {
+			msg := inboundFor(actor, "telegram:"+name, c.message)
+			if err := f.svc.HandleInbound(t.Context(), msg, out, stubLinker{}); err != nil {
 				t.Fatalf("HandleInbound: %v", err)
 			}
-			sent := msgr.messages()
-			if len(sent) != 1 {
-				t.Fatalf("sent %d replies, want 1", len(sent))
-			}
-			if !strings.Contains(sent[0].Body, c.want) {
-				t.Errorf("reply %q does not contain %q", sent[0].Body, c.want)
+			if body := out.only(t).Text; !strings.Contains(body, c.want) {
+				t.Errorf("reply %q does not contain %q", body, c.want)
 			}
 		})
 	}
 }
 
-// TestHandleInboundOffersEnrollmentBeforeAnAccountExists: an unenrolled phone
-// number gets a wallet-creation link instead of stelfin trying — and failing
-// — to decode a payment it has no "from" account to build.
+// TestHandleInboundOffersEnrollmentBeforeAnAccountExists: an owner with no
+// account gets a wallet-creation link instead of stelfin trying — and failing —
+// to decode a payment it has no "from" account to build.
 func TestHandleInboundOffersEnrollmentBeforeAnAccountExists(t *testing.T) {
 	ctx := context.Background()
-	owner := t.Name()
+	actor := actorFor(t)
 
 	settle, err := settlement.NewWith(&fakeHorizon{sequence: 1}, settlement.Config{
 		HorizonURL:        "https://horizon-testnet.stellar.org",
@@ -260,21 +276,18 @@ func TestHandleInboundOffersEnrollmentBeforeAnAccountExists(t *testing.T) {
 		t.Fatalf("new service: %v", err)
 	}
 
-	msgr := &fakeMessenger{}
-	msg := InboundMessage{ID: "wamid.enroll", From: strings.TrimPrefix(owner, "+"), Text: sendMessage}
-	if err := svc.HandleInbound(ctx, msg, msgr, stubLinker{}); err != nil {
+	out := &fakeReplier{}
+	msg := inboundFor(actor, "telegram:enroll", sendMessage)
+	if err := svc.HandleInbound(ctx, msg, out, stubLinker{}); err != nil {
 		t.Fatalf("HandleInbound: %v", err)
 	}
 
-	sent := msgr.messages()
-	if len(sent) != 1 {
-		t.Fatalf("sent %d replies, want 1", len(sent))
+	body := out.only(t).Text
+	if !strings.Contains(body, "/enroll#") {
+		t.Errorf("reply does not carry an enroll link:\n%s", body)
 	}
-	if !strings.Contains(sent[0].Body, "/enroll#") {
-		t.Errorf("reply does not carry an enroll link:\n%s", sent[0].Body)
-	}
-	if strings.Contains(sent[0].Body, "confirm#") {
-		t.Errorf("an unenrolled user was offered a payment confirmation:\n%s", sent[0].Body)
+	if strings.Contains(body, "confirm#") {
+		t.Errorf("an owner with no account was offered a payment confirmation:\n%s", body)
 	}
 }
 
@@ -284,15 +297,15 @@ func TestFailureRepliesNeverLeakInternals(t *testing.T) {
 	decoded := sendDecoded()
 	decoded.Destination.Text = "landlord"
 
-	phone := phoneFor(t)
-	f := newFixtureFor(t, decoded, phone)
-	msgr := &fakeMessenger{}
-	msg := InboundMessage{ID: "wamid.leak", From: strings.TrimPrefix(phone, "+"), Text: "send 5,000 to landlord"}
+	actor := actorFor(t)
+	f := newFixtureFor(t, decoded, actor.Ref())
+	out := &fakeReplier{}
 
-	if err := f.svc.HandleInbound(t.Context(), msg, msgr, stubLinker{}); err != nil {
+	msg := inboundFor(actor, "telegram:leak", "send 5,000 to landlord")
+	if err := f.svc.HandleInbound(t.Context(), msg, out, stubLinker{}); err != nil {
 		t.Fatalf("HandleInbound: %v", err)
 	}
-	body := msgr.messages()[0].Body
+	body := out.only(t).Text
 	for _, leak := range []string{"intent:", "api:", "ledger:", "SQLSTATE", "pgx", "G" + strings.Repeat("A", 55)} {
 		if strings.Contains(body, leak) {
 			t.Errorf("reply leaks %q:\n%s", leak, body)

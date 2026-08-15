@@ -1,13 +1,7 @@
 package api
 
 import (
-	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -133,126 +127,8 @@ func TestConfirmTokenRejectsNULInFields(t *testing.T) {
 	}
 }
 
-func sign(secret, body []byte) string {
-	mac := hmac.New(sha256.New, secret)
-	mac.Write(body)
-	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
-}
-
-func TestVerifySignature(t *testing.T) {
-	body := []byte(`{"entry":[{"changes":[]}]}`)
-	if err := VerifySignature(testSecret, sign(testSecret, body), body); err != nil {
-		t.Fatalf("VerifySignature: %v", err)
-	}
-}
-
-func TestVerifySignatureRejects(t *testing.T) {
-	body := []byte(`{"entry":[]}`)
-	valid := sign(testSecret, body)
-
-	cases := map[string]struct {
-		header string
-		body   []byte
-		want   error
-	}{
-		"missing header":   {"", body, ErrSignatureMissing},
-		"wrong secret":     {sign([]byte("ffffffffffffffffffffffffffffffff"), body), body, ErrSignatureInvalid},
-		"tampered body":    {valid, []byte(`{"entry":[{"evil":true}]}`), ErrSignatureInvalid},
-		"no algorithm":     {strings.TrimPrefix(valid, "sha256="), body, ErrSignatureInvalid},
-		"downgraded algo":  {"sha1=" + strings.TrimPrefix(valid, "sha256="), body, ErrSignatureInvalid},
-		"not hex":          {"sha256=zzzz", body, ErrSignatureInvalid},
-		"empty digest":     {"sha256=", body, ErrSignatureInvalid},
-		"truncated digest": {valid[:len(valid)-2], body, ErrSignatureInvalid},
-	}
-	for name, c := range cases {
-		if err := VerifySignature(testSecret, c.header, c.body); !errors.Is(err, c.want) {
-			t.Errorf("%s: error = %v, want %v", name, err, c.want)
-		}
-	}
-}
-
-// TestVerifySignatureCoversRawBytes pins the mistake that breaks most webhook
-// implementations: verifying re-serialized JSON instead of the bytes received.
-// These two bodies are the same object and different bytes.
-func TestVerifySignatureCoversRawBytes(t *testing.T) {
-	received := []byte(`{"b":1,"a":2}`)
-	reserialized := []byte(`{"a":2,"b":1}`)
-
-	header := sign(testSecret, received)
-	if err := VerifySignature(testSecret, header, received); err != nil {
-		t.Fatalf("raw bytes should verify: %v", err)
-	}
-	if err := VerifySignature(testSecret, header, reserialized); !errors.Is(err, ErrSignatureInvalid) {
-		t.Error("re-serialized JSON verified against the raw-body signature; " +
-			"a implementation that parses before verifying would appear to work and would not be checking anything")
-	}
-}
-
-func TestReadVerifiedBody(t *testing.T) {
-	body := []byte(`{"entry":[]}`)
-	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
-	req.Header.Set("X-Hub-Signature-256", sign(testSecret, body))
-
-	got, err := ReadVerifiedBody(testSecret, req)
-	if err != nil {
-		t.Fatalf("ReadVerifiedBody: %v", err)
-	}
-	if !bytes.Equal(got, body) {
-		t.Errorf("body = %q, want %q", got, body)
-	}
-}
-
-// TestReadVerifiedBodyBoundsSize: the endpoint is unauthenticated until the
-// signature is checked, so an unbounded read is a way to exhaust memory
-// without ever presenting a credential.
-func TestReadVerifiedBodyBoundsSize(t *testing.T) {
-	huge := bytes.Repeat([]byte("a"), int(MaxWebhookBody)+1)
-	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(huge))
-	req.Header.Set("X-Hub-Signature-256", sign(testSecret, huge))
-
-	if _, err := ReadVerifiedBody(testSecret, req); err == nil {
-		t.Fatal("expected an oversized body to be refused")
-	}
-}
-
-func TestVerifyChallenge(t *testing.T) {
-	query := map[string][]string{
-		"hub.mode":         {"subscribe"},
-		"hub.verify_token": {"correct-token"},
-		"hub.challenge":    {"1158201444"},
-	}
-	got, err := VerifyChallenge("correct-token", query)
-	if err != nil {
-		t.Fatalf("VerifyChallenge: %v", err)
-	}
-	if got != "1158201444" {
-		t.Errorf("challenge = %q, want %q", got, "1158201444")
-	}
-}
-
-func TestVerifyChallengeRejects(t *testing.T) {
-	base := func() map[string][]string {
-		return map[string][]string{
-			"hub.mode":         {"subscribe"},
-			"hub.verify_token": {"correct-token"},
-			"hub.challenge":    {"123"},
-		}
-	}
-
-	for name, mutate := range map[string]func(map[string][]string){
-		"wrong token":   func(q map[string][]string) { q["hub.verify_token"] = []string{"wrong"} },
-		"missing token": func(q map[string][]string) { delete(q, "hub.verify_token") },
-		"wrong mode":    func(q map[string][]string) { q["hub.mode"] = []string{"unsubscribe"} },
-		"no challenge":  func(q map[string][]string) { delete(q, "hub.challenge") },
-	} {
-		q := base()
-		mutate(q)
-		if _, err := VerifyChallenge("correct-token", q); err == nil {
-			t.Errorf("%s: expected an error", name)
-		}
-	}
-}
-
+// flipLast changes the last character of a token component, so a test can
+// present something that is the right shape and the wrong value.
 func flipLast(s string) string {
 	if s == "" {
 		return "x"
