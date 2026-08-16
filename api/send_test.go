@@ -103,13 +103,13 @@ func newFixture(t *testing.T, decoded intent.Decoded) *fixture {
 	return newFixtureFor(t, decoded, t.Name())
 }
 
-// phoneFor derives a stable, unique E.164 number for a test, so tests whose
-// flow goes through phone-shaped owner refs do not collide with each other.
-func phoneFor(t *testing.T) string {
+// ownerFor derives a stable, unique owner reference for a test, in the shape a
+// chat platform produces: channel-scoped, opaque, and never a phone number.
+func ownerFor(t *testing.T) string {
 	t.Helper()
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(t.Name()))
-	return fmt.Sprintf("+234%010d", h.Sum64()%1_0000_000_000)
+	return fmt.Sprintf("telegram:%d", h.Sum64()%1_0000_000_000)
 }
 
 func newFixtureFor(t *testing.T, decoded intent.Decoded, owner string) *fixture {

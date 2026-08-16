@@ -31,7 +31,7 @@ func newUnenrolledService(t *testing.T) (*Service, string) {
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
-	return svc, phoneFor(t)
+	return svc, ownerFor(t)
 }
 
 // prepareAndSign runs PrepareEnrollment and signs the returned envelope as
