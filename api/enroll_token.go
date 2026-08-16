@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Enroll tokens authorise one phone number to create its Stellar account.
+// Enroll tokens authorise one owner to create their Stellar account.
 //
 // Structurally identical to ConfirmTokens — same fragment-borne, stateless,
 // expiring HMAC scheme — but versioned separately ("e1" instead of "v1") so

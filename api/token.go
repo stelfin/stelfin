@@ -13,7 +13,7 @@ import (
 
 // Confirm tokens authorise one user to sign and submit one transaction.
 //
-// A user arrives at the confirmation page from a WhatsApp link, with no
+// A user arrives at the confirmation page from a link sent in chat, with no
 // session and no cookie. The link itself has to carry the authority — so it is
 // scoped as narrowly as the job allows: a token names exactly one transaction
 // hash and expires with it. A leaked link cannot be used to send a different

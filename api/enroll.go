@@ -14,13 +14,13 @@ import (
 )
 
 // Enrollment turns a fresh device-generated keypair into a live, funded-by-
-// sponsorship Stellar account, and stelfin's record of which phone number it
+// sponsorship Stellar account, and stelfin's record of which owner it
 // belongs to.
 //
 // It follows the same two-step shape as a payment: PrepareEnrollment builds
 // an unsigned transaction and records it pending the user's signature;
 // SubmitEnrollment accepts the signed envelope, submits it, and only then
-// creates the account stelfin will recognise. Nothing about a phone number
+// creates the account stelfin will recognise. Nothing about an owner
 // having "an account" is true until the chain says so.
 //
 // Unlike a payment, the treasury is this transaction's own source account —
@@ -28,7 +28,7 @@ import (
 // fee-bump wrapper: the treasury signs the transaction itself, once, at
 // submit time.
 
-// ErrAlreadyEnrolled reports a phone number that already has a Stellar
+// ErrAlreadyEnrolled reports an owner that already has a Stellar
 // account. Re-enrolling would either be a no-op or, worse, silently orphan an
 // existing account's funds behind a mapping nothing points at any more.
 var ErrAlreadyEnrolled = errors.New("api: user already has a stellar account")
@@ -118,7 +118,7 @@ func (s *Service) PrepareEnrollment(
 }
 
 // recordPendingEnrollment stores the built transaction so its later
-// submission can be authorised. A phone number may have only one outstanding
+// submission can be authorised. An owner may have only one outstanding
 // enrollment: a repeat call (a reloaded enroll page, a regenerated device
 // key) supersedes whatever was pending before, rather than accumulating
 // orphaned attempts. This is not the same as an idempotent retry — the
@@ -157,7 +157,7 @@ type EnrollResult struct {
 }
 
 // SubmitEnrollment accepts the user-signed provisioning envelope, submits it,
-// and on success creates the ledger account and phone-to-address mapping that
+// and on success creates the ledger account and owner-to-address mapping that
 // make the user recognisable to the rest of the system.
 //
 // signedXDR must be the envelope PrepareEnrollment issued, now carrying the
@@ -278,10 +278,10 @@ func (s *Service) explainEnrollRefusal(ctx context.Context, ownerRef, hash strin
 	}
 }
 
-// finalizeEnrollment creates the ledger account and the phone-to-address
+// finalizeEnrollment creates the ledger account and the owner-to-address
 // mapping that make ownerRef resolvable — by PrepareSend's stellarAddress
-// lookup, and by intent.Resolver's send-to-phone-number path — now that the
-// chain has confirmed the account is real.
+// lookup, and by ingestion when a payment arrives — now that the chain has
+// confirmed the account is real.
 func (s *Service) finalizeEnrollment(ctx context.Context, ownerRef, address string) error {
 	accountID, err := s.ledgerStore.EnsureAccount(ctx, ledger.AccountUser, ownerRef, ownerRef)
 	if err != nil {
