@@ -15,7 +15,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/stelfind ./cmd/stelfind
 
 # distroless "static" carries CA certificates (Horizon, the Anthropic API and
-# the Meta Graph API are all called over HTTPS) and a built-in non-root user,
+# the chat platform APIs are all called over HTTPS) and a built-in non-root user,
 # nothing else — no shell, no package manager, no attack surface beyond the
 # binary itself.
 FROM gcr.io/distroless/static-debian12:nonroot

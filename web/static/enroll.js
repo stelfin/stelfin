@@ -24,7 +24,7 @@
   history.replaceState(null, "", location.pathname);
 
   if (!token) {
-    fail("This link is incomplete.", "Open the link from your WhatsApp message again.");
+    fail("This link is incomplete.", "Open the link from your chat message again.");
     return;
   }
 
@@ -128,7 +128,7 @@
         button.disabled = false;
         button.textContent = "Create wallet";
         if (err.status === 409) {
-          fail("This wallet has already been created.", "You can close this page and go back to WhatsApp.");
+          fail("This wallet has already been created.", "You can close this page and go back to your chat.");
         } else if (err.status === 410) {
           fail("This request expired before it was sent.", "Message stelfin again to start over.");
         } else {
