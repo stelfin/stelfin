@@ -13,7 +13,7 @@ import (
 //
 // A bare Stellar account needs 1 XLM of base reserve, plus 0.5 XLM per
 // trustline, and cannot receive USDC at all until it trusts the issuer. A new
-// WhatsApp user has none of that. CAP-33 sponsored reserves let the treasury
+// new member has none of that. CAP-33 sponsored reserves let the treasury
 // carry the reserve while the user's account holds exactly zero XLM, and CAP-15
 // fee-bumps let them transact without ever paying a fee.
 //

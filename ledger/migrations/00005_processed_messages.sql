@@ -1,12 +1,13 @@
 -- +goose Up
 
--- Every inbound WhatsApp message this server has already acted on.
+-- Every inbound chat message this server has already acted on.
 --
--- Meta retries a delivery that is slow or fails, and the same message id
+-- A platform retries a delivery that is slow or fails, and the same id
 -- arrives again. Without this, one message could start two payment flows and
 -- the user would be shown two confirmations for one instruction.
 --
--- The message id is Meta's (`wamid...`), which is stable across retries. It is
+-- The id is the platform's own, prefixed by channel, and is stable across
+-- retries. It is
 -- the primary key, so claiming a message is an insert that either succeeds
 -- once or conflicts — there is no read-then-write window for a concurrent
 -- retry to slip through.

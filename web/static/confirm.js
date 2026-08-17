@@ -24,7 +24,7 @@
   history.replaceState(null, "", location.pathname);
 
   if (!token) {
-    fail("This link is incomplete.", "Open the link from your WhatsApp message again.");
+    fail("This link is incomplete.", "Open the link from your chat message again.");
     return;
   }
 
