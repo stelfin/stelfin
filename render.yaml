@@ -6,6 +6,10 @@
 # since this file is committed to the repo and nothing here should ever be
 # a live key, the same rule config.go enforces at startup.
 #
+# The Discord transport does not exist yet, so its credentials are not listed.
+# A service with no transport configured starts fine and answers 404 on every
+# /webhook/{channel}.
+#
 # Free-tier note: Render's free web service instance type spins down after
 # 15 minutes without an inbound HTTP request. stelfind runs Horizon
 # ingestion continuously in a background goroutine inside the same process —
@@ -61,13 +65,13 @@ services:
       - key: STELFIN_TREASURY_SEED
         sync: false
 
-      - key: STELFIN_META_APP_SECRET
+
+      # Telegram. Both or neither. The secret is echoed back on every
+      # delivery and is the only thing authenticating it, since Telegram does
+      # not sign — openssl rand -hex 32, and pass the same value to setWebhook.
+      - key: STELFIN_TELEGRAM_BOT_TOKEN
         sync: false
-      - key: STELFIN_META_VERIFY_TOKEN
-        sync: false
-      - key: STELFIN_META_ACCESS_TOKEN
-        sync: false
-      - key: STELFIN_META_PHONE_NUMBER_ID
+      - key: STELFIN_TELEGRAM_WEBHOOK_SECRET
         sync: false
 
       # openssl rand -hex 32 — at least 32 bytes, signs both confirm and

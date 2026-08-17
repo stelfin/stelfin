@@ -1,4 +1,4 @@
-# stelfin — a non-custodial, WhatsApp-native stablecoin wallet on Stellar.
+# stelfin — a non-custodial DAO treasury bot on Stellar, run from chat.
 #
 # Tests bring up their own Postgres (see ledger/ledger_test.go), so `make test`
 # needs no local database, no Docker and no setup. The first run downloads a
