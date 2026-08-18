@@ -2,241 +2,213 @@
 
 ## Context
 
-stelfin is a WhatsApp-native stablecoin wallet on Stellar.
+stelfin is a non-custodial bot a DAO runs its Stellar treasury through, from
+Telegram and Discord, with a connector layer so the other tools a community
+touches on-chain are reachable from the same place.
+
+This document is the plan being built from. `../DESIGN.md` is the reasoning
+behind it. It replaces the plan for the WhatsApp wallet stelfin began as — that
+document described a zkLogin/Groth16 authentication model and a Soroban custom
+account that were never built and are not in scope. Nothing of it is preserved
+except the parts that turned out to be right about money, which are recorded in
+the design record instead.
 
 ## Settled decisions
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Chain | Stellar | native multisig, claimable balances, SEP standards, ~5s finality, no reorgs |
-| Server language | Go | `stellar/go` is first-party; Go is the payments-infra norm |
-| Contracts / custody / circuits | Rust | Soroban is Rust; one memory-safe language for all key-adjacent code |
-| Custody model | Non-custodial | removes money-transmitter posture |
-| Primary auth | zkLogin (Google OAuth, Groth16 on Soroban) | near-universal on target-market Android; passkeys are not |
-| Second factor | PIN + device-stored 256-bit secret | no extra party, nothing public to grind offline |
-| Wallet type | Soroban custom account (`C...`) | zkLogin verification must be on-chain to be trustless |
-| Receiving address | Stable per user | accepted privacy tradeoff — see below |
+| Chain | Stellar | native M-of-N multisig, sponsored reserves, fee-bump, SEP standards, ~5s finality, no reorgs |
+| Server language | Go | `stellar/go-stellar-sdk` is first-party and ships both Horizon and Soroban RPC clients; Go is the payments-infra norm |
+| Contracts | Rust / Soroban | one memory-safe language for everything key-adjacent |
+| Custody | Non-custodial, adaptive | the bot builds and routes; the DAO's existing signing authority decides |
+| Platforms | Telegram **and** Discord | one channel-agnostic core, two transports, from the start |
+| Tenancy | Multi-tenant | one deployment, many DAOs; `(channel, space_id)` → exactly one org |
+| Identity | SEP-10 + an identity table | one human, many handles, one proved address |
+| Member wallets | Connect an existing address, or be provisioned | provisioning is rate-limited and off by default |
+| Commands | Slash commands primary, free text as fallback | the existing decoder is kept, and both paths converge on the same verified instruction |
 | Ledger role | Index of on-chain state | not authoritative for balances |
-| Web | TypeScript + Next.js | browser surfaces only |
-| WhatsApp platform risk | Accepted | keep transport behind an interface regardless |
-
-### Accepted tradeoff: address privacy
-
-A stable `C...` per user means anyone able to send to a phone number can dust-probe that
-number, learn the address, and read the user's entire transaction history on-chain,
-permanently. This is a property of the send-to-phone-number feature, not a patchable bug.
-
-Accepted deliberately. Two mitigations that cost nothing architecturally:
-- The `phone → address` resolver is authenticated and rate-limited, so mass probing is
-  expensive and attributable.
-- Nothing identifying ever goes in a transaction memo — no phone numbers, no names, no
-  guessable hashes (a phone-number hash is ~10^10 candidates, trivially reversed).
-
-Revisit if the user base makes this a safety issue rather than a privacy one.
-
-## Auth model
-
-zkLogin is a **spend** path, so a compromised Google account is an immediate-loss vector
-with no timelock behind it. The PIN carries that weight, and must never be attackable
-offline. `salt = KDF(PIN)` with an on-chain commitment is rejected — a 6-digit PIN is
-10^6 candidates against public chain state.
-
-```
-spend:
-  zkLogin proof + H(PIN, device_secret)          → instant, to policy limit
-  ... + policy co-sign (weight 1)                → above limit
-  passkey where hardware supports it             → upgrade, replaces PIN
-
-enroll  (have Google + PIN, no device secret):
-  → 24h timelock, notified to existing factors, cancellable
-
-recover (lost Google OR lost PIN):
-  → any 2 of { zkLogin, SEP-30 phone, guardians }
-  → proposes signer rotation only, never a spend
-  → 7-day timelock, cancellable by any live spend factor
-  → 30-day escalated override for stolen-device (thief holds the veto)
-```
-
-`device_secret` is 256-bit, generated client-side, never transmitted. Browser storage is
-**not durable** — Safari ITP evicts after ~7 days idle, Android Chrome evicts under
-pressure, "clear site data" wipes it. Storage eviction must therefore route to *enroll*
-(24h), not *recover* (7d), or the product is unusable. Where WebAuthn PRF is available,
-persist the secret there instead; it survives eviction.
-
-Phone is never sufficient alone — SIM swap is common in the target market and carriers
-recycle dormant numbers.
-
-## Intent verification
-
-The LLM is a decoder, never an authority. Every field it emits carries a provenance span
-into the backend's own tokenization of the raw message.
-
-```
-backend tokenizes message      → indexed tokens, turn-indexed across turns
-model returns fields + spans   → action / amount / destination, each with a span
-backend re-verifies            → text == tokens[span]; reject on mismatch
-backend normalizes             → "5,000" | "5k" | "five thousand" → int64 stroops
-backend resolves               → beneficiary label → address, deterministic lookup
-user signs normalized payload  → confirmation renders FROM the signed payload
-```
-
-Invariants, enforced by tests:
-- The model never performs arithmetic and never emits a final amount.
-- The model never resolves a recipient to an address.
-- The **backend** tokenizes. A model-supplied text field is never trusted over `tokens[span]`.
-- Ambiguous or unresolvable → ask, never guess.
-- The confirmation UI derives its display from the XDR being signed, not from app state.
-- Voice notes ground against a transcript that is itself model output — lower trust tier,
-  tighter limits.
-
-This defeats hallucinated amounts, invented recipients, and injection originating outside
-the current message. Same-message injection still passes the span check by design — the
-confirmation screen is what catches that.
-
-## Dormancy close
-
-Solves Soroban state archival: TTL maintenance becomes bounded by the dormancy window
-instead of perpetual.
-
-The sweep must be **pre-authorized by the user at onboarding** — destination fixed by
-them, encoded in the contract or a pre-signed time-bounded transaction. stelfin may only
-*trigger* an instruction the user already signed. Discretionary sweep authority is
-custody regardless of the time delay, and would reintroduce exactly the licensing
-exposure the non-custodial design buys away.
-
-Needs a terminal fallback for a failed off-ramp destination (anchor down, KYC lapsed,
-bank account closed) that does not resolve to "stelfin holds it". Dormancy window must be
-long and heavily notified, over a channel the user may have lost.
+| Network | Mainnet-capable, hard-gated | the operator key in an environment variable refuses to start on the public network without an explicit acknowledgement |
+| Web | Static pages served from the binary | nothing in the signing path has a build step |
 
 ## Target architecture
 
 ```
-stelfin/
-  contracts/          Rust — Soroban
-    account/          custom account: signer registry, __check_auth, policies
-    zk-verifier/      Groth16 over bls12_381 host fns
-    jwks-registry/    Google signing keys, multi-updater + timelock
-  circuits/           Rust/Circom — RS256 JWT + SHA-256, Groth16
-  prover/             Rust — proof generation (not trust-sensitive)
-  policy/             Rust — weight-limited co-signer: limits, velocity, risk
-  recovery/           Go — SEP-30 recoverysigner, one of two independent servers
-  settlement/         Go — Horizon + Soroban RPC, sponsorship, fee-bump, channel accounts
-  ledger/             Go — double-entry index, reconciliation
-  api/                Go — WhatsApp webhook, intent verification, HTTP API
-  inbox/              Go — G... sweep account for classic + anchor interop
-  web/                TypeScript + Next.js — confirm/sign, dashboard, recovery
+Telegram ─┐                                   ┌─ Horizon  (classic)
+          ├─ chat.Transport ─ core ─ settlement┤
+Discord  ─┘        │           │              └─ Soroban RPC (contracts)
+                   │           ├─ ledger  (Postgres, double-entry, org-scoped)
+                   │           ├─ identity (SEP-10, roles)
+                   │           ├─ signer   (operator / external / smart account)
+                   │           └─ connector (Sheets, MCP client)
+                   │
+                   └─ web  ── the browser that verifies and signs
+                              (confirm · enroll · link · approve)
+
+mcpserver ── read-only and propose-only tools, for agents outside
+contracts ── dao_treasury · connector_registry  (Rust, one Cargo workspace)
 ```
 
-Stack: Go 1.23+, pgx + sqlc (no ORM), goose migrations, River (Postgres-backed queue, so
-enqueue joins the ledger transaction atomically). `stellar/go` for `horizonclient`,
-`txnbuild`, `keypair`, `ingest`.
+Package layout:
 
-## Reuse from own services
+| Path | What it is |
+|---|---|
+| `chat/` | the platform-agnostic contract: `Actor`, `Conversation`, `Inbound`, `Reply`, `Transport`, `Registry` |
+| `chat/chattest/` | the fake transport and the conformance suite every transport must pass |
+| `internal/telegram`, `internal/discord` | the two transports |
+| `core/` | orchestration: org resolution, role checks, command dispatch, the free-text fallback |
+| `api/` | HTTP only: webhooks, the signing endpoints, the token types |
+| `intent/`, `decoder/` | tokenizer, verifier, normalizer, resolver; the Claude decoder |
+| `identity/` | SEP-10 challenges, identity linking, roles |
+| `treasury/` | treasuries, signer sets, proposals |
+| `signer/` | the signing seam and its implementations |
+| `connector/` | the connector model, guard, and adapters |
+| `mcpserver/` | stelfin as an MCP server |
+| `ledger/`, `ledger/store/` | the double-entry engine, and every query in the system |
+| `settlement/` | transaction construction, description, submission — classic and Soroban |
+| `ingestion/` | Horizon and Soroban event ingestion |
+| `contracts/` | the Rust workspace |
+| `web/` | the pages that verify and sign |
+| `marketing/` | the public site (a separate Next.js module) |
 
-| Source | What | Mode |
-|---|---|---|
-| `veil/contracts/invisible_wallet` | signer registry, session keys, spend limits, `initiate/complete/cancel_recovery` timelock+veto, nonce replay | **fork as Rust code** — the only real code reuse |
-| `quay/packages/offramp` | `sep10/sep12/sep6/sep24/sep38` | network call to Quay API, or port to Go |
-| `meridian` vault + BlendAdapter | yield on savings | on-chain, post-audit, later |
-| `orbital/pulse-core` | Horizon cursor / backoff / rate-limit semantics | read and port to `stellar/go/ingest`; no code transfer |
+## The seams
 
-Rule: own services may sit in the money-**adjacent** path (off-ramp, yield, analytics),
-never the money-**critical** path. Send, receive, balance and custody must work with every
-other stelfin service down.
+**Transport.** `Verify(*http.Request) ([]byte, error)` → `Parse([]byte)
+(Delivery, error)` → `Send`. Ordered by trust: nothing is parsed that was not
+authenticated, nothing acted on that was not parsed. `Delivery.Ack` is computed
+from the verified body and written before any work — Discord declares an
+interaction failed after three seconds, and Telegram retries a slow response,
+which would start one payment flow twice.
 
-## Milestone 1 — end-to-end thin slice
+Verification differs in kind between the two platforms and the difference is
+recorded rather than smoothed over: Discord signs `timestamp || rawBody` with
+Ed25519; Telegram echoes a shared secret in a header, which proves the caller
+knew the secret and says nothing about the body. On Telegram, therefore, nothing
+inside the body may establish privilege — admin status is fetched from the API,
+not read from the update.
 
-One user, one send, every seam connected. Proves integration before the hard parts land.
+**Reply.** Every outbound message suppresses link previews unconditionally, and
+the registry refuses to deliver a reply containing an authority link unless it
+is private to the actor. Telegram has no ephemeral messages in groups, so
+"private" there means a DM — which requires the member to have started a chat
+with the bot, and the setup flow has to walk them through that or the first
+payout blocks on a dead end.
 
-**Real in this slice** (not stubbed — without these there is no working Stellar wallet):
-- CAP-33 sponsored account provisioning: `BeginSponsoringFutureReserves` → `CreateAccount`
-  → `ChangeTrust` (USDC) → `EndSponsoringFutureReserves`, one atomic transaction. User
-  holds zero XLM.
-- CAP-15 fee-bump from a treasury account. User never pays fees.
-- Double-entry ledger with `sum(entries) == 0` enforced in-database.
-- Horizon ingestion with cursor persistence, confirming the ledger against chain state.
+**Identity.** `(channel, channel_user_id)` → member; member → one address, proved
+by a SEP-10 challenge signed in the browser. The challenge is built with
+sequence zero and is structurally unsubmittable. Proving control of an M-of-N
+treasury uses `VerifyChallengeTxThreshold`, so it takes the same signatures a
+payment would.
 
-**Stubbed in this slice:**
-- Soroban custom account → classic Stellar multisig, device-held Ed25519 key in browser.
-- zkLogin, PIN, device secret, recovery, policy co-signer, off-ramp, yield.
-- Channel-account pool (no contention with one user; note it and move on).
+**Signing.** One interface, four implementations: the operator's key (local, or
+remote), an *external* signer that contributes nothing and reports how much
+weight is still needed, and a smart-account signer whose completeness comes from
+simulating `__check_auth`. The router has no branch that returns a key-holding
+signer for a DAO treasury.
 
-**Path to build:**
-```
-1. ledger/      schema + invariant tests, before anything touches a network
-2. settlement/  sponsored provisioning + fee-bump, testnet
-3. api/         WhatsApp webhook → deterministic tokenizer
-4. api/         LLM decoder returning fields + spans; backend re-verifies spans
-5. api/         normalization to int64 stroops; beneficiary resolution
-6. web/         confirm page rendering from the payload; browser key signs
-7. settlement/  submit, then Horizon ingestion writes the confirming ledger entry
-```
+**Description.** The server sends a canonical description of a transaction and
+the browser re-derives the same description from the XDR, comparing bytes. The
+shape rules — "an enrolment is exactly these four operations in this order" —
+live in the browser, not in what the server sends, because the server is the
+thing being checked.
 
-LLM decoder: default to a current Claude model; confirm the exact model ID and pricing
-against the `claude-api` reference at implementation time rather than from memory.
+## Data model
 
-### Parallel spike — Groth16 resource budget
+Beyond the existing double-entry core:
 
-Runs alongside Milestone 1, not blocking it. This is the one deferred item that can
-invalidate the architecture, and it is a measurement rather than a build.
+- `orgs` — one per DAO, plus one `platform` row for the operator's own float,
+  reserves and fees. Carries policy: spend ceilings, proposal TTL, enrolment
+  budget (zero by default).
+- `org_spaces` — `(channel, space_id)` primary key. The tenant lookup.
+- `members`, `user_identities`, `member_roles`, `role_bindings` — one human, many
+  handles, one proved address. Composite foreign keys `(member_id, org_id)` make
+  tenant containment a database property.
+- `org_treasuries`, `treasury_signers` — the DAO's accounts and their signer
+  sets. The signer set is a **cache, never an authority**; it is refreshed from
+  Horizon when a proposal opens and again before submission, and if it is stale
+  the bot's "two more signatures needed" message is wrong while the network's
+  answer is still right.
+- `proposals`, `proposal_signatures`, `proposal_events` — the base envelope is
+  immutable and unsigned; signatures are rows, and the submittable envelope is
+  rebuilt from them each time. Read-modify-write on a stored envelope loses one
+  of two simultaneous approvals.
+- `tracked_addresses` — one address, one ledger account, so an incoming payment
+  posts to exactly one place.
+- `connectors`, `connector_credentials`, `connector_grants_cache`,
+  `connector_calls`, `drafts` — the connector layer, with credentials sealed
+  against `(org, connector, purpose)` so a row moved between orgs decrypts to
+  nothing.
 
-```
-1. RS256 JWT + SHA-256 circuit — count constraints
-2. Groth16 verifier in Soroban using bls12_381 host functions
-3. MEASURE CPU instructions + footprint for one __check_auth
-4. compare against Soroban's per-transaction resource limits
-```
+## Contracts
 
-Kill criterion: if verification does not fit the budget, zkLogin-on-chain is not viable
-and the auth model needs rethinking before more is built on top of it. Fallbacks to
-evaluate at that point: proof verification split across two transactions, a different
-proving system, or off-chain verification behind an attested signer (weaker, trusted).
+One Cargo workspace at `contracts/`, two contracts.
 
-Verify current Soroban protocol capabilities against live docs — `secp256r1_verify` and
-the `bls12_381` host functions were added in recent protocol versions and the exact
-version numbers here are from memory, not checked.
+**`dao_treasury`** merges treasury policy and proposals/voting. They are one
+state machine over one pot of money; splitting them buys a cross-contract
+authorization dance and a window in which each disagrees about whether a
+proposal passed. Members with weights, quorum and approval thresholds in basis
+points, a voting window, a timelock, a rolling-window auto-spend limit, and a
+recipient allowlist.
 
-## Verification for Milestone 1
+`execute` deliberately takes no authorization: anyone may execute a proposal
+that has passed and cleared its timelock. Restricting it to the bot would make
+our uptime a treasury liveness dependency, which is the worst property a
+treasury tool can have.
 
-```
-go test ./...                    unit + property tests
-go test -tags=integration ./...  against Stellar testnet
-```
+**`connector_registry`** holds capability grants — connector id, capabilities, a
+digest of the approved surface, limits, a validity window, and revocation as a
+positive fact. It never holds a credential or a bearer URL, because everything
+in a contract is public; it stores a salted hash of the endpoint and the
+endpoint itself lives off-chain.
 
-End-to-end, manually:
-1. Send a WhatsApp message from a fresh number → user row + sponsored account with a USDC
-   trustline exists on testnet, user holds 0 XLM.
-2. Fund it from friendbot/testnet faucet → ingestion writes a matching credit entry.
-3. Message "send 5,000 to <beneficiary>" → inspect the decoder output: every field has a
-   span, and each span re-verifies against the backend's own tokens.
-4. Confirm page shows the exact normalized amount and resolved address, both derived from
-   the XDR under signature.
-5. Sign → transaction lands on testnet, fee paid by treasury via fee-bump.
-6. Ledger balances: `sum(entries) == 0` holds, and the indexed balance matches Horizon.
+Deployment is proved rather than claimed. `contracts/deployments.json` commits
+the WASM hash and upload transaction per network; a hermetic test asserts the
+rebuilt WASM matches the committed source hash, and an integration test reads
+the on-chain contract-code entry — it cannot pass unless the upload actually
+happened.
 
-Adversarial cases that must fail closed:
-- Decoder returns an amount whose span text doesn't match `tokens[span]` → rejected.
-- Message containing an injected instruction → spans still ground to real text, and the
-  confirmation shows the injected recipient rather than the intended one.
-- Duplicate submission with the same idempotency key → one on-chain transaction, one
-  ledger entry.
-- Submit-then-timeout → resolution by deterministic transaction hash lookup, never by
-  blind retry.
+## Build sequence
+
+Every phase ends with `make check` green and something demonstrable.
+
+| Phase | Contents |
+|---|---|
+| 0 | Excise WhatsApp; introduce `chat/` and the conformance suite; route `POST /webhook/{channel}`; rewrite the docs; remove the dead marketing CTA |
+| 1 | Telegram transport |
+| 2 | Discord transport |
+| 3 | Multi-tenant schema (fresh migration set) and `ledger/store` |
+| 4 | Identity, SEP-10, roles, the enrolment limiter |
+| 5 | Generalised transaction description and browser verification |
+| 6 | Classic operations, treasuries, proposals, the signer seam |
+| 7 | Soroban RPC |
+| 8 | The contracts, deployed and pinned |
+| 9 | Ingestion: Horizon operations, Soroban events, SAC transfers |
+| 10 | Connectors and the Sheets adapter |
+| 11 | MCP server, then MCP client |
+| 12 | Mainnet rails; the marketing rebuild |
+
+## Verification
+
+- `make check` (fmt, vet, test) at every phase boundary; `make test-race` and
+  `make fuzz-money` before a deploy. Tests bring their own Postgres, so none of
+  this needs Docker or a local database.
+- A cross-language golden corpus for transaction description: the same bytes
+  asserted by a Go test and a Node test. Without it the two implementations
+  drift and the guarantee disappears silently.
+- `go test -tags=integration ./settlement/` against live testnet and friendbot,
+  creating its own dependencies rather than relying on a third party's account.
+- `cargo test` including negative-authorization cases run *without*
+  `mock_all_auths` — a contract suite that only runs under mocked auth proves
+  nothing about authorization.
+- The end-to-end bar: a stranger adds the bot to their own Discord server and
+  Telegram group, runs setup, links a wallet by signature, links a treasury,
+  proposes a payment, approves it in the browser, and watches it land on
+  testnet — recognised as the same member on both platforms.
 
 ## Not yet designed
 
-Each needs its own pass; listed so none is lost.
-
-- `C...` vs `G...` interop — contract addresses cannot receive classic `Payment` ops. The
-  inbox sweep account has a custodial window for in-flight deposits. Genuinely unsolved.
-- Trusted setup ceremony — must be real, multi-party, publicly verifiable.
-- JWKS oracle trust model — a malicious key updater can forge proofs for any account.
-- Treasury key management — HSM/KMS, threshold signing, ceremony, rotation, break-glass.
-- Channel-account pool for sequence-number contention.
-- Deterministic simulation testing, `__check_auth` fuzzing, formal verification of the
-  recovery state machine.
-- Compliance — Travel Rule, sanctions screening, SEP-12 KYC tiers, NDPA 2023.
-- Fraud — authorized-push-payment scams are unrefundable on-chain; reimbursement policy
-  must be decided before launch.
-- Nigerian Pidgin / Yoruba / Hausa / Igbo intent evals.
-- Self-hosted Horizon + Soroban RPC rather than SDF public instances.
+- Confirming a Soroban contract call honestly in a browser that cannot, in
+  general, re-derive what the call will do.
+- Concurrent proposals against one treasury (CAP-21 preconditions).
+- A remote signer for the operator key.
+- Compliance: Travel Rule, sanctions screening, SEP-12 KYC.
+- Self-hosted Horizon and Soroban RPC rather than the public instances.

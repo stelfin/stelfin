@@ -52,7 +52,7 @@ it.
 
 ### Trust boundaries
 
-The decoder (`api/decoder`) turns free-text WhatsApp messages into a structured
+The decoder (`api/decoder`) turns free-text chat messages into a structured
 intent using an LLM. That output is **untrusted** the same way any external
 input is: it must pass through `api/intent`'s tokenizer, verifier, and
 normalizer before it can affect a balance, and the user must confirm the exact
