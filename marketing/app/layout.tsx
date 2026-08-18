@@ -17,7 +17,7 @@ const instrumentSerif = Instrument_Serif({
 
 const jetbrainsMono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono", display: "swap" });
 
-const title = "stelfin — send stablecoins on Stellar, right from WhatsApp";
+const title = "stelfin — run your DAO treasury from Telegram and Discord";
 const description =
   "stelfin is a non-custodial stablecoin wallet you talk to instead of open. No app, no seed phrase — your key stays on your device.";
 

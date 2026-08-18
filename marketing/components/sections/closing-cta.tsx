@@ -22,22 +22,22 @@ export function ClosingCta() {
         <motion.div style={{ scale }} className="flex flex-col items-center">
           <MaskReveal
             as="h2"
-            text="Open WhatsApp. Send a message. That's it."
+            text="Open your group chat. Send a message. That's it."
             accent="Send a message."
             className="max-w-[820px] justify-center text-center text-[36px] font-semibold leading-[1.02] tracking-[-0.02em] text-ink-900 sm:text-[52px] lg:text-[68px]"
           />
 
           <Reveal delay={0.15}>
             <p className="mx-auto mt-6 max-w-lg text-center text-lg leading-relaxed text-ink-700 md:text-xl">
-              No signup form, no seed phrase to write down. Say hello and
-              stelfin walks you through the rest.
+              No signup form, no seed phrase to write down. Add the bot, say
+              hello, and stelfin walks the group through the rest.
             </p>
           </Reveal>
 
           <Reveal delay={0.3}>
             <div className="mx-auto mt-12 flex w-fit flex-wrap items-center justify-center gap-5">
               <MagneticCta
-                href={SITE.whatsappLink}
+                href={SITE.ctaHref}
                 target="_blank"
                 rel="noopener"
                 className="group relative isolate overflow-hidden rounded-full !bg-ink-900 text-base text-white transition-transform duration-300 hover:-translate-y-0.5 md:!px-9 md:!py-4 md:text-lg"
@@ -46,7 +46,7 @@ export function ClosingCta() {
                   aria-hidden
                   className="pointer-events-none absolute inset-0 -z-10 -translate-x-full bg-gradient-to-r from-transparent via-white/25 to-transparent transition-transform duration-700 ease-out group-hover:translate-x-full"
                 />
-                Chat on WhatsApp
+                {SITE.ctaLabel}
               </MagneticCta>
             </div>
           </Reveal>

@@ -9,13 +9,13 @@ export const FAQS: FaqItem[] = [
     id: "what-is-stelfin",
     question: "What is stelfin?",
     answer:
-      "A non-custodial stablecoin wallet you use entirely through WhatsApp. Message it what you want to send, confirm on your device, and it settles on Stellar.",
+      "A non-custodial bot your DAO runs its Stellar treasury through, from Telegram or Discord. Ask it to pay someone, approve on your own device, and it settles on Stellar.",
   },
   {
     id: "download-app",
     question: "Do I need to download an app?",
     answer:
-      "No. stelfin runs inside WhatsApp, the app you already use. The only browser moment is signing a payment or setting up your wallet — both open from a link stelfin sends you, and close again once you're done.",
+      "No. stelfin lives in the group chat your community already uses. The only browser moment is signing a payment or linking your wallet — both open from a link stelfin sends you privately, and close again once you're done.",
   },
   {
     id: "custodial",
@@ -39,6 +39,6 @@ export const FAQS: FaqItem[] = [
     id: "get-started",
     question: "How do I get started?",
     answer:
-      'Tap any "Chat on WhatsApp" button on this page. stelfin will ask you to set up a wallet first — a couple of taps — and then you\'re ready to send.',
+      "The Telegram and Discord bots are being built in the open right now — the source link on this page is the honest answer until they are ready. Nothing here is live yet.",
   },
 ];
