@@ -60,8 +60,8 @@ export function Navbar() {
         </nav>
 
         <div className="hidden md:block">
-          <MagneticCta href={SITE.whatsappLink} target="_blank" rel="noopener" className="text-base">
-            Chat on WhatsApp
+          <MagneticCta href={SITE.ctaHref} target="_blank" rel="noopener" className="text-base">
+            {SITE.ctaLabel}
           </MagneticCta>
         </div>
 
@@ -102,8 +102,8 @@ export function Navbar() {
                   </li>
                 ))}
                 <li className="pt-3">
-                  <MagneticCta href={SITE.whatsappLink} target="_blank" rel="noopener">
-                    Chat on WhatsApp
+                  <MagneticCta href={SITE.ctaHref} target="_blank" rel="noopener">
+                    {SITE.ctaLabel}
                   </MagneticCta>
                 </li>
               </ul>

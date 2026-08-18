@@ -1,14 +1,15 @@
-// Placeholder until Meta's WhatsApp Business API is live — swap the number
-// once STELFIN_META_PHONE_NUMBER_ID stops being a placeholder in the Go
-// deployment too. See STELFIN_BASE_URL in the backend's own env for the
-// same "not real yet" caveat.
-const WHATSAPP_NUMBER = "000000000000";
-
+// There is deliberately no chat CTA here yet.
+//
+// The previous one pointed at wa.me/000000000000 — a placeholder that read as a
+// working front door and went nowhere. A dead call to action is worse than no
+// call to action: it spends the one moment a visitor was willing to act. Until
+// the Telegram and Discord bots exist, the honest destination is the source.
 export const SITE = {
   name: "stelfin",
   legalName: "stelfin",
-  whatsappLink: `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent("hi")}`,
   githubUrl: "https://github.com/stelfin/stelfin",
+  ctaHref: "https://github.com/stelfin/stelfin",
+  ctaLabel: "View the source",
   appUrl: "https://stelfin.onrender.com",
 };
 

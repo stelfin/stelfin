@@ -28,18 +28,18 @@ export function Hero() {
             as="h1"
             trigger="mount"
             delay={0}
-            text="Send stablecoins on Stellar, right from WhatsApp"
-            accent="right from WhatsApp"
+            text="Run your DAO treasury from the chat you already use"
+            accent="from the chat you already use"
             className="justify-center text-center text-[44px] font-medium leading-[1.0] tracking-[-0.02em] text-ink-900 sm:text-[64px] md:text-[76px] lg:text-[92px]"
           />
 
           <motion.p variants={fadeUp(0.5)} className="mt-7 max-w-md text-base leading-relaxed text-ink-700 md:text-lg">
-            A non-custodial wallet you talk to instead of open.
+            Non-custodial Stellar operations, in Telegram and Discord.
           </motion.p>
 
           <motion.div variants={fadeUp(0.62)} className="mt-9 flex flex-wrap items-center justify-center gap-5 md:mt-11 md:gap-6">
             <MagneticCta
-              href={SITE.whatsappLink}
+              href={SITE.ctaHref}
               target="_blank"
               rel="noopener"
               className="group relative isolate flex items-center gap-2.5 overflow-hidden text-base shadow-accent transition-[transform,box-shadow] duration-300 hover:-translate-y-0.5 hover:shadow-[0_16px_44px_-8px_rgb(20_113_61/0.6)] md:!px-8 md:!py-4 md:text-lg"
@@ -48,8 +48,8 @@ export function Hero() {
                 aria-hidden
                 className="pointer-events-none absolute inset-0 -z-10 -translate-x-full bg-gradient-to-r from-transparent via-white/30 to-transparent transition-transform duration-700 ease-out group-hover:translate-x-full"
               />
-              <WhatsappIcon />
-              <span className="text-white">Chat on WhatsApp</span>
+              <GitHubIcon />
+              <span className="text-white">{SITE.ctaLabel}</span>
             </MagneticCta>
 
             <a
@@ -86,10 +86,10 @@ function TrustItem({ icon, label }: { icon: React.ReactNode; label: string }) {
   );
 }
 
-function WhatsappIcon() {
+function GitHubIcon() {
   return (
     <svg viewBox="0 0 24 24" width={20} height={20} fill="white" aria-hidden="true">
-      <path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.79.47 3.47 1.29 4.93L2 22l5.29-1.39a9.9 9.9 0 0 0 4.75 1.21h.01c5.46 0 9.9-4.45 9.9-9.91C21.96 6.45 17.5 2 12.04 2Zm5.79 14.06c-.24.68-1.19 1.24-1.94 1.4-.52.11-1.19.2-3.47-.75-2.9-1.2-4.77-4.15-4.92-4.34-.14-.19-1.18-1.57-1.18-2.99 0-1.42.74-2.11 1-2.4.26-.29.57-.36.76-.36.19 0 .38 0 .55.01.18.01.42-.07.65.5.24.58.82 2 .89 2.15.07.15.12.32.02.51-.09.19-.14.31-.28.48-.14.17-.29.37-.42.5-.14.14-.28.29-.12.57.16.28.71 1.17 1.52 1.9 1.04.94 1.92 1.23 2.2 1.37.28.14.44.12.61-.07.17-.19.71-.83.9-1.11.19-.28.38-.24.65-.14.27.1 1.7.8 1.99.95.29.14.48.21.55.33.07.12.07.68-.17 1.36Z" />
+      <path d="M12 .5C5.73.5.5 5.73.5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2.16c-3.2.7-3.88-1.37-3.88-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.2 1.77 1.2 1.03 1.77 2.71 1.26 3.37.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.24 2.76.12 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.7 5.4-5.27 5.69.42.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12C23.5 5.73 18.27.5 12 .5Z" />
     </svg>
   );
 }
