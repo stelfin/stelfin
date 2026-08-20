@@ -185,75 +185,18 @@ func TestResolveRejectsCorruptedAddress(t *testing.T) {
 	}
 }
 
-func TestNormalizePhone(t *testing.T) {
-	for in, want := range map[string]string{
-		"+2348012345678":      "+2348012345678",
-		"+234 801 234 5678":   "+2348012345678",
-		"+234-801-234-5678":   "+2348012345678",
-		"+234 (801) 234.5678": "+2348012345678",
-	} {
-		got, err := NormalizePhone(in)
-		if err != nil {
-			t.Errorf("NormalizePhone(%q): %v", in, err)
-			continue
-		}
-		if got != want {
-			t.Errorf("NormalizePhone(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-// TestNormalizePhoneRefusesToAssumeACountry: inferring a country code would
-// silently address a different country's subscriber. Asking is far cheaper
-// than a misdirected payment.
-func TestNormalizePhoneRefusesToAssumeACountry(t *testing.T) {
-	for _, in := range []string{
-		"08012345678", // Nigerian local form, but which country?
-		"8012345678",
-		"",
-		"+234",                 // too short
-		"+2348012345678901234", // too long
-		"+234801234567a",
-		"++2348012345678",
-	} {
-		if got, err := NormalizePhone(in); err == nil {
-			t.Errorf("NormalizePhone(%q) = %q, want an error", in, got)
-		}
-	}
-}
-
-func TestResolvePhoneToAccount(t *testing.T) {
-	ctx := context.Background()
-	phone := "+2348012345678"
-	addr := keypair.MustRandom().Address()
-
-	store := ledger.New(testPool)
-	account, err := store.EnsureAccount(ctx, ledger.AccountUser, phone, "user "+phone)
-	if err != nil {
-		t.Fatalf("ensure account: %v", err)
-	}
-	if _, err := testPool.Exec(ctx,
-		`INSERT INTO stellar_accounts (address, ledger_account_id) VALUES ($1, $2)`,
-		addr, int64(account)); err != nil {
-		t.Fatalf("track address: %v", err)
-	}
-
+// TestResolveRejectsAnUnknownDestinationKind: the model proposes the kind, and
+// an unrecognised one must be refused rather than falling through to a default
+// resolver. "phone" in particular used to be a kind and is not one any more —
+// a decoder that still emitted it must fail loudly, not quietly resolve as
+// something else.
+func TestResolveRejectsAnUnknownDestinationKind(t *testing.T) {
 	r := NewResolver(testPool)
-	got, err := r.Resolve(ctx, t.Name(),
-		&Grounded{DestinationText: "+234 801 234 5678", DestinationKind: DestinationPhone})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if got.Address != addr {
-		t.Errorf("address = %s, want %s", got.Address, addr)
-	}
-}
-
-func TestResolvePhoneWithoutAccount(t *testing.T) {
-	r := NewResolver(testPool)
-	_, err := r.Resolve(context.Background(), t.Name(),
-		&Grounded{DestinationText: "+2349999999999", DestinationKind: DestinationPhone})
-	if !errors.Is(err, ErrDestinationNotFound) {
-		t.Fatalf("error = %v, want ErrDestinationNotFound", err)
+	for _, kind := range []DestinationKind{"phone", "", "handle", "email"} {
+		_, err := r.Resolve(context.Background(), t.Name(),
+			&Grounded{DestinationText: "+2348012345678", DestinationKind: kind})
+		if err == nil {
+			t.Errorf("destination kind %q was accepted", kind)
+		}
 	}
 }
