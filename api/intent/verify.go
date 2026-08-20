@@ -38,7 +38,6 @@ type DestinationKind string
 
 const (
 	DestinationBeneficiary DestinationKind = "beneficiary"
-	DestinationPhone       DestinationKind = "phone"
 	DestinationAddress     DestinationKind = "address"
 )
 
@@ -149,7 +148,7 @@ func Verify(conversation [][]Token, d Decoded) (*Grounded, error) {
 		return nil, fmt.Errorf("destination: %w", err)
 	}
 	switch d.DestinationKind {
-	case DestinationBeneficiary, DestinationPhone, DestinationAddress:
+	case DestinationBeneficiary, DestinationAddress:
 	default:
 		return nil, fmt.Errorf("intent: unknown destination kind %q", d.DestinationKind)
 	}

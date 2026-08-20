@@ -72,8 +72,6 @@ func (r *Resolver) Resolve(ctx context.Context, ownerRef string, g *Grounded) (D
 		return resolveAddress(g.DestinationText)
 	case DestinationBeneficiary:
 		return r.resolveBeneficiary(ctx, ownerRef, g.DestinationText)
-	case DestinationPhone:
-		return r.resolvePhone(ctx, g.DestinationText)
 	default:
 		return Destination{}, fmt.Errorf("%w: unknown kind %q", ErrDestinationInvalid, g.DestinationKind)
 	}
@@ -147,63 +145,4 @@ func (r *Resolver) resolveBeneficiary(ctx context.Context, ownerRef, label strin
 	default:
 		return Destination{}, &AmbiguousError{Label: label, Candidates: labels}
 	}
-}
-
-// resolvePhone maps a phone number onto the account stelfin holds for it.
-//
-// The lookup is by exact normalised number. There is no fuzzy matching and no
-// partial match: a near-miss on a phone number is a different person.
-func (r *Resolver) resolvePhone(ctx context.Context, text string) (Destination, error) {
-	number, err := NormalizePhone(text)
-	if err != nil {
-		return Destination{}, err
-	}
-
-	var address string
-	err = r.pool.QueryRow(ctx, `
-		SELECT sa.address
-		  FROM stellar_accounts sa
-		  JOIN ledger_accounts la ON la.id = sa.ledger_account_id
-		 WHERE la.kind = 'user' AND la.owner_ref = $1`,
-		number,
-	).Scan(&address)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Destination{}, fmt.Errorf("%w: %s has no stelfin account", ErrDestinationNotFound, number)
-	}
-	if err != nil {
-		return Destination{}, fmt.Errorf("intent: look up phone %s: %w", number, err)
-	}
-	return Destination{Address: address, Label: number, Kind: DestinationPhone}, nil
-}
-
-// NormalizePhone reduces a written number to E.164 digits.
-//
-// Only formatting is removed. No country code is inferred: guessing one would
-// silently address a different country's subscriber, and the caller can ask far
-// more cheaply than a misdirected payment costs.
-func NormalizePhone(text string) (string, error) {
-	var b strings.Builder
-	for _, r := range text {
-		switch {
-		case r >= '0' && r <= '9':
-			b.WriteRune(r)
-		case r == '+' && b.Len() == 0:
-			b.WriteRune(r)
-		case r == ' ' || r == '-' || r == '(' || r == ')' || r == '.':
-			// Formatting; drop it.
-		default:
-			return "", fmt.Errorf("%w: %q is not a phone number", ErrDestinationInvalid, text)
-		}
-	}
-
-	number := b.String()
-	if !strings.HasPrefix(number, "+") {
-		return "", fmt.Errorf(
-			"%w: %q has no country code; it must be given rather than assumed", ErrDestinationInvalid, text)
-	}
-	// E.164 allows up to 15 digits after the country code.
-	if digits := len(number) - 1; digits < 8 || digits > 15 {
-		return "", fmt.Errorf("%w: %q has %d digits, want 8 to 15", ErrDestinationInvalid, text, digits)
-	}
-	return number, nil
 }
