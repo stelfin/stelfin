@@ -1,4 +1,4 @@
-// Command stelfind runs the stelfin server: the WhatsApp webhook, the
+// Command stelfind runs the stelfin server: the chat-platform webhooks, the
 // confirmation API, and the Horizon ingestion worker.
 package main
 
@@ -22,9 +22,10 @@ import (
 	"github.com/stelfin/stelfin/api"
 	"github.com/stelfin/stelfin/api/decoder"
 	"github.com/stelfin/stelfin/api/intent"
+	"github.com/stelfin/stelfin/chat"
 	"github.com/stelfin/stelfin/ingestion"
 	"github.com/stelfin/stelfin/internal/config"
-	"github.com/stelfin/stelfin/internal/whatsapp"
+	"github.com/stelfin/stelfin/internal/telegram"
 	"github.com/stelfin/stelfin/ledger"
 	"github.com/stelfin/stelfin/settlement"
 	"github.com/stelfin/stelfin/web"
@@ -93,12 +94,29 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
-	messenger, err := whatsapp.New(whatsapp.Config{
-		PhoneNumberID: cfg.MetaPhoneNumberID,
-		AccessToken:   cfg.MetaAccessToken,
-	})
+	// A deployment with no transports configured is legitimate — the signing
+	// pages are still served and /webhook/{channel} answers 404 for everything.
+	// The registry is built either way, because it carries the rule that a
+	// reply containing an authority link may not be posted where bystanders can
+	// read it, and that rule should not depend on which platforms are enabled.
+	var enabled []chat.Transport
+	if cfg.HasTelegram() {
+		tg, err := telegram.New(telegram.Config{
+			Token:         cfg.TelegramBotToken,
+			WebhookSecret: cfg.TelegramWebhookSecret,
+		})
+		if err != nil {
+			return err
+		}
+		enabled = append(enabled, tg)
+	}
+	transports, err := chat.NewRegistry(cfg.BaseURL, enabled...)
 	if err != nil {
 		return err
+	}
+	log.Info("chat transports registered", "channels", transports.Channels())
+	if len(enabled) == 0 {
+		log.Warn("no chat transport is configured; the webhook route will refuse every delivery")
 	}
 
 	svc, err := api.NewService(pool,
@@ -133,9 +151,7 @@ func run(log *slog.Logger) error {
 
 	server, err := api.NewServer(svc, tokens, enrollTokens, api.ServerConfig{
 		BaseURL:         cfg.BaseURL,
-		Messenger:       messenger,
-		AppSecret:       cfg.MetaAppSecret,
-		VerifyToken:     cfg.MetaVerifyToken,
+		Transports:      transports,
 		TreasuryAddress: treasury.Address(),
 		SignFeeBump: func(tx *txnbuild.FeeBumpTransaction) (*txnbuild.FeeBumpTransaction, error) {
 			return tx.Sign(cfg.NetworkPassphrase, treasury)

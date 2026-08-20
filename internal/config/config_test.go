@@ -14,13 +14,9 @@ func validEnv(t *testing.T) map[string]string {
 		"STELFIN_DATABASE_URL":  "postgres://localhost/stelfin",
 		"STELFIN_TREASURY_SEED": keypair.MustRandom().Seed(),
 		"STELFIN_ASSET_ISSUER":  keypair.MustRandom().Address(),
-		// Distinctive values. A placeholder like "access" collides with
+		// A distinctive value. A placeholder like "secret" collides with
 		// ordinary prose in the redacted output, which makes the leak canary
 		// below fire on its own label instead of on a real disclosure.
-		"STELFIN_META_APP_SECRET":      "appsecret-7f3a91c4e8b25d60a1f4c9e2b8d7a350",
-		"STELFIN_META_VERIFY_TOKEN":    "verifytoken-2c5e81f0",
-		"STELFIN_META_ACCESS_TOKEN":    "accesstoken-9b1d4f7e3a06c852",
-		"STELFIN_META_PHONE_NUMBER_ID": "123456",
 		"STELFIN_CONFIRM_TOKEN_SECRET": "confirmsecret-4e9c07a2b6f18d35c0a7e4b93f21d6c8",
 	}
 }
@@ -64,7 +60,7 @@ func TestLoadReportsEveryMissingVariable(t *testing.T) {
 	}
 	for _, key := range []string{
 		"STELFIN_BASE_URL", "STELFIN_DATABASE_URL", "STELFIN_TREASURY_SEED",
-		"STELFIN_META_APP_SECRET", "STELFIN_CONFIRM_TOKEN_SECRET",
+		"STELFIN_ASSET_ISSUER", "STELFIN_CONFIRM_TOKEN_SECRET",
 	} {
 		if !strings.Contains(err.Error(), key) {
 			t.Errorf("error does not mention %s: %v", key, err)
@@ -148,8 +144,6 @@ func TestRedactedHidesSecrets(t *testing.T) {
 	rendered := strings.ToLower(strings.Join(values(cfg.Redacted()), " "))
 	for _, secret := range []string{
 		strings.ToLower(env["STELFIN_TREASURY_SEED"]),
-		strings.ToLower(env["STELFIN_META_APP_SECRET"]),
-		strings.ToLower(env["STELFIN_META_ACCESS_TOKEN"]),
 		strings.ToLower(env["STELFIN_CONFIRM_TOKEN_SECRET"]),
 	} {
 		if secret == "" {
@@ -169,4 +163,50 @@ func values(m map[string]any) []string {
 		}
 	}
 	return out
+}
+
+// TestTelegramCredentialsAreRequiredTogether: a bot token with no webhook
+// secret would leave the delivery endpoint authenticating nothing at all, and a
+// secret with no token would configure a transport that cannot reply.
+func TestTelegramCredentialsAreRequiredTogether(t *testing.T) {
+	for name, env := range map[string]map[string]string{
+		"token without secret": {"STELFIN_TELEGRAM_BOT_TOKEN": "12345:ABC"},
+		"secret without token": {"STELFIN_TELEGRAM_WEBHOOK_SECRET": strings.Repeat("a", 32)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			full := validEnv(t)
+			for k, v := range env {
+				full[k] = v
+			}
+			withEnv(t, full)
+			if _, err := Load(); err == nil {
+				t.Fatal("expected an error")
+			}
+		})
+	}
+}
+
+// TestTelegramWebhookSecretMustBeStrong: Telegram permits a one-character
+// secret. With no signature over the body, that secret is the only thing
+// standing between the open internet and a delivery this server acts on.
+func TestTelegramWebhookSecretMustBeStrong(t *testing.T) {
+	env := validEnv(t)
+	env["STELFIN_TELEGRAM_BOT_TOKEN"] = "12345:ABC"
+	env["STELFIN_TELEGRAM_WEBHOOK_SECRET"] = "hunter2"
+	withEnv(t, env)
+
+	if _, err := Load(); err == nil {
+		t.Fatal("a seven-character webhook secret was accepted")
+	}
+}
+
+func TestTelegramIsOptional(t *testing.T) {
+	withEnv(t, validEnv(t))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.HasTelegram() {
+		t.Error("Telegram reported as configured with no credentials set")
+	}
 }

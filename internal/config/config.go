@@ -1,8 +1,8 @@
 // Package config loads stelfin's configuration from the environment.
 //
 // Every secret is required and has no default. A payments server that starts
-// with a placeholder signing key, an empty webhook secret, or a development
-// treasury is worse than one that refuses to start: the failure is silent, and
+// with a placeholder signing key or a development treasury is worse than one
+// that refuses to start: the failure is silent, and
 // the first sign of it is money in the wrong place. Missing values are
 // collected and reported together so a fresh deployment is fixed in one pass
 // rather than one restart per variable.
@@ -40,14 +40,16 @@ type Config struct {
 	AssetCode   string
 	AssetIssuer string
 
-	// MetaAppSecret verifies webhook signatures.
-	MetaAppSecret []byte
-	// MetaVerifyToken answers the subscription challenge.
-	MetaVerifyToken string
-	// MetaAccessToken authenticates outbound messages.
-	MetaAccessToken string
-	// MetaPhoneNumberID is the sending number's id.
-	MetaPhoneNumberID string
+	// TelegramBotToken and TelegramWebhookSecret configure the Telegram
+	// transport. Optional, and required together: a deployment with neither
+	// simply serves no Telegram webhook, which is a legitimate state while the
+	// transports are being built out.
+	//
+	// The secret is held to the same length bar as ConfirmTokenSecret because
+	// Telegram does not sign its deliveries — it echoes this value in a header,
+	// so it is the only thing authenticating them.
+	TelegramBotToken      string
+	TelegramWebhookSecret string
 
 	// ConfirmTokenSecret signs confirmation links. At least 32 bytes.
 	ConfirmTokenSecret []byte
@@ -87,20 +89,19 @@ func Load() (*Config, error) {
 	}
 
 	c := &Config{
-		HTTPAddr:           opt("STELFIN_HTTP_ADDR", ":8080"),
-		BaseURL:            req("STELFIN_BASE_URL"),
-		DatabaseURL:        req("STELFIN_DATABASE_URL"),
-		HorizonURL:         opt("STELFIN_HORIZON_URL", "https://horizon-testnet.stellar.org"),
-		TreasurySeed:       req("STELFIN_TREASURY_SEED"),
-		AssetCode:          opt("STELFIN_ASSET_CODE", "USDC"),
-		AssetIssuer:        req("STELFIN_ASSET_ISSUER"),
-		MetaAppSecret:      []byte(req("STELFIN_META_APP_SECRET")),
-		MetaVerifyToken:    req("STELFIN_META_VERIFY_TOKEN"),
-		MetaAccessToken:    req("STELFIN_META_ACCESS_TOKEN"),
-		MetaPhoneNumberID:  req("STELFIN_META_PHONE_NUMBER_ID"),
-		ConfirmTokenSecret: []byte(req("STELFIN_CONFIRM_TOKEN_SECRET")),
-		AnthropicAPIKey:    os.Getenv("ANTHROPIC_API_KEY"),
-		DecoderEffort:      os.Getenv("STELFIN_DECODER_EFFORT"),
+		HTTPAddr:     opt("STELFIN_HTTP_ADDR", ":8080"),
+		BaseURL:      req("STELFIN_BASE_URL"),
+		DatabaseURL:  req("STELFIN_DATABASE_URL"),
+		HorizonURL:   opt("STELFIN_HORIZON_URL", "https://horizon-testnet.stellar.org"),
+		TreasurySeed: req("STELFIN_TREASURY_SEED"),
+		AssetCode:    opt("STELFIN_ASSET_CODE", "USDC"),
+		AssetIssuer:  req("STELFIN_ASSET_ISSUER"),
+
+		TelegramBotToken:      strings.TrimSpace(os.Getenv("STELFIN_TELEGRAM_BOT_TOKEN")),
+		TelegramWebhookSecret: strings.TrimSpace(os.Getenv("STELFIN_TELEGRAM_WEBHOOK_SECRET")),
+		ConfirmTokenSecret:    []byte(req("STELFIN_CONFIRM_TOKEN_SECRET")),
+		AnthropicAPIKey:       os.Getenv("ANTHROPIC_API_KEY"),
+		DecoderEffort:         os.Getenv("STELFIN_DECODER_EFFORT"),
 	}
 
 	switch strings.ToLower(opt("STELFIN_NETWORK", "testnet")) {
@@ -135,9 +136,17 @@ func (c *Config) validate() error {
 			"config: STELFIN_CONFIRM_TOKEN_SECRET is %d bytes, want at least 32 — "+
 				"this signs the links that authorise payments", len(c.ConfirmTokenSecret))
 	}
-	if len(c.MetaAppSecret) < 16 {
-		return fmt.Errorf("config: STELFIN_META_APP_SECRET is implausibly short (%d bytes)",
-			len(c.MetaAppSecret))
+	if (c.TelegramBotToken == "") != (c.TelegramWebhookSecret == "") {
+		return errors.New(
+			"config: STELFIN_TELEGRAM_BOT_TOKEN and STELFIN_TELEGRAM_WEBHOOK_SECRET " +
+				"must be set together — a bot with no webhook secret cannot " +
+				"authenticate a delivery at all")
+	}
+	if n := len(c.TelegramWebhookSecret); n > 0 && n < telegramMinSecretLength {
+		return fmt.Errorf(
+			"config: STELFIN_TELEGRAM_WEBHOOK_SECRET is %d characters, want at least %d — "+
+				"Telegram does not sign deliveries, so this secret is the only thing "+
+				"authenticating them", n, telegramMinSecretLength)
 	}
 	if !strkey.IsValidEd25519SecretSeed(c.TreasurySeed) {
 		return errors.New("config: STELFIN_TREASURY_SEED is not a valid Stellar secret seed")
@@ -156,6 +165,15 @@ func (c *Config) validate() error {
 	}
 	return nil
 }
+
+// telegramMinSecretLength mirrors telegram.MinSecretLength. Duplicated rather
+// than imported so this package keeps depending on nothing but the SDK: config
+// is loaded before any transport is constructed, and a validation failure here
+// should read as a configuration problem rather than a transport one.
+const telegramMinSecretLength = 32
+
+// HasTelegram reports whether the Telegram transport is configured.
+func (c *Config) HasTelegram() bool { return c.TelegramBotToken != "" }
 
 // IsMainnet reports whether this configuration points at the public network.
 func (c *Config) IsMainnet() bool {
@@ -176,11 +194,11 @@ func (c *Config) Redacted() map[string]any {
 		"network":        network,
 		"horizon_url":    c.HorizonURL,
 		"asset":          c.AssetCode + ":" + c.AssetIssuer,
-		"phone_id":       c.MetaPhoneNumberID,
+		"telegram":       c.HasTelegram(),
 		"decoder_effort": c.DecoderEffort,
 		"shutdown_grace": c.ShutdownGrace.String(),
 		// Secrets are named, never valued, so a startup log confirms they were
 		// supplied without disclosing them.
-		"secrets_present": "treasury seed, app secret, access token, confirm secret",
+		"secrets_present": "treasury seed, confirm secret",
 	}
 }
