@@ -25,6 +25,7 @@ import (
 	"github.com/stelfin/stelfin/chat"
 	"github.com/stelfin/stelfin/ingestion"
 	"github.com/stelfin/stelfin/internal/config"
+	"github.com/stelfin/stelfin/internal/discord"
 	"github.com/stelfin/stelfin/internal/telegram"
 	"github.com/stelfin/stelfin/ledger"
 	"github.com/stelfin/stelfin/settlement"
@@ -109,6 +110,17 @@ func run(log *slog.Logger) error {
 			return err
 		}
 		enabled = append(enabled, tg)
+	}
+	if cfg.HasDiscord() {
+		dc, err := discord.New(discord.Config{
+			PublicKey:     cfg.DiscordPublicKey,
+			BotToken:      cfg.DiscordBotToken,
+			ApplicationID: cfg.DiscordApplicationID,
+		})
+		if err != nil {
+			return err
+		}
+		enabled = append(enabled, dc)
 	}
 	transports, err := chat.NewRegistry(cfg.BaseURL, enabled...)
 	if err != nil {

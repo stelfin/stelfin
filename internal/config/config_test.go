@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/ed25519"
+	"encoding/hex"
 	"strings"
 	"testing"
 
@@ -208,5 +210,66 @@ func TestTelegramIsOptional(t *testing.T) {
 	}
 	if cfg.HasTelegram() {
 		t.Error("Telegram reported as configured with no credentials set")
+	}
+}
+
+// TestDiscordCredentialsAreRequiredTogether: a public key with no bot token
+// configures a transport that can verify a delivery and never answer it.
+func TestDiscordCredentialsAreRequiredTogether(t *testing.T) {
+	key := hex.EncodeToString(make([]byte, ed25519.PublicKeySize))
+
+	for name, env := range map[string]map[string]string{
+		"key only":   {"STELFIN_DISCORD_PUBLIC_KEY": key},
+		"token only": {"STELFIN_DISCORD_BOT_TOKEN": "bot"},
+		"key and token, no application": {
+			"STELFIN_DISCORD_PUBLIC_KEY": key,
+			"STELFIN_DISCORD_BOT_TOKEN":  "bot",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			full := validEnv(t)
+			for k, v := range env {
+				full[k] = v
+			}
+			withEnv(t, full)
+			if _, err := Load(); err == nil {
+				t.Fatal("expected an error")
+			}
+		})
+	}
+}
+
+// TestDiscordPublicKeyIsCheckedAtBoot: a mistyped key would otherwise produce
+// an endpoint that verifies nothing successfully and refuses every delivery,
+// which looks like Discord being broken rather than a typo.
+func TestDiscordPublicKeyIsCheckedAtBoot(t *testing.T) {
+	for _, key := range []string{"not-hex", "aabb", strings.Repeat("a", 62)} {
+		env := validEnv(t)
+		env["STELFIN_DISCORD_PUBLIC_KEY"] = key
+		env["STELFIN_DISCORD_BOT_TOKEN"] = "bot"
+		env["STELFIN_DISCORD_APPLICATION_ID"] = "111"
+		withEnv(t, env)
+
+		if _, err := Load(); err == nil {
+			t.Errorf("accepted public key %q", key)
+		}
+	}
+}
+
+func TestBothTransportsCanBeConfigured(t *testing.T) {
+	env := validEnv(t)
+	env["STELFIN_TELEGRAM_BOT_TOKEN"] = "12345:ABC"
+	env["STELFIN_TELEGRAM_WEBHOOK_SECRET"] = strings.Repeat("a", 32)
+	env["STELFIN_DISCORD_PUBLIC_KEY"] = hex.EncodeToString(make([]byte, ed25519.PublicKeySize))
+	env["STELFIN_DISCORD_BOT_TOKEN"] = "bot"
+	env["STELFIN_DISCORD_APPLICATION_ID"] = "111"
+	withEnv(t, env)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.HasTelegram() || !cfg.HasDiscord() {
+		t.Errorf("telegram = %v, discord = %v; want both", cfg.HasTelegram(), cfg.HasDiscord())
 	}
 }

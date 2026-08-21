@@ -9,6 +9,8 @@
 package config
 
 import (
+	"crypto/ed25519"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -50,6 +52,17 @@ type Config struct {
 	// so it is the only thing authenticating them.
 	TelegramBotToken      string
 	TelegramWebhookSecret string
+
+	// DiscordPublicKey, DiscordBotToken and DiscordApplicationID configure the
+	// Discord transport. Optional, and required together.
+	//
+	// Unlike Telegram, the public key is not a secret and not a bearer: it
+	// verifies an Ed25519 signature over each delivery, so a leaked copy lets
+	// nobody forge one. The bot token is a credential and the application id is
+	// public.
+	DiscordPublicKey     string
+	DiscordBotToken      string
+	DiscordApplicationID string
 
 	// ConfirmTokenSecret signs confirmation links. At least 32 bytes.
 	ConfirmTokenSecret []byte
@@ -99,9 +112,13 @@ func Load() (*Config, error) {
 
 		TelegramBotToken:      strings.TrimSpace(os.Getenv("STELFIN_TELEGRAM_BOT_TOKEN")),
 		TelegramWebhookSecret: strings.TrimSpace(os.Getenv("STELFIN_TELEGRAM_WEBHOOK_SECRET")),
-		ConfirmTokenSecret:    []byte(req("STELFIN_CONFIRM_TOKEN_SECRET")),
-		AnthropicAPIKey:       os.Getenv("ANTHROPIC_API_KEY"),
-		DecoderEffort:         os.Getenv("STELFIN_DECODER_EFFORT"),
+
+		DiscordPublicKey:     strings.TrimSpace(os.Getenv("STELFIN_DISCORD_PUBLIC_KEY")),
+		DiscordBotToken:      strings.TrimSpace(os.Getenv("STELFIN_DISCORD_BOT_TOKEN")),
+		DiscordApplicationID: strings.TrimSpace(os.Getenv("STELFIN_DISCORD_APPLICATION_ID")),
+		ConfirmTokenSecret:   []byte(req("STELFIN_CONFIRM_TOKEN_SECRET")),
+		AnthropicAPIKey:      os.Getenv("ANTHROPIC_API_KEY"),
+		DecoderEffort:        os.Getenv("STELFIN_DECODER_EFFORT"),
 	}
 
 	switch strings.ToLower(opt("STELFIN_NETWORK", "testnet")) {
@@ -148,6 +165,29 @@ func (c *Config) validate() error {
 				"Telegram does not sign deliveries, so this secret is the only thing "+
 				"authenticating them", n, telegramMinSecretLength)
 	}
+	discord := []string{c.DiscordPublicKey, c.DiscordBotToken, c.DiscordApplicationID}
+	set := 0
+	for _, v := range discord {
+		if v != "" {
+			set++
+		}
+	}
+	if set != 0 && set != len(discord) {
+		return errors.New(
+			"config: STELFIN_DISCORD_PUBLIC_KEY, STELFIN_DISCORD_BOT_TOKEN and " +
+				"STELFIN_DISCORD_APPLICATION_ID must be set together")
+	}
+	if c.DiscordPublicKey != "" {
+		// Checked here rather than only at transport construction, so a
+		// mistyped key is a configuration error at boot instead of a silent
+		// endpoint that refuses every delivery.
+		key, err := hex.DecodeString(c.DiscordPublicKey)
+		if err != nil || len(key) != ed25519.PublicKeySize {
+			return fmt.Errorf(
+				"config: STELFIN_DISCORD_PUBLIC_KEY must be %d hex-encoded bytes",
+				ed25519.PublicKeySize)
+		}
+	}
 	if !strkey.IsValidEd25519SecretSeed(c.TreasurySeed) {
 		return errors.New("config: STELFIN_TREASURY_SEED is not a valid Stellar secret seed")
 	}
@@ -175,6 +215,9 @@ const telegramMinSecretLength = 32
 // HasTelegram reports whether the Telegram transport is configured.
 func (c *Config) HasTelegram() bool { return c.TelegramBotToken != "" }
 
+// HasDiscord reports whether the Discord transport is configured.
+func (c *Config) HasDiscord() bool { return c.DiscordPublicKey != "" }
+
 // IsMainnet reports whether this configuration points at the public network.
 func (c *Config) IsMainnet() bool {
 	return c.NetworkPassphrase == network.PublicNetworkPassphrase
@@ -195,6 +238,7 @@ func (c *Config) Redacted() map[string]any {
 		"horizon_url":    c.HorizonURL,
 		"asset":          c.AssetCode + ":" + c.AssetIssuer,
 		"telegram":       c.HasTelegram(),
+		"discord":        c.HasDiscord(),
 		"decoder_effort": c.DecoderEffort,
 		"shutdown_grace": c.ShutdownGrace.String(),
 		// Secrets are named, never valued, so a startup log confirms they were
