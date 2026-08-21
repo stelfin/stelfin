@@ -41,6 +41,19 @@ type Harness struct {
 	// platform's API rather than read out of the update.
 	BodyAuthenticated bool
 
+	// PrivateConversation returns a conversation on which this transport can
+	// actually deliver an ephemeral reply.
+	//
+	// The platforms differ here in a way that is not incidental. A Telegram bot
+	// can direct-message anyone who has opened a chat with it, so almost any
+	// conversation has a private route. Discord has one only while an
+	// interaction is live: fifteen minutes after a command, the sole remaining
+	// route is a public channel post. A suite that assumed the Telegram shape
+	// would be asserting a capability Discord does not have.
+	//
+	// Optional; defaults to a direct message, where privacy is free.
+	PrivateConversation func(chat.Channel) chat.Conversation
+
 	// LastOutbound returns the most recent wire body the transport wrote.
 	LastOutbound func() ([]byte, bool)
 
@@ -167,18 +180,25 @@ func RunTransport(t *testing.T, h Harness) {
 		if err != nil {
 			t.Fatalf("new registry: %v", err)
 		}
-		public := chat.Conversation{Channel: h.Transport.Channel(), SpaceID: "space-1"}
-		actor := chat.Actor{Channel: h.Transport.Channel(), UserID: "42"}
+		channel := h.Transport.Channel()
+		public := chat.Conversation{Channel: channel, SpaceID: "space-1"}
+		actor := chat.Actor{Channel: channel, UserID: "42"}
 
+		// The registry refuses before the transport is reached, so this holds
+		// on every platform regardless of what its private routes look like.
 		err = reg.Send(context.Background(), public, actor,
 			chat.Reply{Text: "tap to confirm: " + prefix + "/confirm#tok"})
 		if !errors.Is(err, chat.ErrLinkInPublic) {
 			t.Fatalf("posting an authority link to a group: want ErrLinkInPublic, got %v", err)
 		}
 
-		if err := reg.Send(context.Background(), public, actor,
+		private := chat.Conversation{Channel: channel, SpaceID: "space-1", IsDM: true}
+		if h.PrivateConversation != nil {
+			private = h.PrivateConversation(channel)
+		}
+		if err := reg.Send(context.Background(), private, actor,
 			chat.Reply{Text: prefix + "/confirm#tok", Ephemeral: true}); err != nil {
-			t.Fatalf("an ephemeral authority link must be allowed: %v", err)
+			t.Fatalf("an ephemeral authority link must be deliverable privately: %v", err)
 		}
 	})
 
