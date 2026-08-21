@@ -114,6 +114,9 @@ descriptions; the essentials:
 | `STELFIN_ASSET_CODE` / `_ISSUER` | Yes      | The asset users transact in (network-specific issuer).                                  |
 | `STELFIN_TELEGRAM_BOT_TOKEN`     | No       | Telegram bot token. Required together with the webhook secret.                          |
 | `STELFIN_TELEGRAM_WEBHOOK_SECRET`| No       | Echoed back on every delivery — Telegram does not sign, so this authenticates it. ≥32.  |
+| `STELFIN_DISCORD_PUBLIC_KEY`     | No       | Application public key. Verifies the Ed25519 signature on each delivery.                |
+| `STELFIN_DISCORD_BOT_TOKEN`      | No       | Discord bot token. Required with the public key and application id.                     |
+| `STELFIN_DISCORD_APPLICATION_ID` | No       | Application snowflake, for followups and command registration.                          |
 | `STELFIN_CONFIRM_TOKEN_SECRET`   | Yes      | Signs confirmation links. `openssl rand -hex 32`.                                       |
 | `ANTHROPIC_API_KEY`              | No       | Omit to let the Anthropic SDK resolve credentials itself.                               |
 
@@ -130,6 +133,7 @@ descriptions; the essentials:
 | `ingestion/`        | Horizon → ledger reconciliation worker.                     |
 | `chat/`             | The platform-agnostic contract every transport implements.  |
 | `internal/telegram` | The Telegram Bot API transport.                             |
+| `internal/discord`  | The Discord interactions transport.                         |
 | `internal/config`   | Environment loading and validation.                         |
 | `web/`              | Confirmation and enrollment pages served to the user.       |
 | `marketing/`        | The public site, a separate Next.js module.                 |

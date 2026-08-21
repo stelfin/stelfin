@@ -6,7 +6,6 @@
 # since this file is committed to the repo and nothing here should ever be
 # a live key, the same rule config.go enforces at startup.
 #
-# The Discord transport does not exist yet, so its credentials are not listed.
 # A service with no transport configured starts fine and answers 404 on every
 # /webhook/{channel}.
 #
@@ -72,6 +71,16 @@ services:
       - key: STELFIN_TELEGRAM_BOT_TOKEN
         sync: false
       - key: STELFIN_TELEGRAM_WEBHOOK_SECRET
+        sync: false
+
+      # Discord. All three together. The public key verifies a signature rather
+      # than authorising anything, so it is not a secret — the bot token is.
+      # Point the Interactions Endpoint URL at <base>/webhook/discord.
+      - key: STELFIN_DISCORD_PUBLIC_KEY
+        sync: false
+      - key: STELFIN_DISCORD_BOT_TOKEN
+        sync: false
+      - key: STELFIN_DISCORD_APPLICATION_ID
         sync: false
 
       # openssl rand -hex 32 — at least 32 bytes, signs both confirm and
