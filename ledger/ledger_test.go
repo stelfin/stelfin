@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"math/rand"
 	"os"
 	"sync"
@@ -40,13 +41,42 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// fixture is an isolated set of accounts and assets for one test. Every test
-// gets its own user account so that balances never collide across tests.
+// newOrg inserts an org for one test.
+//
+// Orgs are created by the store layer in production; a test needs one before
+// that layer exists, and inserting the row directly is honest about it. The
+// slug is derived from the test name so a failure names the test that caused
+// it, and hashed because the schema constrains the shape.
+func newOrg(t *testing.T) OrgID {
+	t.Helper()
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(t.Name()))
+	slug := fmt.Sprintf("t-%016x", h.Sum64())
+
+	var id OrgID
+	err := testPool.QueryRow(context.Background(), `
+		INSERT INTO orgs (kind, slug, display_name, network)
+		VALUES ('dao', $1, $2, 'testnet')
+		ON CONFLICT (lower(slug)) DO UPDATE SET display_name = EXCLUDED.display_name
+		RETURNING id`,
+		slug, t.Name(),
+	).Scan(&id)
+	must(t, err, "create org")
+	return id
+}
+
+// fixture is an isolated set of accounts and assets for one test.
+//
+// Every test gets its own org, not just its own member account. Isolation is
+// the immediate reason; the useful side effect is that the whole suite runs
+// against a database with many tenants in it, so a query that forgot its org
+// predicate has somewhere to go wrong.
 type fixture struct {
 	store    *Store
+	org      OrgID
 	usdc     AssetID
 	xlm      AssetID
-	user     AccountID
+	member   AccountID
 	external AccountID
 	treasury AccountID
 	fees     AccountID
@@ -56,35 +86,37 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	ctx := context.Background()
 	s := New(testPool)
+	org := newOrg(t)
 
+	// Assets are global: two orgs holding USDC share one row, because the asset
+	// on chain is the same asset.
 	usdc, err := s.EnsureAsset(ctx, "USDC", "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5")
 	must(t, err, "ensure USDC")
 	xlm, err := s.EnsureAsset(ctx, "XLM", "")
 	must(t, err, "ensure XLM")
 
-	// A per-test user so balance assertions are independent.
-	user, err := s.EnsureAccount(ctx, AccountUser, t.Name(), "user "+t.Name())
-	must(t, err, "ensure user account")
-	external, err := s.EnsureAccount(ctx, AccountExternal, "", "external")
+	member, err := s.EnsureAccount(ctx, org, AccountMember, t.Name(), "member "+t.Name())
+	must(t, err, "ensure member account")
+	external, err := s.EnsureAccount(ctx, org, AccountExternal, "", "external")
 	must(t, err, "ensure external account")
-	treasury, err := s.EnsureAccount(ctx, AccountTreasury, "", "treasury")
+	treasury, err := s.EnsureAccount(ctx, org, AccountTreasury, "", "treasury")
 	must(t, err, "ensure treasury account")
-	fees, err := s.EnsureAccount(ctx, AccountFeeExpense, "", "fees")
+	fees, err := s.EnsureAccount(ctx, org, AccountFeeExpense, "", "fees")
 	must(t, err, "ensure fee account")
 
-	return &fixture{s, usdc, xlm, user, external, treasury, fees}
+	return &fixture{s, org, usdc, xlm, member, external, treasury, fees}
 }
 
 // deposit credits the user from the external account: the canonical way value
 // enters the system.
 func (f *fixture) deposit(t *testing.T, key string, amount money.Stroops) TxID {
 	t.Helper()
-	id, err := f.store.Post(context.Background(), PostRequest{
+	id, err := f.store.Post(context.Background(), PostRequest{Org: f.org,
 		IdempotencyKey: key,
 		Kind:           TxDeposit,
 		OccurredAt:     time.Unix(1700000000, 0),
 		Postings: []Posting{
-			{Account: f.user, Asset: f.usdc, Amount: amount},
+			{Account: f.member, Asset: f.usdc, Amount: amount},
 			{Account: f.external, Asset: f.usdc, Amount: -amount},
 		},
 	})
@@ -98,15 +130,15 @@ func TestPostBalancedTransaction(t *testing.T) {
 
 	f.deposit(t, t.Name()+"/deposit", money.MustParse("100"))
 
-	got, err := f.store.Balance(ctx, f.user, f.usdc)
+	got, err := f.store.Balance(ctx, f.org, f.member, f.usdc)
 	must(t, err, "balance")
 	if want := money.MustParse("100"); got != want {
-		t.Errorf("user balance = %s, want %s", got, want)
+		t.Errorf("member balance = %s, want %s", got, want)
 	}
 
 	// The external account mirrors everything held internally, so it must be
 	// exactly the negative of what entered.
-	ext, err := f.store.Balance(ctx, f.external, f.usdc)
+	ext, err := f.store.Balance(ctx, f.org, f.external, f.usdc)
 	must(t, err, "external balance")
 	if want := money.MustParse("-100"); ext != want {
 		t.Errorf("external balance = %s, want %s", ext, want)
@@ -115,7 +147,7 @@ func TestPostBalancedTransaction(t *testing.T) {
 
 func TestBalanceOfUntouchedAccountIsZero(t *testing.T) {
 	f := newFixture(t)
-	got, err := f.store.Balance(context.Background(), f.user, f.usdc)
+	got, err := f.store.Balance(context.Background(), f.org, f.member, f.usdc)
 	must(t, err, "balance")
 	if !got.IsZero() {
 		t.Errorf("fresh account balance = %s, want 0", got)
@@ -137,10 +169,10 @@ func TestUnbalancedIsRejectedByTheDatabase(t *testing.T) {
 	var txID int64
 	err = tx.QueryRow(ctx, `
 		INSERT INTO ledger_transactions
-			(idempotency_key, request_fingerprint, kind, occurred_at)
-		VALUES ($1, $2, 'deposit', now())
+			(org_id, idempotency_key, request_fingerprint, kind, occurred_at)
+		VALUES ($1, $2, $3, 'deposit', now())
 		RETURNING id`,
-		t.Name(), make([]byte, 32),
+		int64(f.org), t.Name(), make([]byte, 32),
 	).Scan(&txID)
 	must(t, err, "insert transaction")
 
@@ -148,7 +180,7 @@ func TestUnbalancedIsRejectedByTheDatabase(t *testing.T) {
 	_, err = tx.Exec(ctx, `
 		INSERT INTO ledger_entries (transaction_id, account_id, asset_id, amount)
 		VALUES ($1, $2, $3, $4)`,
-		txID, int64(f.user), int16(f.usdc), int64(money.MustParse("100")),
+		txID, int64(f.member), int16(f.usdc), int64(money.MustParse("100")),
 	)
 	must(t, err, "insert one-sided entry")
 
@@ -164,12 +196,12 @@ func TestUnbalancedIsRejectedByTheDatabase(t *testing.T) {
 
 func TestUnbalancedIsRejectedByGo(t *testing.T) {
 	f := newFixture(t)
-	_, err := f.store.Post(context.Background(), PostRequest{
+	_, err := f.store.Post(context.Background(), PostRequest{Org: f.org,
 		IdempotencyKey: t.Name(),
 		Kind:           TxDeposit,
 		OccurredAt:     time.Unix(1700000000, 0),
 		Postings: []Posting{
-			{Account: f.user, Asset: f.usdc, Amount: money.MustParse("100")},
+			{Account: f.member, Asset: f.usdc, Amount: money.MustParse("100")},
 			{Account: f.external, Asset: f.usdc, Amount: money.MustParse("-99")},
 		},
 	})
@@ -183,13 +215,13 @@ func TestUnbalancedIsRejectedByGo(t *testing.T) {
 // balance on its own.
 func TestMultiAssetBalancesPerAsset(t *testing.T) {
 	f := newFixture(t)
-	_, err := f.store.Post(context.Background(), PostRequest{
+	_, err := f.store.Post(context.Background(), PostRequest{Org: f.org,
 		IdempotencyKey: t.Name(),
 		Kind:           TxSend,
 		OccurredAt:     time.Unix(1700000000, 0),
 		Postings: []Posting{
 			// USDC leg balances; XLM leg does not.
-			{Account: f.user, Asset: f.usdc, Amount: money.MustParse("10")},
+			{Account: f.member, Asset: f.usdc, Amount: money.MustParse("10")},
 			{Account: f.external, Asset: f.usdc, Amount: money.MustParse("-10")},
 			{Account: f.treasury, Asset: f.xlm, Amount: money.MustParse("5")},
 		},
@@ -203,12 +235,12 @@ func TestMultiAssetTransactionSucceeds(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	_, err := f.store.Post(ctx, PostRequest{
+	_, err := f.store.Post(ctx, PostRequest{Org: f.org,
 		IdempotencyKey: t.Name(),
 		Kind:           TxSend,
 		OccurredAt:     time.Unix(1700000000, 0),
 		Postings: []Posting{
-			{Account: f.user, Asset: f.usdc, Amount: money.MustParse("10")},
+			{Account: f.member, Asset: f.usdc, Amount: money.MustParse("10")},
 			{Account: f.external, Asset: f.usdc, Amount: money.MustParse("-10")},
 			// Fee paid in XLM by the treasury, a separate balanced group.
 			{Account: f.fees, Asset: f.xlm, Amount: money.MustParse("0.00001")},
@@ -217,12 +249,12 @@ func TestMultiAssetTransactionSucceeds(t *testing.T) {
 	})
 	must(t, err, "multi-asset post")
 
-	usdc, err := f.store.Balance(ctx, f.user, f.usdc)
+	usdc, err := f.store.Balance(ctx, f.org, f.member, f.usdc)
 	must(t, err, "usdc balance")
 	if want := money.MustParse("10"); usdc != want {
-		t.Errorf("user USDC = %s, want %s", usdc, want)
+		t.Errorf("member USDC = %s, want %s", usdc, want)
 	}
-	fees, err := f.store.Balance(ctx, f.fees, f.xlm)
+	fees, err := f.store.Balance(ctx, f.org, f.fees, f.xlm)
 	must(t, err, "fee balance")
 	if want := money.MustParse("0.00001"); fees != want {
 		t.Errorf("fee XLM = %s, want %s", fees, want)
@@ -242,7 +274,7 @@ func TestReplayWithSameContentReturnsOriginal(t *testing.T) {
 	}
 
 	// The decisive check: a replay must not move money twice.
-	got, err := f.store.Balance(ctx, f.user, f.usdc)
+	got, err := f.store.Balance(ctx, f.org, f.member, f.usdc)
 	must(t, err, "balance")
 	if want := money.MustParse("100"); got != want {
 		t.Errorf("balance after replay = %s, want %s (double-posted)", got, want)
@@ -256,12 +288,12 @@ func TestReplayWithDifferentContentIsRejected(t *testing.T) {
 
 	f.deposit(t, key, money.MustParse("100"))
 
-	_, err := f.store.Post(ctx, PostRequest{
+	_, err := f.store.Post(ctx, PostRequest{Org: f.org,
 		IdempotencyKey: key,
 		Kind:           TxDeposit,
 		OccurredAt:     time.Unix(1700000000, 0),
 		Postings: []Posting{
-			{Account: f.user, Asset: f.usdc, Amount: money.MustParse("999")},
+			{Account: f.member, Asset: f.usdc, Amount: money.MustParse("999")},
 			{Account: f.external, Asset: f.usdc, Amount: money.MustParse("-999")},
 		},
 	})
@@ -269,7 +301,7 @@ func TestReplayWithDifferentContentIsRejected(t *testing.T) {
 		t.Fatalf("Post error = %v, want ErrIdempotencyKeyReused", err)
 	}
 
-	got, err := f.store.Balance(ctx, f.user, f.usdc)
+	got, err := f.store.Balance(ctx, f.org, f.member, f.usdc)
 	must(t, err, "balance")
 	if want := money.MustParse("100"); got != want {
 		t.Errorf("balance = %s, want %s (the rejected replay must not post)", got, want)
@@ -284,20 +316,20 @@ func TestFingerprintIgnoresPostingOrder(t *testing.T) {
 	key := t.Name()
 	amount := money.MustParse("42")
 
-	first, err := f.store.Post(ctx, PostRequest{
+	first, err := f.store.Post(ctx, PostRequest{Org: f.org,
 		IdempotencyKey: key, Kind: TxDeposit, OccurredAt: time.Unix(1700000000, 0),
 		Postings: []Posting{
-			{Account: f.user, Asset: f.usdc, Amount: amount},
+			{Account: f.member, Asset: f.usdc, Amount: amount},
 			{Account: f.external, Asset: f.usdc, Amount: -amount},
 		},
 	})
 	must(t, err, "first post")
 
-	second, err := f.store.Post(ctx, PostRequest{
+	second, err := f.store.Post(ctx, PostRequest{Org: f.org,
 		IdempotencyKey: key, Kind: TxDeposit, OccurredAt: time.Unix(1700000000, 0),
 		Postings: []Posting{
 			{Account: f.external, Asset: f.usdc, Amount: -amount},
-			{Account: f.user, Asset: f.usdc, Amount: amount},
+			{Account: f.member, Asset: f.usdc, Amount: amount},
 		},
 	})
 	must(t, err, "reordered replay")
@@ -307,18 +339,18 @@ func TestFingerprintIgnoresPostingOrder(t *testing.T) {
 	}
 }
 
-func TestUserAccountCannotGoNegative(t *testing.T) {
+func TestMemberAccountCannotGoNegative(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
 	f.deposit(t, t.Name()+"/deposit", money.MustParse("10"))
 
-	_, err := f.store.Post(ctx, PostRequest{
+	_, err := f.store.Post(ctx, PostRequest{Org: f.org,
 		IdempotencyKey: t.Name() + "/overspend",
 		Kind:           TxWithdrawal,
 		OccurredAt:     time.Unix(1700000000, 0),
 		Postings: []Posting{
-			{Account: f.user, Asset: f.usdc, Amount: money.MustParse("-11")},
+			{Account: f.member, Asset: f.usdc, Amount: money.MustParse("-11")},
 			{Account: f.external, Asset: f.usdc, Amount: money.MustParse("11")},
 		},
 	})
@@ -326,7 +358,7 @@ func TestUserAccountCannotGoNegative(t *testing.T) {
 		t.Fatalf("overspend error = %v, want ErrInsufficientFunds", err)
 	}
 
-	got, err := f.store.Balance(ctx, f.user, f.usdc)
+	got, err := f.store.Balance(ctx, f.org, f.member, f.usdc)
 	must(t, err, "balance")
 	if want := money.MustParse("10"); got != want {
 		t.Errorf("balance after rejected overspend = %s, want %s", got, want)
@@ -339,7 +371,7 @@ func TestExternalAccountMayGoNegative(t *testing.T) {
 	// ever enter the system.
 	f.deposit(t, t.Name(), money.MustParse("1000"))
 
-	got, err := f.store.Balance(context.Background(), f.external, f.usdc)
+	got, err := f.store.Balance(context.Background(), f.org, f.external, f.usdc)
 	must(t, err, "balance")
 	if got.Sign() != -1 {
 		t.Errorf("external balance = %s, want negative", got)
@@ -352,17 +384,18 @@ func TestEntriesAreAppendOnly(t *testing.T) {
 	f.deposit(t, t.Name(), money.MustParse("5"))
 
 	if _, err := testPool.Exec(ctx,
-		`UPDATE ledger_entries SET amount = 999 WHERE account_id = $1`, int64(f.user),
+		`UPDATE ledger_entries SET amount = 999 WHERE account_id = $1`, int64(f.member),
 	); err == nil {
 		t.Error("UPDATE on ledger_entries succeeded; history must be immutable")
 	}
 	if _, err := testPool.Exec(ctx,
-		`DELETE FROM ledger_entries WHERE account_id = $1`, int64(f.user),
+		`DELETE FROM ledger_entries WHERE account_id = $1`, int64(f.member),
 	); err == nil {
 		t.Error("DELETE on ledger_entries succeeded; history must be immutable")
 	}
 	if _, err := testPool.Exec(ctx,
-		`UPDATE ledger_transactions SET kind = 'send' WHERE idempotency_key = $1`, t.Name(),
+		`UPDATE ledger_transactions SET kind = 'send'
+		  WHERE org_id = $1 AND idempotency_key = $2`, int64(f.org), t.Name(),
 	); err == nil {
 		t.Error("UPDATE on ledger_transactions succeeded; history must be immutable")
 	}
@@ -370,12 +403,12 @@ func TestEntriesAreAppendOnly(t *testing.T) {
 
 func TestZeroAmountPostingIsRejected(t *testing.T) {
 	f := newFixture(t)
-	_, err := f.store.Post(context.Background(), PostRequest{
+	_, err := f.store.Post(context.Background(), PostRequest{Org: f.org,
 		IdempotencyKey: t.Name(),
 		Kind:           TxDeposit,
 		OccurredAt:     time.Unix(1700000000, 0),
 		Postings: []Posting{
-			{Account: f.user, Asset: f.usdc, Amount: 0},
+			{Account: f.member, Asset: f.usdc, Amount: 0},
 			{Account: f.external, Asset: f.usdc, Amount: 0},
 		},
 	})
@@ -386,7 +419,7 @@ func TestZeroAmountPostingIsRejected(t *testing.T) {
 
 func TestEmptyPostingsRejected(t *testing.T) {
 	f := newFixture(t)
-	_, err := f.store.Post(context.Background(), PostRequest{
+	_, err := f.store.Post(context.Background(), PostRequest{Org: f.org,
 		IdempotencyKey: t.Name(),
 		Kind:           TxDeposit,
 		OccurredAt:     time.Unix(1700000000, 0),
@@ -405,11 +438,11 @@ func TestBalancesReconcileWithEntries(t *testing.T) {
 	ctx := context.Background()
 	rng := rand.New(rand.NewSource(20260807))
 
-	// Seed enough to keep the user solvent through the withdrawals below.
+	// Seed enough to keep the member solvent through the withdrawals below.
 	f.deposit(t, t.Name()+"/seed", money.MustParse("1000000"))
 
 	for i := 0; i < 200; i++ {
-		// Bounded so the user never goes negative, which is a separate
+		// Bounded so the member never goes negative, which is a separate
 		// invariant with its own test.
 		amount := money.Stroops(rng.Int63n(int64(money.MustParse("100"))) + 1)
 		dir := money.Stroops(1)
@@ -418,12 +451,12 @@ func TestBalancesReconcileWithEntries(t *testing.T) {
 		}
 		signed := amount * dir
 
-		_, err := f.store.Post(ctx, PostRequest{
+		_, err := f.store.Post(ctx, PostRequest{Org: f.org,
 			IdempotencyKey: fmt.Sprintf("%s/%d", t.Name(), i),
 			Kind:           TxSend,
 			OccurredAt:     time.Unix(1700000000+int64(i), 0),
 			Postings: []Posting{
-				{Account: f.user, Asset: f.usdc, Amount: signed},
+				{Account: f.member, Asset: f.usdc, Amount: signed},
 				{Account: f.external, Asset: f.usdc, Amount: -signed},
 			},
 		})
@@ -472,12 +505,12 @@ func TestConcurrentPostsStayConsistent(t *testing.T) {
 		go func(w int) {
 			defer wg.Done()
 			for i := 0; i < perWorker; i++ {
-				_, err := f.store.Post(ctx, PostRequest{
+				_, err := f.store.Post(ctx, PostRequest{Org: f.org,
 					IdempotencyKey: fmt.Sprintf("%s/%d/%d", t.Name(), w, i),
 					Kind:           TxDeposit,
 					OccurredAt:     time.Unix(1700000000, 0),
 					Postings: []Posting{
-						{Account: f.user, Asset: f.usdc, Amount: amount},
+						{Account: f.member, Asset: f.usdc, Amount: amount},
 						{Account: f.external, Asset: f.usdc, Amount: -amount},
 					},
 				})
@@ -494,7 +527,7 @@ func TestConcurrentPostsStayConsistent(t *testing.T) {
 		t.Fatalf("concurrent post failed: %v", err)
 	}
 
-	got, err := f.store.Balance(ctx, f.user, f.usdc)
+	got, err := f.store.Balance(ctx, f.org, f.member, f.usdc)
 	must(t, err, "balance")
 	want := amount * workers * perWorker
 	if got != want {
@@ -504,7 +537,7 @@ func TestConcurrentPostsStayConsistent(t *testing.T) {
 	var summed int64
 	must(t, testPool.QueryRow(ctx,
 		`SELECT COALESCE(SUM(amount), 0) FROM ledger_entries WHERE account_id = $1 AND asset_id = $2`,
-		int64(f.user), int16(f.usdc),
+		int64(f.member), int16(f.usdc),
 	).Scan(&summed), "sum entries")
 	if money.Stroops(summed) != got {
 		t.Errorf("cached balance %s disagrees with SUM(entries) %s", got, money.Stroops(summed))
@@ -525,12 +558,12 @@ func TestConcurrentReplayPostsOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			id, err := f.store.Post(ctx, PostRequest{
+			id, err := f.store.Post(ctx, PostRequest{Org: f.org,
 				IdempotencyKey: t.Name(),
 				Kind:           TxDeposit,
 				OccurredAt:     time.Unix(1700000000, 0),
 				Postings: []Posting{
-					{Account: f.user, Asset: f.usdc, Amount: amount},
+					{Account: f.member, Asset: f.usdc, Amount: amount},
 					{Account: f.external, Asset: f.usdc, Amount: -amount},
 				},
 			})
@@ -552,7 +585,7 @@ func TestConcurrentReplayPostsOnce(t *testing.T) {
 		t.Errorf("concurrent replay produced %d distinct transactions, want 1: %v", len(seen), seen)
 	}
 
-	got, err := f.store.Balance(ctx, f.user, f.usdc)
+	got, err := f.store.Balance(ctx, f.org, f.member, f.usdc)
 	must(t, err, "balance")
 	if got != amount {
 		t.Errorf("balance = %s, want %s (money moved more than once)", got, amount)
@@ -564,4 +597,126 @@ func must(t *testing.T, err error, what string) {
 	if err != nil {
 		t.Fatalf("%s: %v", what, err)
 	}
+}
+
+// TestCrossOrgTransactionIsRejectedByTheDatabase is the tenancy invariant, and
+// like the zero-sum one it is proved by bypassing this package entirely.
+//
+// One DAO's money moving into another DAO's books is the failure multi-tenancy
+// exists to prevent, and it is exactly the failure a forgotten predicate in one
+// query out of forty would cause. So it is a constraint, not a convention.
+func TestCrossOrgTransactionIsRejectedByTheDatabase(t *testing.T) {
+	a := newFixture(t)
+	ctx := context.Background()
+
+	// A second org with its own accounts, standing in for another tenant.
+	otherOrg := newOrgNamed(t, "t-other-crossorg")
+
+	victim, err := a.store.EnsureAccount(ctx, otherOrg, AccountMember, "victim", "victim")
+	must(t, err, "ensure the other org's member account")
+
+	tx, err := testPool.Begin(ctx)
+	must(t, err, "begin")
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var txID int64
+	err = tx.QueryRow(ctx, `
+		INSERT INTO ledger_transactions
+			(org_id, idempotency_key, request_fingerprint, kind, occurred_at)
+		VALUES ($1, $2, $3, 'send', now())
+		RETURNING id`,
+		int64(a.org), t.Name(), make([]byte, 32),
+	).Scan(&txID)
+	must(t, err, "insert transaction")
+
+	// Balanced, and reaching across tenants: this org's external account funds
+	// another org's member.
+	amount := int64(money.MustParse("100"))
+	for _, e := range []struct {
+		account AccountID
+		amount  int64
+	}{
+		{victim, amount},
+		{a.external, -amount},
+	} {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO ledger_entries (transaction_id, account_id, asset_id, amount)
+			VALUES ($1, $2, $3, $4)`,
+			txID, int64(e.account), int16(a.usdc), e.amount)
+		must(t, err, "insert entry")
+	}
+
+	err = tx.Commit(ctx)
+	if err == nil {
+		t.Fatal("a transaction spanning two orgs committed; tenants are not isolated")
+	}
+	if classified := classify(err); !errors.Is(classified, ErrCrossOrg) {
+		t.Fatalf("commit error = %v, want ErrCrossOrg", classified)
+	}
+}
+
+// TestBalanceIsScopedToItsOrg: an account id leaked from another tenant must
+// read as zero rather than as their balance.
+func TestBalanceIsScopedToItsOrg(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.deposit(t, t.Name(), money.MustParse("500"))
+
+	stranger := newOrgNamed(t, "t-stranger-balance")
+
+	got, err := f.store.Balance(ctx, stranger, f.member, f.usdc)
+	must(t, err, "balance")
+	if !got.IsZero() {
+		t.Fatalf("another org read %s from an account that is not theirs", got)
+	}
+}
+
+// TestIdempotencyKeysAreScopedToTheirOrg: two DAOs ingesting the same on-chain
+// operation each record it in their own books, and a global key would let the
+// first to arrive silence the second.
+func TestIdempotencyKeysAreScopedToTheirOrg(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	other := newOrgNamed(t, "t-shared-key")
+	otherMember, err := f.store.EnsureAccount(ctx, other, AccountMember, "m", "member")
+	must(t, err, "ensure member")
+	otherExternal, err := f.store.EnsureAccount(ctx, other, AccountExternal, "", "external")
+	must(t, err, "ensure external")
+
+	const sharedKey = "horizon:op:12345"
+	amount := money.MustParse("3")
+
+	first := f.deposit(t, sharedKey, amount)
+
+	second, err := f.store.Post(ctx, PostRequest{
+		Org:            other,
+		IdempotencyKey: sharedKey,
+		Kind:           TxDeposit,
+		OccurredAt:     time.Unix(1700000000, 0),
+		Postings: []Posting{
+			{Account: otherMember, Asset: f.usdc, Amount: amount},
+			{Account: otherExternal, Asset: f.usdc, Amount: -amount},
+		},
+	})
+	must(t, err, "the same key in another org")
+
+	if first == second {
+		t.Fatal("the same idempotency key in two orgs returned one transaction")
+	}
+}
+
+// newOrgNamed creates an org with a fixed slug, for tests that need a second
+// tenant. Idempotent across runs against the same database.
+func newOrgNamed(t *testing.T, slug string) OrgID {
+	t.Helper()
+	ctx := context.Background()
+	var id OrgID
+	err := testPool.QueryRow(ctx, `
+		INSERT INTO orgs (kind, slug, display_name, network)
+		VALUES ('dao', $1, $1, 'testnet')
+		ON CONFLICT (lower(slug)) DO UPDATE SET display_name = EXCLUDED.display_name
+		RETURNING id`, slug).Scan(&id)
+	must(t, err, "create org "+slug)
+	return id
 }
