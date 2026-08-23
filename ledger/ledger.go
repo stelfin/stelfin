@@ -7,9 +7,13 @@
 // proof that money exists.
 //
 // Every structural invariant is enforced by the database (see
-// migrations/00001_ledger_core.sql). The checks in this package are a fast,
+// migrations/00001_core.sql). The checks in this package are a fast,
 // well-worded first line of defence, never the only one — a future service, a
 // psql session or a migration could bypass Go, but not the constraints.
+//
+// The ledger is multi-tenant. Every account and every transaction belongs to
+// exactly one org, and no transaction may span two — enforced by a deferred
+// trigger rather than by remembering to write a predicate in every query.
 package ledger
 
 import (
@@ -33,6 +37,7 @@ import (
 const (
 	sqlStateUnbalanced      = "ST001"
 	sqlStateNegativeBalance = "ST002"
+	sqlStateCrossOrg        = "ST003"
 )
 
 // AccountKind identifies what a ledger account represents. These are internal
@@ -40,18 +45,23 @@ const (
 type AccountKind string
 
 const (
-	// AccountUser is a stelfin user's position.
-	AccountUser AccountKind = "user"
-	// AccountTreasury is the XLM float backing sponsorship and fee-bumps.
+	// AccountMember is one member's position within an org.
+	AccountMember AccountKind = "member"
+	// AccountTreasury is an org's holdings. Unlike the others it is not a
+	// singleton: a DAO may run an ops wallet and a grants wallet.
 	AccountTreasury AccountKind = "treasury"
 	// AccountExternal is the outside world: the counterparty for value crossing
-	// the system boundary. It is the only account permitted to go negative.
+	// this org's boundary.
 	AccountExternal AccountKind = "external"
 	// AccountFeeExpense accumulates fees paid.
 	AccountFeeExpense AccountKind = "fee_expense"
-	// AccountSponsoredReserve tracks CAP-33 reserves locked against user
+	// AccountSponsoredReserve tracks CAP-33 reserves locked against provisioned
 	// accounts: reclaimable, but not spendable float.
 	AccountSponsoredReserve AccountKind = "sponsored_reserve"
+	// AccountTrading is the counterparty for a swap. A trade is two balanced
+	// legs in different assets; without a counterparty account the per-asset
+	// zero-sum rule rejects it, correctly.
+	AccountTrading AccountKind = "trading"
 )
 
 // TxKind classifies a journal entry.
@@ -64,9 +74,19 @@ const (
 	TxSponsor        TxKind = "sponsor"
 	TxReserveRelease TxKind = "reserve_release"
 	TxWithdrawal     TxKind = "withdrawal"
+	TxTrade          TxKind = "trade"
 )
 
 type (
+	// OrgID identifies an organisation.
+	//
+	// A distinct type, and the first parameter of every store method, even
+	// where an account id already implies it. Passing both means a leaked id
+	// from another tenant returns zero rows instead of another tenant's
+	// balance, and it forces a compiler error at every call site rather than a
+	// silent behaviour change.
+	OrgID int64
+
 	// AccountID identifies a ledger account.
 	AccountID int64
 	// AssetID identifies a registered asset.
@@ -94,6 +114,12 @@ var (
 	// the original. This is never a safe retry: it means a key was reused for
 	// different money.
 	ErrIdempotencyKeyReused = errors.New("ledger: idempotency key reused with different content")
+
+	// ErrCrossOrg reports postings that touch more than one org. This is never
+	// a legitimate transaction: value crossing between tenants leaves one org
+	// through its external account and enters the other through theirs, as two
+	// transactions.
+	ErrCrossOrg = errors.New("ledger: transaction spans more than one org")
 )
 
 // Posting is one line of a journal entry. Amount is signed: a balanced
@@ -106,9 +132,17 @@ type Posting struct {
 
 // PostRequest describes a transaction to record.
 type PostRequest struct {
+	// Org owns this transaction. Every posting must reference an account in the
+	// same org; a deferred trigger refuses the transaction otherwise.
+	Org OrgID
+
 	// IdempotencyKey makes posting safe to retry. Replaying the same key with
 	// the same content returns the original transaction; replaying it with
 	// different content is an error.
+	//
+	// Unique per org, not globally: two DAOs ingesting the same on-chain
+	// operation each record it in their own books, and a global key would let
+	// the first to arrive silence the second.
 	IdempotencyKey string
 
 	Kind TxKind
@@ -167,11 +201,11 @@ func (s *Store) Post(ctx context.Context, req PostRequest) (TxID, error) {
 	var id TxID
 	err = tx.QueryRow(ctx, `
 		INSERT INTO ledger_transactions
-			(idempotency_key, request_fingerprint, kind, external_ref, occurred_at, metadata)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (idempotency_key) DO NOTHING
+			(org_id, idempotency_key, request_fingerprint, kind, external_ref, occurred_at, metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (org_id, idempotency_key) DO NOTHING
 		RETURNING id`,
-		req.IdempotencyKey, fingerprint[:], string(req.Kind), externalRef,
+		int64(req.Org), req.IdempotencyKey, fingerprint[:], string(req.Kind), externalRef,
 		req.OccurredAt, metadata,
 	).Scan(&id)
 
@@ -184,7 +218,7 @@ func (s *Store) Post(ctx context.Context, req PostRequest) (TxID, error) {
 		// abort the transaction, so tx is still usable — and reaching for a
 		// second pooled connection here while this one is still held would
 		// deadlock the pool as soon as concurrent callers replay the same key.
-		return resolveReplay(ctx, tx, req.IdempotencyKey, fingerprint)
+		return resolveReplay(ctx, tx, req.Org, req.IdempotencyKey, fingerprint)
 	case err != nil:
 		return 0, fmt.Errorf("ledger: insert transaction: %w", classify(err))
 	}
@@ -213,12 +247,14 @@ func (s *Store) Post(ctx context.Context, req PostRequest) (TxID, error) {
 // resolveReplay handles a collision on the idempotency key. It runs on the
 // caller's transaction so that no second pooled connection is needed: acquiring
 // one while the caller still holds theirs is a pool deadlock under concurrency.
-func resolveReplay(ctx context.Context, tx pgx.Tx, key string, want [32]byte) (TxID, error) {
+func resolveReplay(ctx context.Context, tx pgx.Tx, org OrgID, key string, want [32]byte) (TxID, error) {
 	var id TxID
 	var got []byte
 	err := tx.QueryRow(ctx, `
-		SELECT id, request_fingerprint FROM ledger_transactions WHERE idempotency_key = $1`,
-		key,
+		SELECT id, request_fingerprint
+		  FROM ledger_transactions
+		 WHERE org_id = $1 AND idempotency_key = $2`,
+		int64(org), key,
 	).Scan(&id, &got)
 	if err != nil {
 		return 0, fmt.Errorf("ledger: resolve replay of key %q: %w", key, err)
@@ -233,11 +269,17 @@ func resolveReplay(ctx context.Context, tx pgx.Tx, key string, want [32]byte) (T
 
 // Balance returns the current balance of an account in one asset. An account
 // with no entries for that asset reads as zero.
-func (s *Store) Balance(ctx context.Context, account AccountID, asset AssetID) (money.Stroops, error) {
+//
+// org is checked even though account_id already determines it: an id that
+// belongs to another tenant then reads as zero rather than as their balance.
+func (s *Store) Balance(ctx context.Context, org OrgID, account AccountID, asset AssetID) (money.Stroops, error) {
 	var balance int64
 	err := s.pool.QueryRow(ctx, `
-		SELECT balance FROM ledger_balances WHERE account_id = $1 AND asset_id = $2`,
-		int64(account), int16(asset),
+		SELECT b.balance
+		  FROM ledger_balances b
+		  JOIN ledger_accounts a ON a.id = b.account_id
+		 WHERE b.account_id = $1 AND b.asset_id = $2 AND a.org_id = $3`,
+		int64(account), int16(asset), int64(org),
 	).Scan(&balance)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil
@@ -278,38 +320,56 @@ func (s *Store) EnsureAsset(ctx context.Context, code, issuer string) (AssetID, 
 }
 
 // EnsureAccount registers a ledger account if absent and returns its id.
-// ownerRef must be set for AccountUser and empty for every other kind.
-func (s *Store) EnsureAccount(ctx context.Context, kind AccountKind, ownerRef, name string) (AccountID, error) {
+//
+// ownerRef must be set for AccountMember and empty for every other kind.
+//
+// Treasury accounts are deliberately not singletons, so they are identified by
+// name within the org: calling this twice with the same name returns the same
+// account, and with a different name creates a second one.
+func (s *Store) EnsureAccount(
+	ctx context.Context, org OrgID, kind AccountKind, ownerRef, name string,
+) (AccountID, error) {
+	if org == 0 {
+		return 0, errors.New("ledger: org is required")
+	}
 	var ownerArg *string
 	if ownerRef != "" {
 		ownerArg = &ownerRef
 	}
-	allowsNegative := kind == AccountExternal
+	allowsNegative := kind == AccountExternal || kind == AccountTrading
 
-	// Singleton kinds conflict on kind; user accounts conflict on owner_ref.
-	// Both partial indexes are covered by re-selecting on the same predicate.
+	// Three partial indexes can conflict here: member accounts on
+	// (org, owner_ref), singleton kinds on (org, kind), and treasuries on
+	// (org, lower(name)). The re-select covers all three by matching on the
+	// same tuple the insert would have.
 	var id AccountID
 	err := s.pool.QueryRow(ctx, `
 		WITH inserted AS (
-			INSERT INTO ledger_accounts (kind, owner_ref, name, allows_negative)
-			VALUES ($1, $2, $3, $4)
+			INSERT INTO ledger_accounts (org_id, kind, owner_ref, name, allows_negative)
+			VALUES ($1, $2, $3, $4, $5)
 			ON CONFLICT DO NOTHING
 			RETURNING id
 		)
 		SELECT id FROM inserted
 		UNION ALL
 		SELECT id FROM ledger_accounts
-		 WHERE kind = $1 AND COALESCE(owner_ref, '') = COALESCE($2, '')
+		 WHERE org_id = $1
+		   AND kind = $2
+		   AND COALESCE(owner_ref, '') = COALESCE($3, '')
+		   AND (kind <> 'treasury' OR lower(name) = lower($4))
 		LIMIT 1`,
-		string(kind), ownerArg, name, allowsNegative,
+		int64(org), string(kind), ownerArg, name, allowsNegative,
 	).Scan(&id)
 	if err != nil {
-		return 0, fmt.Errorf("ledger: ensure account %s/%s: %w", kind, ownerRef, err)
+		return 0, fmt.Errorf("ledger: ensure account %s/%s in org %d: %w", kind, ownerRef, org, err)
 	}
 	return id, nil
 }
 
 func validate(req PostRequest) error {
+	if req.Org == 0 {
+		return errors.New("ledger: org is required")
+	}
 	if req.IdempotencyKey == "" {
 		return errors.New("ledger: idempotency key is required")
 	}
@@ -375,6 +435,10 @@ func (r PostRequest) fingerprint() [32]byte {
 		h.Write(n[:])
 	}
 
+	// The org is part of the content, so the same key in two orgs fingerprints
+	// differently — which matters because the uniqueness constraint is scoped
+	// the same way and a replay lookup is too.
+	writeInt(int64(r.Org))
 	writeString(string(r.Kind))
 	writeString(r.ExternalRef)
 	writeInt(r.OccurredAt.UTC().UnixNano())
@@ -399,6 +463,8 @@ func classify(err error) error {
 		return fmt.Errorf("%w (%s)", ErrUnbalanced, pgErr.Message)
 	case sqlStateNegativeBalance:
 		return fmt.Errorf("%w (%s)", ErrInsufficientFunds, pgErr.Message)
+	case sqlStateCrossOrg:
+		return fmt.Errorf("%w (%s)", ErrCrossOrg, pgErr.Message)
 	default:
 		return err
 	}
