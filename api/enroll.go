@@ -10,6 +10,7 @@ import (
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 
 	"github.com/stelfin/stelfin/ledger"
+	"github.com/stelfin/stelfin/ledger/store"
 	"github.com/stelfin/stelfin/settlement"
 )
 
@@ -44,8 +45,8 @@ type Enrollment struct {
 // hasStellarAccount reports whether ownerRef already has a provisioned
 // account, without leaking which query failed the way stellarAddress's error
 // does — callers here only ever need the boolean.
-func (s *Service) hasStellarAccount(ctx context.Context, ownerRef string) (bool, error) {
-	_, err := s.stellarAddress(ctx, ownerRef)
+func (s *Service) hasStellarAccount(ctx context.Context, scope Scope) (bool, error) {
+	_, err := s.stellarAddress(ctx, scope)
 	switch {
 	case err == nil:
 		return true, nil
@@ -64,18 +65,21 @@ func (s *Service) hasStellarAccount(ctx context.Context, ownerRef string) (bool,
 // account, because the account does not exist yet. This transaction is what
 // brings it into existence.
 func (s *Service) PrepareEnrollment(
-	ctx context.Context, ownerRef, userAddress, treasuryAddress string,
+	ctx context.Context, scope Scope, userAddress, treasuryAddress string,
 ) (*Enrollment, error) {
+	if err := scope.check(); err != nil {
+		return nil, err
+	}
 	if userAddress == "" {
 		return nil, errors.New("api: enrollment needs a user address")
 	}
 
-	enrolled, err := s.hasStellarAccount(ctx, ownerRef)
+	enrolled, err := s.hasStellarAccount(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
 	if enrolled {
-		return nil, fmt.Errorf("%w: %s", ErrAlreadyEnrolled, ownerRef)
+		return nil, fmt.Errorf("%w: %s", ErrAlreadyEnrolled, scope.OwnerRef)
 	}
 
 	trustline, ok := s.cfg.Asset.(txnbuild.CreditAsset)
@@ -105,7 +109,7 @@ func (s *Service) PrepareEnrollment(
 	}
 
 	expiresAt := time.Unix(tx.Timebounds().MaxTime, 0).UTC()
-	if err := s.recordPendingEnrollment(ctx, hash, ownerRef, userAddress, xdr, expiresAt); err != nil {
+	if err := s.recordPendingEnrollment(ctx, hash, scope, userAddress, xdr, expiresAt); err != nil {
 		return nil, err
 	}
 
@@ -125,20 +129,20 @@ func (s *Service) PrepareEnrollment(
 // transaction carries a wall-clock timeout, so two calls even moments apart
 // generally build different transactions with different hashes — it is
 // specifically "the newest attempt wins", enforced by the partial unique
-// index on owner_ref.
+// index on (org_id, owner_ref).
 func (s *Service) recordPendingEnrollment(
-	ctx context.Context, hash, ownerRef, address, xdr string, expiresAt time.Time,
+	ctx context.Context, hash string, scope Scope, address, xdr string, expiresAt time.Time,
 ) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO pending_enrollments (hash, owner_ref, address, envelope_xdr, expires_at)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (owner_ref) WHERE submitted_at IS NULL DO UPDATE
+		INSERT INTO pending_enrollments (hash, org_id, owner_ref, address, envelope_xdr, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (org_id, owner_ref) WHERE submitted_at IS NULL DO UPDATE
 		   SET hash = EXCLUDED.hash,
 		       address = EXCLUDED.address,
 		       envelope_xdr = EXCLUDED.envelope_xdr,
 		       created_at = now(),
 		       expires_at = EXCLUDED.expires_at`,
-		hash, ownerRef, address, xdr, expiresAt,
+		hash, int64(scope.Org), scope.OwnerRef, address, xdr, expiresAt,
 	)
 	if err != nil {
 		return fmt.Errorf("api: record pending enrollment %s: %w", hash, err)
@@ -177,7 +181,7 @@ type EnrollResult struct {
 // now the same way DESIGN.md accepts other narrow crash windows; worth a
 // reconciliation job before this carries real users.
 func (s *Service) SubmitEnrollment(
-	ctx context.Context, ownerRef, signedXDR, treasuryAddress string,
+	ctx context.Context, scope Scope, signedXDR, treasuryAddress string,
 	sign func(*txnbuild.Transaction) (*txnbuild.Transaction, error),
 ) (EnrollResult, error) {
 	parsed, err := txnbuild.TransactionFromXDR(signedXDR)
@@ -197,7 +201,7 @@ func (s *Service) SubmitEnrollment(
 		return EnrollResult{}, fmt.Errorf("api: hash transaction: %w", err)
 	}
 
-	address, err := s.authoriseEnrollment(ctx, ownerRef, hash)
+	address, err := s.authoriseEnrollment(ctx, scope, hash)
 	if err != nil {
 		return EnrollResult{}, err
 	}
@@ -216,7 +220,7 @@ func (s *Service) SubmitEnrollment(
 		return EnrollResult{}, err
 	}
 
-	if err := s.finalizeEnrollment(ctx, ownerRef, address); err != nil {
+	if err := s.finalizeEnrollment(ctx, scope, address); err != nil {
 		return EnrollResult{}, err
 	}
 
@@ -228,17 +232,18 @@ func (s *Service) SubmitEnrollment(
 // authoriseEnrollment claims a pending enrollment for submission, the same
 // conditional-UPDATE shape as Submit's authorise: two concurrent submissions
 // of the same envelope cannot both pass.
-func (s *Service) authoriseEnrollment(ctx context.Context, ownerRef, hash string) (address string, err error) {
+func (s *Service) authoriseEnrollment(ctx context.Context, scope Scope, hash string) (address string, err error) {
 	var claimed string
 	err = s.pool.QueryRow(ctx, `
 		UPDATE pending_enrollments
 		   SET submitted_at = now()
 		 WHERE hash = $1
-		   AND owner_ref = $2
+		   AND org_id = $2
+		   AND owner_ref = $3
 		   AND submitted_at IS NULL
 		   AND expires_at > now()
 		RETURNING address`,
-		hash, ownerRef,
+		hash, int64(scope.Org), scope.OwnerRef,
 	).Scan(&claimed)
 	if err == nil {
 		return claimed, nil
@@ -246,7 +251,7 @@ func (s *Service) authoriseEnrollment(ctx context.Context, ownerRef, hash string
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return "", fmt.Errorf("api: claim pending enrollment %s: %w", hash, err)
 	}
-	return "", s.explainEnrollRefusal(ctx, ownerRef, hash)
+	return "", s.explainEnrollRefusal(ctx, scope, hash)
 }
 
 // explainEnrollRefusal distinguishes why a claim failed. The same error
@@ -254,12 +259,13 @@ func (s *Service) authoriseEnrollment(ctx context.Context, ownerRef, hash string
 // ErrAlreadySubmitted, ErrExpired) apply unchanged: they already name the
 // generic "transaction", not specifically a send, and the HTTP layer's status
 // mapping for them is correct for enrollment too.
-func (s *Service) explainEnrollRefusal(ctx context.Context, ownerRef, hash string) error {
+func (s *Service) explainEnrollRefusal(ctx context.Context, scope Scope, hash string) error {
 	var owner string
 	var expiresAt time.Time
 	var submittedAt *time.Time
 	err := s.pool.QueryRow(ctx, `
-		SELECT owner_ref, expires_at, submitted_at FROM pending_enrollments WHERE hash = $1`, hash,
+		SELECT owner_ref, expires_at, submitted_at
+		  FROM pending_enrollments WHERE hash = $1 AND org_id = $2`, hash, int64(scope.Org),
 	).Scan(&owner, &expiresAt, &submittedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("%w: %s", ErrUnknownTransaction, hash)
@@ -269,7 +275,7 @@ func (s *Service) explainEnrollRefusal(ctx context.Context, ownerRef, hash strin
 	}
 
 	switch {
-	case owner != ownerRef:
+	case owner != scope.OwnerRef:
 		return fmt.Errorf("%w: %s", ErrNotYours, hash)
 	case submittedAt != nil:
 		return fmt.Errorf("%w: %s at %s", ErrAlreadySubmitted, hash, submittedAt.Format(time.RFC3339))
@@ -279,25 +285,17 @@ func (s *Service) explainEnrollRefusal(ctx context.Context, ownerRef, hash strin
 }
 
 // finalizeEnrollment creates the ledger account and the owner-to-address
-// mapping that make ownerRef resolvable — by PrepareSend's stellarAddress
+// mapping that make the owner resolvable — by PrepareSend's stellarAddress
 // lookup, and by ingestion when a payment arrives — now that the chain has
 // confirmed the account is real.
-func (s *Service) finalizeEnrollment(ctx context.Context, ownerRef, address string) error {
-	accountID, err := s.ledgerStore.EnsureAccount(ctx, ledger.AccountUser, ownerRef, ownerRef)
+func (s *Service) finalizeEnrollment(ctx context.Context, scope Scope, address string) error {
+	accountID, err := s.store.EnsureAccount(ctx, scope.Org,
+		ledger.AccountMember, scope.OwnerRef, scope.OwnerRef)
 	if err != nil {
 		return err
 	}
-	// Same statement ingestion.Ingester.Track uses to register an address it
-	// should index — enrollment and ingestion converge on the same mapping,
-	// deliberately, rather than each owning a different notion of "tracked".
-	_, err = s.pool.Exec(ctx, `
-		INSERT INTO stellar_accounts (address, ledger_account_id)
-		VALUES ($1, $2)
-		ON CONFLICT (address) DO NOTHING`,
-		address, int64(accountID),
-	)
-	if err != nil {
-		return fmt.Errorf("api: track enrolled address %s: %w", address, err)
-	}
-	return nil
+	// The same mapping ingestion reads to decide whether a payment on chain is
+	// ours: enrollment and ingestion converge on one notion of "tracked" rather
+	// than each keeping its own.
+	return s.store.TrackAddress(ctx, scope.Org, address, accountID, store.RoleMember)
 }

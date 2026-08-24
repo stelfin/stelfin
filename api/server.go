@@ -211,12 +211,12 @@ const inboundTimeout = 60 * time.Second
 // it names exactly one transaction: a token cannot be used to read a different
 // payment even for the same user.
 func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
-	ownerRef, hash, ok := s.authorise(w, r)
+	scope, hash, ok := s.authorise(w, r)
 	if !ok {
 		return
 	}
 
-	confirmation, err := s.svc.LoadConfirmation(r.Context(), ownerRef, hash)
+	confirmation, err := s.svc.LoadConfirmation(r.Context(), scope, hash)
 	if err != nil {
 		s.writeError(w, err)
 		return
@@ -244,7 +244,7 @@ type submitRequest struct {
 
 // handleSubmit accepts the signed envelope and sends it.
 func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
-	ownerRef, hash, ok := s.authorise(w, r)
+	scope, hash, ok := s.authorise(w, r)
 	if !ok {
 		return
 	}
@@ -259,7 +259,7 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.svc.Submit(r.Context(), ownerRef, req.SignedXDR,
+	res, err := s.svc.Submit(r.Context(), scope, req.SignedXDR,
 		s.cfg.TreasuryAddress, s.cfg.SignFeeBump)
 	if err != nil {
 		s.writeError(w, err)
@@ -270,7 +270,7 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	// a disagreement means a token was reused against a different envelope.
 	if res.Hash != "" && hash != "" && !res.AlreadyKnown && res.Hash != hash {
 		s.log.Warn("submitted hash differs from the token's",
-			"token_hash", hash, "submitted_hash", res.Hash, "owner", ownerRef)
+			"token_hash", hash, "submitted_hash", res.Hash, "owner", scope.OwnerRef)
 	}
 
 	s.writeJSON(w, http.StatusOK, map[string]any{
@@ -281,21 +281,21 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 }
 
 // authorise verifies the confirmation token and reports what it grants.
-func (s *Server) authorise(w http.ResponseWriter, r *http.Request) (ownerRef, hash string, ok bool) {
+func (s *Server) authorise(w http.ResponseWriter, r *http.Request) (scope Scope, hash string, ok bool) {
 	token := bearer(r.Header.Get("Authorization"))
 	if token == "" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return "", "", false
+		return Scope{}, "", false
 	}
-	ownerRef, hash, err := s.tokens.Verify(token)
+	scope, hash, err := s.tokens.Verify(token)
 	if err != nil {
 		// Invalid and expired are both 401 to the caller; the distinction is
 		// only in the log.
 		s.log.Warn("confirmation token refused", "error", err)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return "", "", false
+		return Scope{}, "", false
 	}
-	return ownerRef, hash, true
+	return scope, hash, true
 }
 
 type enrollRequest struct {
@@ -305,7 +305,7 @@ type enrollRequest struct {
 // handleEnroll builds the provisioning transaction for a device-generated
 // address and returns it for the device to sign.
 func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
-	ownerRef, ok := s.authoriseEnroll(w, r)
+	scope, ok := s.authoriseEnroll(w, r)
 	if !ok {
 		return
 	}
@@ -320,7 +320,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	enrollment, err := s.svc.PrepareEnrollment(r.Context(), ownerRef, req.Address, s.cfg.TreasuryAddress)
+	enrollment, err := s.svc.PrepareEnrollment(r.Context(), scope, req.Address, s.cfg.TreasuryAddress)
 	if err != nil {
 		s.writeError(w, err)
 		return
@@ -339,7 +339,7 @@ type enrollSubmitRequest struct {
 // handleEnrollSubmit accepts the device-signed provisioning envelope and
 // submits it, bringing the account into existence.
 func (s *Server) handleEnrollSubmit(w http.ResponseWriter, r *http.Request) {
-	ownerRef, ok := s.authoriseEnroll(w, r)
+	scope, ok := s.authoriseEnroll(w, r)
 	if !ok {
 		return
 	}
@@ -354,7 +354,7 @@ func (s *Server) handleEnrollSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.svc.SubmitEnrollment(r.Context(), ownerRef, req.SignedXDR,
+	res, err := s.svc.SubmitEnrollment(r.Context(), scope, req.SignedXDR,
 		s.cfg.TreasuryAddress, s.cfg.SignProvision)
 	if err != nil {
 		s.writeError(w, err)
@@ -370,19 +370,19 @@ func (s *Server) handleEnrollSubmit(w http.ResponseWriter, r *http.Request) {
 
 // authoriseEnroll verifies the enroll token and reports the owner it
 // authorises.
-func (s *Server) authoriseEnroll(w http.ResponseWriter, r *http.Request) (ownerRef string, ok bool) {
+func (s *Server) authoriseEnroll(w http.ResponseWriter, r *http.Request) (scope Scope, ok bool) {
 	token := bearer(r.Header.Get("Authorization"))
 	if token == "" {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return "", false
+		return Scope{}, false
 	}
-	ownerRef, err := s.enrollTokens.Verify(token)
+	scope, err := s.enrollTokens.Verify(token)
 	if err != nil {
 		s.log.Warn("enroll token refused", "error", err)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return "", false
+		return Scope{}, false
 	}
-	return ownerRef, true
+	return scope, true
 }
 
 func bearer(header string) string {
@@ -428,8 +428,8 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, body any) {
 // The token goes in the fragment, not the query string: fragments are not sent
 // to the server on page load and do not appear in access logs, proxy logs, or
 // Referer headers when the page links out.
-func (s *Server) IssueConfirmLink(ownerRef, hash string, expiresAt time.Time) (string, error) {
-	token, err := s.tokens.Issue(ownerRef, hash, expiresAt)
+func (s *Server) IssueConfirmLink(scope Scope, hash string, expiresAt time.Time) (string, error) {
+	token, err := s.tokens.Issue(scope, hash, expiresAt)
 	if err != nil {
 		return "", err
 	}
@@ -438,8 +438,8 @@ func (s *Server) IssueConfirmLink(ownerRef, hash string, expiresAt time.Time) (s
 
 // IssueEnrollLink mints the URL sent to a not-yet-enrolled user. Same fragment
 // placement, same reasoning as IssueConfirmLink.
-func (s *Server) IssueEnrollLink(ownerRef string, expiresAt time.Time) (string, error) {
-	token, err := s.enrollTokens.Issue(ownerRef, expiresAt)
+func (s *Server) IssueEnrollLink(scope Scope, expiresAt time.Time) (string, error) {
+	token, err := s.enrollTokens.Issue(scope, expiresAt)
 	if err != nil {
 		return "", err
 	}

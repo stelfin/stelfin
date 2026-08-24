@@ -70,6 +70,23 @@ func (s *Service) HandleInbound(
 	if m.DedupeID == "" {
 		return errors.New("api: inbound message has no dedupe id")
 	}
+
+	// Tenancy first, before a single byte of the message content is looked at.
+	//
+	// An unregistered space is not an error and gets no reply: the bot has been
+	// added somewhere nobody has run setup, and answering would be talking to a
+	// room that never asked. It also costs nothing — no claim, no decoder call.
+	org, ok, err := s.store.OrgForSpace(ctx, m.Conversation.Channel, m.Conversation.SpaceID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	if !org.Active() {
+		// Suspended tenants keep their history readable and move no money.
+		return s.reply(ctx, out, m, "This workspace is suspended. Nothing can be sent right now.")
+	}
 	claimed, err := s.claimMessage(ctx, m)
 	if err != nil {
 		return err
@@ -82,27 +99,28 @@ func (s *Service) HandleInbound(
 
 	// The transport identity becomes the domain identity here, and nowhere
 	// else. Actor.Ref is channel-scoped, so the same numeric id on two
-	// platforms stays two different owners.
-	ownerRef := m.Actor.Ref()
+	// platforms stays two different owners; the org comes from the space the
+	// message arrived in, resolved before any of its content was looked at.
+	scope := Scope{Org: org.ID, OwnerRef: m.Actor.Ref()}
 
 	// An unenrolled owner has nothing PrepareSend could resolve "from", and
 	// running the decoder for them would spend an LLM call to reject something
 	// the account state already rules out. Checked first, deciding before any
 	// message content is even looked at.
-	enrolled, err := s.hasStellarAccount(ctx, ownerRef)
+	enrolled, err := s.hasStellarAccount(ctx, scope)
 	if err != nil {
 		return err
 	}
 	if !enrolled {
-		return s.replyWithEnrollLink(ctx, out, links, m, ownerRef)
+		return s.replyWithEnrollLink(ctx, out, links, m, scope)
 	}
 
-	confirmation, err := s.PrepareSend(ctx, ownerRef, []string{m.Args})
+	confirmation, err := s.PrepareSend(ctx, scope, []string{m.Args})
 	if err != nil {
 		return s.replyWithProblem(ctx, out, m, err)
 	}
 
-	link, err := links.IssueConfirmLink(ownerRef, confirmation.Hash, time.Now().Add(confirmLinkLifetime))
+	link, err := links.IssueConfirmLink(scope, confirmation.Hash, time.Now().Add(confirmLinkLifetime))
 	if err != nil {
 		return err
 	}
@@ -133,9 +151,9 @@ func (s *Service) reply(ctx context.Context, out Replier, m chat.Inbound, body s
 // replyWithEnrollLink sends a not-yet-enrolled user the link that creates their
 // account.
 func (s *Service) replyWithEnrollLink(
-	ctx context.Context, out Replier, links Linker, m chat.Inbound, ownerRef string,
+	ctx context.Context, out Replier, links Linker, m chat.Inbound, scope Scope,
 ) error {
-	link, err := links.IssueEnrollLink(ownerRef, time.Now().Add(enrollLinkLifetime))
+	link, err := links.IssueEnrollLink(scope, time.Now().Add(enrollLinkLifetime))
 	if err != nil {
 		return err
 	}
@@ -162,8 +180,8 @@ const enrollLinkLifetime = 2 * time.Minute
 // Linker mints the links a reply carries authority through. The Server
 // implements it.
 type Linker interface {
-	IssueConfirmLink(ownerRef, hash string, expiresAt time.Time) (string, error)
-	IssueEnrollLink(ownerRef string, expiresAt time.Time) (string, error)
+	IssueConfirmLink(scope Scope, hash string, expiresAt time.Time) (string, error)
+	IssueEnrollLink(scope Scope, expiresAt time.Time) (string, error)
 }
 
 // replyWithProblem turns a failure into something the user can act on.
