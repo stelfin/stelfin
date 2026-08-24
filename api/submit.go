@@ -46,15 +46,15 @@ var (
 // recordPending stores a built transaction so its later submission can be
 // authorised. Called as part of preparing a send.
 func (s *Service) recordPending(
-	ctx context.Context, ownerRef string, c *Confirmation, asset int16, expiresAt time.Time,
+	ctx context.Context, scope Scope, c *Confirmation, asset int16, expiresAt time.Time,
 ) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO pending_sends
-			(hash, owner_ref, envelope_xdr, amount, asset_id, destination,
+			(hash, org_id, owner_ref, envelope_xdr, amount, asset_id, destination,
 			 to_label, said_amount, said_destination, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (hash) DO NOTHING`,
-		c.Hash, ownerRef, c.XDR, int64(c.Amount), asset, c.ToAddress,
+		c.Hash, int64(scope.Org), scope.OwnerRef, c.XDR, int64(c.Amount), asset, c.ToAddress,
 		c.ToLabel, c.SaidAmount, c.SaidDestination, expiresAt,
 	)
 	if err != nil {
@@ -78,7 +78,7 @@ type SubmitResult struct {
 // signature. It is authorised against pending_sends, wrapped in a treasury
 // fee-bump so the user pays nothing, and submitted.
 func (s *Service) Submit(
-	ctx context.Context, ownerRef, signedXDR, treasuryAddress string,
+	ctx context.Context, scope Scope, signedXDR, treasuryAddress string,
 	sign func(*txnbuild.FeeBumpTransaction) (*txnbuild.FeeBumpTransaction, error),
 ) (SubmitResult, error) {
 	parsed, err := txnbuild.TransactionFromXDR(signedXDR)
@@ -100,7 +100,7 @@ func (s *Service) Submit(
 		return SubmitResult{}, fmt.Errorf("api: hash transaction: %w", err)
 	}
 
-	if err := s.authorise(ctx, ownerRef, hash); err != nil {
+	if err := s.authorise(ctx, scope, hash); err != nil {
 		return SubmitResult{}, err
 	}
 
@@ -130,17 +130,18 @@ func (s *Service) Submit(
 // The claim is a conditional UPDATE rather than a read followed by a write, so
 // two concurrent submissions of the same envelope cannot both pass: exactly one
 // updates the row, and the other finds nothing to claim.
-func (s *Service) authorise(ctx context.Context, ownerRef, hash string) error {
+func (s *Service) authorise(ctx context.Context, scope Scope, hash string) error {
 	var claimed bool
 	err := s.pool.QueryRow(ctx, `
 		UPDATE pending_sends
 		   SET submitted_at = now()
 		 WHERE hash = $1
-		   AND owner_ref = $2
+		   AND org_id = $2
+		   AND owner_ref = $3
 		   AND submitted_at IS NULL
 		   AND expires_at > now()
 		RETURNING true`,
-		hash, ownerRef,
+		hash, int64(scope.Org), scope.OwnerRef,
 	).Scan(&claimed)
 	if err == nil {
 		return nil
@@ -151,15 +152,18 @@ func (s *Service) authorise(ctx context.Context, ownerRef, hash string) error {
 
 	// Nothing was claimed. Work out why, so the caller can tell a replay from
 	// a forgery.
-	return s.explainRefusal(ctx, ownerRef, hash)
+	return s.explainRefusal(ctx, scope, hash)
 }
 
-func (s *Service) explainRefusal(ctx context.Context, ownerRef, hash string) error {
+func (s *Service) explainRefusal(ctx context.Context, scope Scope, hash string) error {
 	var owner string
 	var expiresAt time.Time
 	var submittedAt *time.Time
+	// Scoped by org as well as hash: a hash from another tenant must look like
+	// an unknown transaction here, not like one belonging to someone else.
 	err := s.pool.QueryRow(ctx, `
-		SELECT owner_ref, expires_at, submitted_at FROM pending_sends WHERE hash = $1`, hash,
+		SELECT owner_ref, expires_at, submitted_at
+		  FROM pending_sends WHERE hash = $1 AND org_id = $2`, hash, int64(scope.Org),
 	).Scan(&owner, &expiresAt, &submittedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("%w: %s", ErrUnknownTransaction, hash)
@@ -169,7 +173,7 @@ func (s *Service) explainRefusal(ctx context.Context, ownerRef, hash string) err
 	}
 
 	switch {
-	case owner != ownerRef:
+	case owner != scope.OwnerRef:
 		return fmt.Errorf("%w: %s", ErrNotYours, hash)
 	case submittedAt != nil:
 		return fmt.Errorf("%w: %s at %s", ErrAlreadySubmitted, hash, submittedAt.Format(time.RFC3339))
@@ -186,17 +190,18 @@ type PendingSend struct {
 	ExpiresAt   time.Time
 }
 
-// Pending lists a user's unsubmitted, unexpired transactions.
-func (s *Service) Pending(ctx context.Context, ownerRef string) ([]PendingSend, error) {
+// Pending lists a member's unsubmitted, unexpired transactions.
+func (s *Service) Pending(ctx context.Context, scope Scope) ([]PendingSend, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT hash, amount, destination, expires_at
 		  FROM pending_sends
-		 WHERE owner_ref = $1 AND submitted_at IS NULL AND expires_at > now()
+		 WHERE org_id = $1 AND owner_ref = $2
+		   AND submitted_at IS NULL AND expires_at > now()
 		 ORDER BY created_at DESC`,
-		ownerRef,
+		int64(scope.Org), scope.OwnerRef,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("api: list pending sends for %s: %w", ownerRef, err)
+		return nil, fmt.Errorf("api: list pending sends for %s: %w", scope.OwnerRef, err)
 	}
 	defer rows.Close()
 

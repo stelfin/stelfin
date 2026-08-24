@@ -19,14 +19,16 @@ var ErrNoSuchSend = errors.New("api: no pending send with that hash")
 // future change ever wrote a confirmation row whose numbers disagreed with its
 // envelope, this reads the envelope and the disagreement never reaches a user.
 //
-// ownerRef scopes the lookup: a hash alone is not authority to see a payment.
-func (s *Service) LoadConfirmation(ctx context.Context, ownerRef, hash string) (*Confirmation, error) {
+// scope bounds the lookup: a hash alone is not authority to see a payment, and
+// a hash plus an owner is not authority to see another org's.
+func (s *Service) LoadConfirmation(ctx context.Context, scope Scope, hash string) (*Confirmation, error) {
 	var xdr, toLabel, saidAmount, saidDestination string
 	err := s.pool.QueryRow(ctx, `
 		SELECT envelope_xdr, to_label, said_amount, said_destination
 		  FROM pending_sends
-		 WHERE hash = $1 AND owner_ref = $2 AND submitted_at IS NULL AND expires_at > now()`,
-		hash, ownerRef,
+		 WHERE hash = $1 AND org_id = $2 AND owner_ref = $3
+		   AND submitted_at IS NULL AND expires_at > now()`,
+		hash, int64(scope.Org), scope.OwnerRef,
 	).Scan(&xdr, &toLabel, &saidAmount, &saidDestination)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("%w: %s", ErrNoSuchSend, hash)
