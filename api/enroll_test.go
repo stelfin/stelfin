@@ -16,7 +16,7 @@ import (
 
 // newUnenrolledService returns a Service and a fresh phone number with no
 // stellar_accounts row — the state enrollment exists to move a user out of.
-func newUnenrolledService(t *testing.T) (*Service, string) {
+func newUnenrolledService(t *testing.T) (*Service, Scope) {
 	t.Helper()
 	settle, err := settlement.NewWith(&fakeHorizon{sequence: 5}, settlement.Config{
 		HorizonURL:        "https://horizon-testnet.stellar.org",
@@ -31,12 +31,12 @@ func newUnenrolledService(t *testing.T) (*Service, string) {
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
-	return svc, ownerFor(t)
+	return svc, Scope{Org: orgFor(t, "/enroll").ID, OwnerRef: ownerFor(t)}
 }
 
 // prepareAndSign runs PrepareEnrollment and signs the returned envelope as
 // the device would.
-func prepareAndSign(t *testing.T, svc *Service, owner, treasuryAddr string, userKey *keypair.Full) (*Enrollment, string) {
+func prepareAndSign(t *testing.T, svc *Service, owner Scope, treasuryAddr string, userKey *keypair.Full) (*Enrollment, string) {
 	t.Helper()
 	e, err := svc.PrepareEnrollment(context.Background(), owner, userKey.Address(), treasuryAddr)
 	if err != nil {
@@ -110,7 +110,7 @@ func TestPrepareEnrollmentRejectsAlreadyEnrolled(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	treasury := keypair.MustRandom()
 
-	_, err := f.svc.PrepareEnrollment(context.Background(), f.owner, keypair.MustRandom().Address(), treasury.Address())
+	_, err := f.svc.PrepareEnrollment(context.Background(), f.scope, keypair.MustRandom().Address(), treasury.Address())
 	if !errors.Is(err, ErrAlreadyEnrolled) {
 		t.Fatalf("error = %v, want ErrAlreadyEnrolled", err)
 	}
@@ -138,12 +138,14 @@ func TestPrepareEnrollmentRetrySupersedesThePrevious(t *testing.T) {
 
 	var pending int
 	if err := testPool.QueryRow(ctx,
-		`SELECT count(*) FROM pending_enrollments WHERE owner_ref = $1 AND submitted_at IS NULL`, owner,
+		`SELECT count(*) FROM pending_enrollments
+		  WHERE org_id = $1 AND owner_ref = $2 AND submitted_at IS NULL`,
+		int64(owner.Org), owner.OwnerRef,
 	).Scan(&pending); err != nil {
 		t.Fatalf("count pending enrollments: %v", err)
 	}
 	if pending != 1 {
-		t.Errorf("%d outstanding enrollments for %s, want exactly 1", pending, owner)
+		t.Errorf("%d outstanding enrollments for %s, want exactly 1", pending, owner.OwnerRef)
 	}
 
 	// The first attempt's hash must no longer be a live claim: the row was
@@ -247,14 +249,32 @@ func TestSubmitEnrollmentRejectsForeignTransaction(t *testing.T) {
 	}
 }
 
-func TestSubmitEnrollmentRejectsAnotherUsersTransaction(t *testing.T) {
+func TestSubmitEnrollmentRejectsAnotherMembersTransaction(t *testing.T) {
 	svc, owner := newUnenrolledService(t)
 	treasury := keypair.MustRandom()
 	_, signedXDR := prepareAndSign(t, svc, owner, treasury.Address(), keypair.MustRandom())
 
-	_, err := svc.SubmitEnrollment(context.Background(), "someone-else", signedXDR, treasury.Address(), signProvisionWith(treasury))
+	stranger := Scope{Org: owner.Org, OwnerRef: "telegram:someone-else"}
+	_, err := svc.SubmitEnrollment(context.Background(), stranger, signedXDR,
+		treasury.Address(), signProvisionWith(treasury))
 	if !errors.Is(err, ErrNotYours) {
 		t.Fatalf("error = %v, want ErrNotYours", err)
+	}
+}
+
+// TestSubmitEnrollmentRejectsAnotherOrgsTransaction: a hash from another tenant
+// must look like an unknown transaction, not like one belonging to someone
+// else — the second answer confirms it exists.
+func TestSubmitEnrollmentRejectsAnotherOrgsTransaction(t *testing.T) {
+	svc, owner := newUnenrolledService(t)
+	treasury := keypair.MustRandom()
+	_, signedXDR := prepareAndSign(t, svc, owner, treasury.Address(), keypair.MustRandom())
+
+	elsewhere := Scope{Org: orgFor(t, "/elsewhere").ID, OwnerRef: owner.OwnerRef}
+	_, err := svc.SubmitEnrollment(context.Background(), elsewhere, signedXDR,
+		treasury.Address(), signProvisionWith(treasury))
+	if !errors.Is(err, ErrUnknownTransaction) {
+		t.Fatalf("error = %v, want ErrUnknownTransaction", err)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,9 +18,11 @@ import (
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 
 	"github.com/stelfin/stelfin/api/intent"
+	"github.com/stelfin/stelfin/chat"
 	"github.com/stelfin/stelfin/internal/money"
 	"github.com/stelfin/stelfin/internal/pgtest"
 	"github.com/stelfin/stelfin/ledger"
+	"github.com/stelfin/stelfin/ledger/store"
 	"github.com/stelfin/stelfin/settlement"
 )
 
@@ -93,6 +96,9 @@ var testIssuer = keypair.MustRandom().Address()
 type fixture struct {
 	svc      *Service
 	owner    string
+	org      ledger.OrgID
+	space    string
+	scope    Scope
 	from     string
 	toAddr   string
 	assetXDR txnbuild.Asset
@@ -112,32 +118,62 @@ func ownerFor(t *testing.T) string {
 	return fmt.Sprintf("telegram:%d", h.Sum64()%1_0000_000_000)
 }
 
+// orgFor creates a tenant for one test, and registers the Telegram space its
+// messages arrive in so HandleInbound can resolve it.
+func orgFor(t *testing.T, suffix string) store.Org {
+	t.Helper()
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(t.Name() + suffix))
+	org, err := store.New(testPool).CreateOrg(context.Background(), store.CreateOrgParams{
+		Slug:        fmt.Sprintf("t-%016x", h.Sum64()),
+		DisplayName: t.Name() + suffix,
+		Network:     "testnet",
+		Channel:     chat.Telegram,
+		SpaceID:     fmt.Sprintf("space-%016x", h.Sum64()),
+	})
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	return org
+}
+
+// spaceFor is the chat space an org's messages arrive in. Derived from the
+// slug so a test can build a message that resolves back to its own tenant.
+func spaceFor(org store.Org) string {
+	return "space-" + strings.TrimPrefix(org.Slug, "t-")
+}
+
+// scopeFor is the scope a test's messages act under.
+func scopeFor(t *testing.T, org ledger.OrgID) Scope {
+	t.Helper()
+	return Scope{Org: org, OwnerRef: ownerFor(t)}
+}
+
 func newFixtureFor(t *testing.T, decoded intent.Decoded, owner string) *fixture {
 	t.Helper()
 	ctx := context.Background()
 
-	store := ledger.New(testPool)
-	account, err := store.EnsureAccount(ctx, ledger.AccountUser, owner, "user "+owner)
+	db := store.New(testPool)
+	org := orgFor(t, "")
+	account, err := db.EnsureAccount(ctx, org.ID, ledger.AccountMember, owner, "member "+owner)
 	if err != nil {
 		t.Fatalf("ensure account: %v", err)
 	}
 
 	from := keypair.MustRandom().Address()
-	if _, err := testPool.Exec(ctx,
-		`INSERT INTO stellar_accounts (address, ledger_account_id) VALUES ($1, $2)`,
-		from, int64(account)); err != nil {
+	if err := db.TrackAddress(ctx, org.ID, from, account, store.RoleMember); err != nil {
 		t.Fatalf("track sender address: %v", err)
 	}
 
 	toAddr := keypair.MustRandom().Address()
 	if _, err := testPool.Exec(ctx,
-		`INSERT INTO beneficiaries (owner_ref, label, address) VALUES ($1, $2, $3)`,
-		owner, "Brother", toAddr); err != nil {
+		`INSERT INTO beneficiaries (org_id, owner_ref, label, address) VALUES ($1, $2, $3, $4)`,
+		int64(org.ID), owner, "Brother", toAddr); err != nil {
 		t.Fatalf("save beneficiary: %v", err)
 	}
 
 	asset := txnbuild.CreditAsset{Code: "USDC", Issuer: testIssuer}
-	assetID, err := store.EnsureAsset(ctx, "USDC", testIssuer)
+	assetID, err := db.Ledger().EnsureAsset(ctx, "USDC", testIssuer)
 	if err != nil {
 		t.Fatalf("ensure asset: %v", err)
 	}
@@ -157,7 +193,13 @@ func newFixtureFor(t *testing.T, decoded intent.Decoded, owner string) *fixture 
 		t.Fatalf("new service: %v", err)
 	}
 
-	return &fixture{svc: svc, owner: owner, from: from, toAddr: toAddr, assetXDR: asset}
+	return &fixture{
+		svc: svc, owner: owner, org: org.ID, space: spaceFor(org),
+		scope:    Scope{Org: org.ID, OwnerRef: owner},
+		from:     from,
+		toAddr:   toAddr,
+		assetXDR: asset,
+	}
 }
 
 // sendDecoded is a well-formed decode of "send 5,000 to brother".
@@ -175,7 +217,7 @@ const sendMessage = "send 5,000 to brother"
 func TestPrepareSend(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 
-	got, err := f.svc.PrepareSend(context.Background(), f.owner, []string{sendMessage})
+	got, err := f.svc.PrepareSend(context.Background(), f.scope, []string{sendMessage})
 	if err != nil {
 		t.Fatalf("PrepareSend: %v", err)
 	}
@@ -213,7 +255,7 @@ func TestPrepareSend(t *testing.T) {
 func TestConfirmationMatchesTheSignedEnvelope(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 
-	got, err := f.svc.PrepareSend(context.Background(), f.owner, []string{sendMessage})
+	got, err := f.svc.PrepareSend(context.Background(), f.scope, []string{sendMessage})
 	if err != nil {
 		t.Fatalf("PrepareSend: %v", err)
 	}
@@ -263,7 +305,7 @@ func TestHallucinatedAmountNeverReachesATransaction(t *testing.T) {
 	d.Amount.Text = "50,000" // the span still says 5,000
 
 	f := newFixture(t, d)
-	got, err := f.svc.PrepareSend(context.Background(), f.owner, []string{sendMessage})
+	got, err := f.svc.PrepareSend(context.Background(), f.scope, []string{sendMessage})
 	if !errors.Is(err, intent.ErrSpanMismatch) {
 		t.Fatalf("error = %v, want ErrSpanMismatch", err)
 	}
@@ -279,7 +321,7 @@ func TestUnknownBeneficiaryIsRefused(t *testing.T) {
 	f := newFixture(t, d)
 	// The span says "brother", so this is caught as a mismatch before the
 	// lookup even happens.
-	if _, err := f.svc.PrepareSend(context.Background(), f.owner, []string{sendMessage}); err == nil {
+	if _, err := f.svc.PrepareSend(context.Background(), f.scope, []string{sendMessage}); err == nil {
 		t.Fatal("expected an error")
 	}
 }
@@ -290,7 +332,7 @@ func TestUnsavedBeneficiaryIsRefused(t *testing.T) {
 	d.Destination = intent.Field{Text: "landlord", Span: intent.Span{Turn: 0, Start: 3, End: 4}}
 
 	f := newFixture(t, d)
-	_, err := f.svc.PrepareSend(context.Background(), f.owner, []string{msg})
+	_, err := f.svc.PrepareSend(context.Background(), f.scope, []string{msg})
 	if !errors.Is(err, intent.ErrDestinationNotFound) {
 		t.Fatalf("error = %v, want ErrDestinationNotFound", err)
 	}
@@ -301,7 +343,7 @@ func TestNonSendIsRefused(t *testing.T) {
 		Action: intent.Field{Text: "balance", Span: intent.Span{Turn: 0, Start: 3, End: 4}},
 	})
 
-	_, err := f.svc.PrepareSend(context.Background(), f.owner, []string{"what is my balance"})
+	_, err := f.svc.PrepareSend(context.Background(), f.scope, []string{"what is my balance"})
 	if !errors.Is(err, ErrNotASend) {
 		t.Fatalf("error = %v, want ErrNotASend", err)
 	}
@@ -312,10 +354,11 @@ func TestUserWithoutAnAccountIsRefused(t *testing.T) {
 	owner := t.Name()
 
 	// A beneficiary but no provisioned Stellar account.
+	org := orgFor(t, "/no-account")
 	toAddr := keypair.MustRandom().Address()
 	if _, err := testPool.Exec(ctx,
-		`INSERT INTO beneficiaries (owner_ref, label, address) VALUES ($1, $2, $3)`,
-		owner, "Brother", toAddr); err != nil {
+		`INSERT INTO beneficiaries (org_id, owner_ref, label, address) VALUES ($1, $2, $3, $4)`,
+		int64(org.ID), owner, "Brother", toAddr); err != nil {
 		t.Fatalf("save beneficiary: %v", err)
 	}
 
@@ -333,7 +376,8 @@ func TestUserWithoutAnAccountIsRefused(t *testing.T) {
 		t.Fatalf("new service: %v", err)
 	}
 
-	if _, err := svc.PrepareSend(ctx, owner, []string{sendMessage}); !errors.Is(err, ErrNoAccount) {
+	scope := Scope{Org: org.ID, OwnerRef: owner}
+	if _, err := svc.PrepareSend(ctx, scope, []string{sendMessage}); !errors.Is(err, ErrNoAccount) {
 		t.Fatalf("error = %v, want ErrNoAccount", err)
 	}
 }
@@ -342,14 +386,14 @@ func TestDecoderFailureIsReported(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	f.svc.decoder = fixedDecoder{err: errors.New("model unavailable")}
 
-	if _, err := f.svc.PrepareSend(context.Background(), f.owner, []string{sendMessage}); err == nil {
+	if _, err := f.svc.PrepareSend(context.Background(), f.scope, []string{sendMessage}); err == nil {
 		t.Fatal("expected the decoder error to surface")
 	}
 }
 
 func TestEmptyConversationIsRefused(t *testing.T) {
 	f := newFixture(t, sendDecoded())
-	if _, err := f.svc.PrepareSend(context.Background(), f.owner, nil); err == nil {
+	if _, err := f.svc.PrepareSend(context.Background(), f.scope, nil); err == nil {
 		t.Fatal("expected an error for an empty conversation")
 	}
 }

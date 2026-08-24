@@ -52,12 +52,12 @@ func (r *fakeReplier) only(t *testing.T) chat.Reply {
 // stubLinker mints predictable links so replies can be asserted on.
 type stubLinker struct{}
 
-func (stubLinker) IssueConfirmLink(_, hash string, _ time.Time) (string, error) {
+func (stubLinker) IssueConfirmLink(_ Scope, hash string, _ time.Time) (string, error) {
 	return "https://stelfin.example/confirm#token-for-" + hash, nil
 }
 
-func (stubLinker) IssueEnrollLink(ownerRef string, _ time.Time) (string, error) {
-	return "https://stelfin.example/enroll#token-for-" + ownerRef, nil
+func (stubLinker) IssueEnrollLink(scope Scope, _ time.Time) (string, error) {
+	return "https://stelfin.example/enroll#token-for-" + scope.OwnerRef, nil
 }
 
 // actorFor derives a stable actor for a test. Its Ref is the owner reference
@@ -67,15 +67,21 @@ func actorFor(t *testing.T) chat.Actor {
 	return chat.Actor{Channel: chat.Telegram, UserID: t.Name(), Handle: "tester"}
 }
 
-// inboundFor builds a message from an actor, in a group rather than a DM: the
-// harder case, and the one every reply-visibility rule exists for.
-func inboundFor(a chat.Actor, dedupeID, text string) chat.Inbound {
+// inboundIn builds a message from an actor, arriving in a registered space, in
+// a group rather than a DM: the harder case, and the one every reply-visibility
+// rule exists for.
+//
+// The space matters now. HandleInbound resolves the tenant from it before it
+// looks at anything else, so a message from a space no org has claimed is
+// ignored — which is correct, and would make every test here silently pass by
+// doing nothing if the space were wrong.
+func inboundIn(a chat.Actor, space, dedupeID, text string) chat.Inbound {
 	return chat.Inbound{
 		DedupeID: dedupeID,
 		Actor:    a,
 		Conversation: chat.Conversation{
-			Channel: a.Channel,
-			SpaceID: "-1001234567890",
+			Channel: chat.Telegram,
+			SpaceID: space,
 		},
 		Args:       text,
 		ReceivedAt: time.Now(),
@@ -87,7 +93,7 @@ func TestHandleInboundRepliesWithAConfirmLink(t *testing.T) {
 	f := newFixtureFor(t, sendDecoded(), actor.Ref())
 	out := &fakeReplier{}
 
-	msg := inboundFor(actor, "telegram:1", sendMessage)
+	msg := inboundIn(actor, f.space, "telegram:1", sendMessage)
 	if err := f.svc.HandleInbound(t.Context(), msg, out, stubLinker{}); err != nil {
 		t.Fatalf("HandleInbound: %v", err)
 	}
@@ -118,10 +124,10 @@ func TestRepliesAreAlwaysEphemeral(t *testing.T) {
 	out := &fakeReplier{}
 
 	// One success and one failure, so both reply paths are covered.
-	if err := f.svc.HandleInbound(t.Context(), inboundFor(actor, "telegram:ok", sendMessage), out, stubLinker{}); err != nil {
+	if err := f.svc.HandleInbound(t.Context(), inboundIn(actor, f.space, "telegram:ok", sendMessage), out, stubLinker{}); err != nil {
 		t.Fatalf("HandleInbound: %v", err)
 	}
-	if err := f.svc.replyWithProblem(t.Context(), out, inboundFor(actor, "telegram:bad", "x"),
+	if err := f.svc.replyWithProblem(t.Context(), out, inboundIn(actor, f.space, "telegram:bad", "x"),
 		intent.ErrDestinationNotFound); err != nil {
 		t.Fatalf("replyWithProblem: %v", err)
 	}
@@ -139,7 +145,7 @@ func TestHandleInboundIsIdempotent(t *testing.T) {
 	actor := actorFor(t)
 	f := newFixtureFor(t, sendDecoded(), actor.Ref())
 	out := &fakeReplier{}
-	msg := inboundFor(actor, "telegram:dup", sendMessage)
+	msg := inboundIn(actor, f.space, "telegram:dup", sendMessage)
 
 	for i := 0; i < 3; i++ {
 		if err := f.svc.HandleInbound(t.Context(), msg, out, stubLinker{}); err != nil {
@@ -160,7 +166,7 @@ func TestDedupeIsChannelScoped(t *testing.T) {
 	out := &fakeReplier{}
 
 	for _, id := range []string{"telegram:7", "discord:7"} {
-		if err := f.svc.HandleInbound(t.Context(), inboundFor(actor, id, sendMessage), out, stubLinker{}); err != nil {
+		if err := f.svc.HandleInbound(t.Context(), inboundIn(actor, f.space, id, sendMessage), out, stubLinker{}); err != nil {
 			t.Fatalf("%s: %v", id, err)
 		}
 	}
@@ -177,7 +183,7 @@ func TestHandleInboundRefusesAMessageWithNoDedupeID(t *testing.T) {
 	f := newFixtureFor(t, sendDecoded(), actor.Ref())
 	out := &fakeReplier{}
 
-	msg := inboundFor(actor, "", sendMessage)
+	msg := inboundIn(actor, f.space, "", sendMessage)
 	if err := f.svc.HandleInbound(t.Context(), msg, out, stubLinker{}); err == nil {
 		t.Fatal("a message with no dedupe id was accepted")
 	}
@@ -192,7 +198,7 @@ func TestConcurrentDeliveriesReplyOnce(t *testing.T) {
 	actor := actorFor(t)
 	f := newFixtureFor(t, sendDecoded(), actor.Ref())
 	out := &fakeReplier{}
-	msg := inboundFor(actor, "telegram:race", sendMessage)
+	msg := inboundIn(actor, f.space, "telegram:race", sendMessage)
 
 	const workers = 8
 	var wg sync.WaitGroup
@@ -244,7 +250,7 @@ func TestHandleInboundExplainsFailures(t *testing.T) {
 			f := newFixtureFor(t, decoded, actor.Ref())
 			out := &fakeReplier{}
 
-			msg := inboundFor(actor, "telegram:"+name, c.message)
+			msg := inboundIn(actor, f.space, "telegram:"+name, c.message)
 			if err := f.svc.HandleInbound(t.Context(), msg, out, stubLinker{}); err != nil {
 				t.Fatalf("HandleInbound: %v", err)
 			}
@@ -276,8 +282,11 @@ func TestHandleInboundOffersEnrollmentBeforeAnAccountExists(t *testing.T) {
 		t.Fatalf("new service: %v", err)
 	}
 
+	// A registered space with no member account behind it.
+	org := orgFor(t, "/unenrolled")
+
 	out := &fakeReplier{}
-	msg := inboundFor(actor, "telegram:enroll", sendMessage)
+	msg := inboundIn(actor, spaceFor(org), "telegram:enroll", sendMessage)
 	if err := svc.HandleInbound(ctx, msg, out, stubLinker{}); err != nil {
 		t.Fatalf("HandleInbound: %v", err)
 	}
@@ -301,7 +310,7 @@ func TestFailureRepliesNeverLeakInternals(t *testing.T) {
 	f := newFixtureFor(t, decoded, actor.Ref())
 	out := &fakeReplier{}
 
-	msg := inboundFor(actor, "telegram:leak", "send 5,000 to landlord")
+	msg := inboundIn(actor, f.space, "telegram:leak", "send 5,000 to landlord")
 	if err := f.svc.HandleInbound(t.Context(), msg, out, stubLinker{}); err != nil {
 		t.Fatalf("HandleInbound: %v", err)
 	}
