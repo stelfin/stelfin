@@ -9,16 +9,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/stelfin/stelfin/ledger"
 )
 
-// Confirm tokens authorise one user to sign and submit one transaction.
+// Confirm tokens authorise one member to sign and submit one transaction.
 //
-// A user arrives at the confirmation page from a link sent in chat, with no
+// A member arrives at the confirmation page from a link sent in chat, with no
 // session and no cookie. The link itself has to carry the authority — so it is
-// scoped as narrowly as the job allows: a token names exactly one transaction
-// hash and expires with it. A leaked link cannot be used to send a different
-// payment, list the user's history, or do anything at all once the transaction
-// it names has expired.
+// scoped as narrowly as the job allows: a token names one org, one owner and
+// exactly one transaction hash, and expires with it. A leaked link cannot be
+// used to send a different payment, reach another org, list anyone's history,
+// or do anything at all once the transaction it names has expired.
 //
 // Tokens are stateless: the signature is the proof, so no lookup table can
 // drift out of sync with the transactions it guards.
@@ -27,7 +29,11 @@ import (
 // string. Fragments are not sent to the server on page load and do not appear
 // in access logs, proxy logs, or Referer headers.
 
-const tokenVersion = "v1"
+// v2 carries the org. v1 did not, because there was only ever one: with
+// several, a token naming an owner alone would authorise whichever org's row
+// happened to be found. The version is signed into the MAC, so a v1 token can
+// never be replayed as a v2 one with the org silently defaulted.
+const tokenVersion = "v2"
 
 var (
 	// ErrTokenInvalid reports a token that is malformed or not authentic.
@@ -63,19 +69,23 @@ func (c *ConfirmTokens) clock() time.Time {
 	return time.Now()
 }
 
-// Issue mints a token authorising ownerRef to submit the transaction named by
+// Issue mints a token authorising scope to submit the transaction named by
 // hash, until expiresAt.
-func (c *ConfirmTokens) Issue(ownerRef, hash string, expiresAt time.Time) (string, error) {
-	if ownerRef == "" || hash == "" {
-		return "", errors.New("api: confirmation token needs an owner and a hash")
+func (c *ConfirmTokens) Issue(scope Scope, hash string, expiresAt time.Time) (string, error) {
+	if err := scope.check(); err != nil {
+		return "", err
 	}
-	// The payload is joined with a byte that cannot occur in either field, so
-	// no combination of owner and hash can be re-split into a different pair.
-	if strings.ContainsRune(ownerRef, 0) || strings.ContainsRune(hash, 0) {
+	if hash == "" {
+		return "", errors.New("api: confirmation token needs a hash")
+	}
+	// The payload is joined with a byte that cannot occur in any field, so no
+	// combination of values can be re-split into a different one.
+	if strings.ContainsRune(hash, 0) {
 		return "", errors.New("api: confirmation token fields must not contain NUL")
 	}
 
-	payload := fmt.Sprintf("%s\x00%s\x00%d", ownerRef, hash, expiresAt.UTC().Unix())
+	payload := fmt.Sprintf("%d\x00%s\x00%s\x00%d",
+		scope.Org, scope.OwnerRef, hash, expiresAt.UTC().Unix())
 	encoded := base64.RawURLEncoding.EncodeToString([]byte(payload))
 	return tokenVersion + "." + encoded + "." + c.sign(encoded), nil
 }
@@ -85,46 +95,50 @@ func (c *ConfirmTokens) Issue(ownerRef, hash string, expiresAt time.Time) (strin
 // The signature is checked before the expiry is even read: an unauthentic
 // token is rejected as invalid rather than leaking, through a differing error,
 // whether its forged expiry happened to be in the future.
-func (c *ConfirmTokens) Verify(token string) (ownerRef, hash string, err error) {
+func (c *ConfirmTokens) Verify(token string) (scope Scope, hash string, err error) {
 	version, rest, ok := strings.Cut(token, ".")
 	if !ok || version != tokenVersion {
-		return "", "", fmt.Errorf("%w: unrecognised format", ErrTokenInvalid)
+		return Scope{}, "", fmt.Errorf("%w: unrecognised format", ErrTokenInvalid)
 	}
 	encoded, mac, ok := strings.Cut(rest, ".")
 	if !ok {
-		return "", "", fmt.Errorf("%w: missing signature", ErrTokenInvalid)
+		return Scope{}, "", fmt.Errorf("%w: missing signature", ErrTokenInvalid)
 	}
 
 	// Constant-time: a byte-by-byte comparison that returns early would let an
 	// attacker recover a valid signature one byte at a time.
 	if !hmac.Equal([]byte(mac), []byte(c.sign(encoded))) {
-		return "", "", fmt.Errorf("%w: signature does not match", ErrTokenInvalid)
+		return Scope{}, "", fmt.Errorf("%w: signature does not match", ErrTokenInvalid)
 	}
 
 	payload, decodeErr := base64.RawURLEncoding.DecodeString(encoded)
 	if decodeErr != nil {
-		return "", "", fmt.Errorf("%w: undecodable payload", ErrTokenInvalid)
+		return Scope{}, "", fmt.Errorf("%w: undecodable payload", ErrTokenInvalid)
 	}
 	parts := strings.Split(string(payload), "\x00")
-	if len(parts) != 3 {
-		return "", "", fmt.Errorf("%w: malformed payload", ErrTokenInvalid)
+	if len(parts) != 4 {
+		return Scope{}, "", fmt.Errorf("%w: malformed payload", ErrTokenInvalid)
 	}
 
-	unix, convErr := strconv.ParseInt(parts[2], 10, 64)
+	org, orgErr := strconv.ParseInt(parts[0], 10, 64)
+	if orgErr != nil || org == 0 {
+		return Scope{}, "", fmt.Errorf("%w: unreadable org", ErrTokenInvalid)
+	}
+	unix, convErr := strconv.ParseInt(parts[3], 10, 64)
 	if convErr != nil {
-		return "", "", fmt.Errorf("%w: unreadable expiry", ErrTokenInvalid)
+		return Scope{}, "", fmt.Errorf("%w: unreadable expiry", ErrTokenInvalid)
 	}
 	if !c.clock().Before(time.Unix(unix, 0)) {
-		return "", "", fmt.Errorf("%w: expired at %s", ErrTokenExpired, time.Unix(unix, 0).UTC())
+		return Scope{}, "", fmt.Errorf("%w: expired at %s", ErrTokenExpired, time.Unix(unix, 0).UTC())
 	}
 
-	return parts[0], parts[1], nil
+	return Scope{Org: ledger.OrgID(org), OwnerRef: parts[1]}, parts[2], nil
 }
 
 func (c *ConfirmTokens) sign(encoded string) string {
 	mac := hmac.New(sha256.New, c.secret)
-	// Version is signed too, so a future v2 token can never be replayed as a
-	// v1 one with different semantics.
+	// Version is signed too, so a token of one version can never be replayed
+	// as another with different semantics.
 	mac.Write([]byte(tokenVersion))
 	mac.Write([]byte{0})
 	mac.Write([]byte(encoded))

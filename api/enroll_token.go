@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/stelfin/stelfin/ledger"
 )
 
 // Enroll tokens authorise one owner to create their Stellar account.
@@ -25,7 +27,9 @@ import (
 // duplicating ~90 lines of well-tested code costs less than the risk of a
 // shared type's future change quietly widening what one token can do.
 
-const enrollTokenVersion = "e1"
+// e2 carries the org, for the same reason v2 does: with several tenants, a
+// token naming an owner alone would authorise whichever org's row was found.
+const enrollTokenVersion = "e2"
 
 // EnrollTokens issues and verifies enrollment tokens.
 type EnrollTokens struct {
@@ -50,53 +54,58 @@ func (c *EnrollTokens) clock() time.Time {
 	return time.Now()
 }
 
-// Issue mints a token authorising ownerRef to enroll, until expiresAt.
-func (c *EnrollTokens) Issue(ownerRef string, expiresAt time.Time) (string, error) {
-	if ownerRef == "" {
-		return "", errors.New("api: enroll token needs an owner")
+// Issue mints a token authorising scope to enroll, until expiresAt.
+func (c *EnrollTokens) Issue(scope Scope, expiresAt time.Time) (string, error) {
+	if err := scope.check(); err != nil {
+		return "", err
 	}
+	ownerRef := scope.OwnerRef
 	if strings.ContainsRune(ownerRef, 0) {
 		return "", errors.New("api: enroll token owner must not contain NUL")
 	}
 
-	payload := fmt.Sprintf("%s\x00%d", ownerRef, expiresAt.UTC().Unix())
+	payload := fmt.Sprintf("%d\x00%s\x00%d", scope.Org, ownerRef, expiresAt.UTC().Unix())
 	encoded := base64.RawURLEncoding.EncodeToString([]byte(payload))
 	return enrollTokenVersion + "." + encoded + "." + c.sign(encoded), nil
 }
 
-// Verify checks a token and returns the owner it authorises.
-func (c *EnrollTokens) Verify(token string) (ownerRef string, err error) {
+// Verify checks a token and returns the scope it authorises.
+func (c *EnrollTokens) Verify(token string) (Scope, error) {
 	version, rest, ok := strings.Cut(token, ".")
 	if !ok || version != enrollTokenVersion {
-		return "", fmt.Errorf("%w: unrecognised format", ErrTokenInvalid)
+		return Scope{}, fmt.Errorf("%w: unrecognised format", ErrTokenInvalid)
 	}
 	encoded, mac, ok := strings.Cut(rest, ".")
 	if !ok {
-		return "", fmt.Errorf("%w: missing signature", ErrTokenInvalid)
+		return Scope{}, fmt.Errorf("%w: missing signature", ErrTokenInvalid)
 	}
 
 	if !hmac.Equal([]byte(mac), []byte(c.sign(encoded))) {
-		return "", fmt.Errorf("%w: signature does not match", ErrTokenInvalid)
+		return Scope{}, fmt.Errorf("%w: signature does not match", ErrTokenInvalid)
 	}
 
 	payload, decodeErr := base64.RawURLEncoding.DecodeString(encoded)
 	if decodeErr != nil {
-		return "", fmt.Errorf("%w: undecodable payload", ErrTokenInvalid)
+		return Scope{}, fmt.Errorf("%w: undecodable payload", ErrTokenInvalid)
 	}
 	parts := strings.Split(string(payload), "\x00")
-	if len(parts) != 2 {
-		return "", fmt.Errorf("%w: malformed payload", ErrTokenInvalid)
+	if len(parts) != 3 {
+		return Scope{}, fmt.Errorf("%w: malformed payload", ErrTokenInvalid)
 	}
 
-	unix, convErr := strconv.ParseInt(parts[1], 10, 64)
+	org, orgErr := strconv.ParseInt(parts[0], 10, 64)
+	if orgErr != nil || org == 0 {
+		return Scope{}, fmt.Errorf("%w: unreadable org", ErrTokenInvalid)
+	}
+	unix, convErr := strconv.ParseInt(parts[2], 10, 64)
 	if convErr != nil {
-		return "", fmt.Errorf("%w: unreadable expiry", ErrTokenInvalid)
+		return Scope{}, fmt.Errorf("%w: unreadable expiry", ErrTokenInvalid)
 	}
 	if !c.clock().Before(time.Unix(unix, 0)) {
-		return "", fmt.Errorf("%w: expired at %s", ErrTokenExpired, time.Unix(unix, 0).UTC())
+		return Scope{}, fmt.Errorf("%w: expired at %s", ErrTokenExpired, time.Unix(unix, 0).UTC())
 	}
 
-	return parts[0], nil
+	return Scope{Org: ledger.OrgID(org), OwnerRef: parts[1]}, nil
 }
 
 func (c *EnrollTokens) sign(encoded string) string {
