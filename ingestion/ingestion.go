@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/stelfin/stelfin/internal/money"
 	"github.com/stelfin/stelfin/ledger"
+	"github.com/stelfin/stelfin/ledger/store"
 )
 
 // PaymentsAPI is the slice of Horizon this package needs.
@@ -64,29 +66,28 @@ type Config struct {
 // Ingester reads payments from Horizon and posts them to the ledger.
 type Ingester struct {
 	horizon PaymentsAPI
-	ledger  *ledger.Store
+	store   *store.Store
 	pool    *pgxpool.Pool
 
 	stream       string
 	pageSize     uint
 	pollInterval time.Duration
 
-	// external is the ledger counterparty for value crossing the system
-	// boundary. Resolved once at construction.
-	external ledger.AccountID
+	// external is the counterparty account for each org, memoised.
+	//
+	// Per org, not global: value crossing one tenant's boundary is nothing to
+	// do with another's, and a shared counterparty would make every org's
+	// external balance the sum of everybody's.
+	mu       sync.Mutex
+	external map[ledger.OrgID]ledger.AccountID
 }
 
-// New returns an Ingester. It resolves the external account eagerly so that a
-// misconfigured ledger fails at startup rather than on the first payment.
+// New returns an Ingester.
 func New(
-	ctx context.Context, h PaymentsAPI, l *ledger.Store, pool *pgxpool.Pool, cfg Config,
+	ctx context.Context, h PaymentsAPI, s *store.Store, pool *pgxpool.Pool, cfg Config,
 ) (*Ingester, error) {
 	if cfg.Stream == "" {
 		return nil, errors.New("ingestion: stream name is required")
-	}
-	external, err := l.EnsureAccount(ctx, ledger.AccountExternal, "", "external")
-	if err != nil {
-		return nil, fmt.Errorf("ingestion: resolve external account: %w", err)
 	}
 
 	pageSize := cfg.PageSize
@@ -99,25 +100,38 @@ func New(
 	}
 
 	return &Ingester{
-		horizon: h, ledger: l, pool: pool,
+		horizon: h, store: s, pool: pool,
 		stream: cfg.Stream, pageSize: pageSize, pollInterval: poll,
-		external: external,
+		external: make(map[ledger.OrgID]ledger.AccountID),
 	}, nil
 }
 
 // Track registers a Stellar address as belonging to a ledger account, so that
 // payments to and from it are ingested.
-func (i *Ingester) Track(ctx context.Context, address string, account ledger.AccountID) error {
-	_, err := i.pool.Exec(ctx, `
-		INSERT INTO stellar_accounts (address, ledger_account_id)
-		VALUES ($1, $2)
-		ON CONFLICT (address) DO NOTHING`,
-		address, int64(account),
-	)
-	if err != nil {
-		return fmt.Errorf("ingestion: track %s: %w", address, err)
+func (i *Ingester) Track(
+	ctx context.Context, org ledger.OrgID, address string, account ledger.AccountID, role string,
+) error {
+	return i.store.TrackAddress(ctx, org, address, account, role)
+}
+
+// externalFor returns an org's counterparty account, memoised.
+func (i *Ingester) externalFor(ctx context.Context, org ledger.OrgID) (ledger.AccountID, error) {
+	i.mu.Lock()
+	if id, ok := i.external[org]; ok {
+		i.mu.Unlock()
+		return id, nil
 	}
-	return nil
+	i.mu.Unlock()
+
+	id, err := i.store.EnsureAccount(ctx, org, ledger.AccountExternal, "", "external")
+	if err != nil {
+		return 0, fmt.Errorf("ingestion: external account for org %d: %w", org, err)
+	}
+
+	i.mu.Lock()
+	i.external[org] = id
+	i.mu.Unlock()
+	return id, nil
 }
 
 // Run ingests continuously until ctx is cancelled.
@@ -201,11 +215,11 @@ func (i *Ingester) ingestOne(ctx context.Context, record operations.Operation) e
 		return nil
 	}
 
-	from, fromTracked, err := i.resolveAccount(ctx, payment.From)
+	from, fromTracked, err := i.store.TrackedAddress(ctx, payment.From)
 	if err != nil {
 		return err
 	}
-	to, toTracked, err := i.resolveAccount(ctx, payment.To)
+	to, toTracked, err := i.store.TrackedAddress(ctx, payment.To)
 	if err != nil {
 		return err
 	}
@@ -227,78 +241,108 @@ func (i *Ingester) ingestOne(ctx context.Context, record operations.Operation) e
 		return err
 	}
 
-	kind, postings := i.postingsFor(fromTracked, toTracked, from, to, asset, amount)
-
-	_, err = i.ledger.Post(ctx, ledger.PostRequest{
-		// Derived from the Horizon operation id, so replaying a page cannot
-		// post the same payment twice.
-		IdempotencyKey: "horizon:op:" + payment.ID,
-		Kind:           kind,
-		ExternalRef:    payment.TransactionHash,
-		// The chain's close time, not ours. It is the authoritative "when", and
-		// it is stable across replays so the idempotency fingerprint matches.
-		OccurredAt: payment.LedgerCloseTime,
-		Postings:   postings,
-	})
+	entries, err := i.entriesFor(ctx, fromTracked, toTracked, from, to, asset, amount)
 	if err != nil {
-		return fmt.Errorf("ingestion: post operation %s: %w", payment.ID, err)
+		return err
+	}
+
+	for _, e := range entries {
+		_, err = i.store.Post(ctx, ledger.PostRequest{
+			Org: e.org,
+			// Derived from the Horizon operation id, so replaying a page cannot
+			// post the same payment twice. Unique per org, which is what lets
+			// one operation be recorded in both tenants' books when a payment
+			// crosses between them.
+			IdempotencyKey: "horizon:op:" + payment.ID,
+			Kind:           e.kind,
+			ExternalRef:    payment.TransactionHash,
+			// The chain's close time, not ours. It is the authoritative "when",
+			// and it is stable across replays so the fingerprint matches.
+			OccurredAt: payment.LedgerCloseTime,
+			Postings:   e.postings,
+		})
+		if err != nil {
+			return fmt.Errorf("ingestion: post operation %s for org %d: %w", payment.ID, e.org, err)
+		}
 	}
 	return nil
 }
 
-// postingsFor turns a payment into balanced ledger lines. Which accounts we
-// track decides whether value entered, left, or moved within the system.
-func (i *Ingester) postingsFor(
-	fromTracked, toTracked bool,
-	from, to ledger.AccountID,
-	asset ledger.AssetID,
-	amount money.Stroops,
-) (ledger.TxKind, []ledger.Posting) {
-	switch {
-	case fromTracked && toTracked:
-		// Internal transfer: no net change against the outside world.
-		return ledger.TxSend, []ledger.Posting{
-			{Account: from, Asset: asset, Amount: -amount},
-			{Account: to, Asset: asset, Amount: amount},
-		}
-	case toTracked:
-		return ledger.TxDeposit, []ledger.Posting{
-			{Account: to, Asset: asset, Amount: amount},
-			{Account: i.external, Asset: asset, Amount: -amount},
-		}
-	default:
-		return ledger.TxWithdrawal, []ledger.Posting{
-			{Account: from, Asset: asset, Amount: -amount},
-			{Account: i.external, Asset: asset, Amount: amount},
-		}
-	}
+// entry is one org's record of an operation.
+type entry struct {
+	org      ledger.OrgID
+	kind     ledger.TxKind
+	postings []ledger.Posting
 }
 
-func (i *Ingester) resolveAccount(ctx context.Context, address string) (ledger.AccountID, bool, error) {
-	if address == "" {
-		return 0, false, nil
+// entriesFor turns a payment into the balanced ledger lines each affected org
+// records.
+//
+// Usually one org, sometimes two. A payment between two tenants' tracked
+// addresses is not one transaction spanning both — the database refuses that,
+// and rightly, because one DAO's books would then contain another's account.
+// It is a withdrawal from one org and a deposit into the other, each balanced
+// against that org's own counterparty account. That is what "value crossing
+// between tenants leaves one org and enters the other" means in practice.
+func (i *Ingester) entriesFor(
+	ctx context.Context,
+	fromTracked, toTracked bool,
+	from, to store.TrackedAddress,
+	asset ledger.AssetID,
+	amount money.Stroops,
+) ([]entry, error) {
+	if fromTracked && toTracked && from.Org == to.Org {
+		// Internal transfer within one org: no net change against the outside.
+		return []entry{{
+			org:  from.Org,
+			kind: ledger.TxSend,
+			postings: []ledger.Posting{
+				{Account: from.Account, Asset: asset, Amount: -amount},
+				{Account: to.Account, Asset: asset, Amount: amount},
+			},
+		}}, nil
 	}
-	var id int64
-	err := i.pool.QueryRow(ctx,
-		`SELECT ledger_account_id FROM stellar_accounts WHERE address = $1`, address,
-	).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, nil
+
+	var out []entry
+	if fromTracked {
+		external, err := i.externalFor(ctx, from.Org)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, entry{
+			org:  from.Org,
+			kind: ledger.TxWithdrawal,
+			postings: []ledger.Posting{
+				{Account: from.Account, Asset: asset, Amount: -amount},
+				{Account: external, Asset: asset, Amount: amount},
+			},
+		})
 	}
-	if err != nil {
-		return 0, false, fmt.Errorf("ingestion: resolve account %s: %w", address, err)
+	if toTracked {
+		external, err := i.externalFor(ctx, to.Org)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, entry{
+			org:  to.Org,
+			kind: ledger.TxDeposit,
+			postings: []ledger.Posting{
+				{Account: to.Account, Asset: asset, Amount: amount},
+				{Account: external, Asset: asset, Amount: -amount},
+			},
+		})
 	}
-	return ledger.AccountID(id), true, nil
+	return out, nil
 }
 
 func (i *Ingester) resolveAsset(ctx context.Context, assetType, code, issuer string) (ledger.AssetID, error) {
 	if assetType == "native" {
-		return i.ledger.EnsureAsset(ctx, "XLM", "")
+		return i.store.Ledger().EnsureAsset(ctx, "XLM", "")
 	}
 	if code == "" || issuer == "" {
 		return 0, fmt.Errorf("ingestion: issued asset is missing code or issuer (type %q)", assetType)
 	}
-	return i.ledger.EnsureAsset(ctx, code, issuer)
+	return i.store.Ledger().EnsureAsset(ctx, code, issuer)
 }
 
 func (i *Ingester) loadCursor(ctx context.Context) (string, error) {

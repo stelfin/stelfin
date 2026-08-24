@@ -9,6 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stellar/go-stellar-sdk/strkey"
+
+	"github.com/stelfin/stelfin/ledger"
 )
 
 // Destination resolution turns the user's words into an address.
@@ -66,12 +68,12 @@ type Resolver struct {
 func NewResolver(pool *pgxpool.Pool) *Resolver { return &Resolver{pool: pool} }
 
 // Resolve maps a verified destination onto an address.
-func (r *Resolver) Resolve(ctx context.Context, ownerRef string, g *Grounded) (Destination, error) {
+func (r *Resolver) Resolve(ctx context.Context, org ledger.OrgID, ownerRef string, g *Grounded) (Destination, error) {
 	switch g.DestinationKind {
 	case DestinationAddress:
 		return resolveAddress(g.DestinationText)
 	case DestinationBeneficiary:
-		return r.resolveBeneficiary(ctx, ownerRef, g.DestinationText)
+		return r.resolveBeneficiary(ctx, org, ownerRef, g.DestinationText)
 	default:
 		return Destination{}, fmt.Errorf("%w: unknown kind %q", ErrDestinationInvalid, g.DestinationKind)
 	}
@@ -94,7 +96,7 @@ func resolveAddress(text string) (Destination, error) {
 // An exact case-insensitive match wins outright. Failing that, a single
 // substring match is accepted so "brother" finds "Brother Chidi". More than one
 // match is never resolved by choosing: the user is asked which they meant.
-func (r *Resolver) resolveBeneficiary(ctx context.Context, ownerRef, label string) (Destination, error) {
+func (r *Resolver) resolveBeneficiary(ctx context.Context, org ledger.OrgID, ownerRef, label string) (Destination, error) {
 	needle := strings.ToLower(strings.TrimSpace(label))
 	if needle == "" {
 		return Destination{}, fmt.Errorf("%w: empty label", ErrDestinationInvalid)
@@ -103,8 +105,8 @@ func (r *Resolver) resolveBeneficiary(ctx context.Context, ownerRef, label strin
 	var exactLabel, exactAddress string
 	err := r.pool.QueryRow(ctx, `
 		SELECT label, address FROM beneficiaries
-		 WHERE owner_ref = $1 AND lower(label) = $2`,
-		ownerRef, needle,
+		 WHERE org_id = $1 AND owner_ref = $2 AND lower(label) = $3`,
+		int64(org), ownerRef, needle,
 	).Scan(&exactLabel, &exactAddress)
 	if err == nil {
 		return Destination{Address: exactAddress, Label: exactLabel, Kind: DestinationBeneficiary}, nil
@@ -115,9 +117,9 @@ func (r *Resolver) resolveBeneficiary(ctx context.Context, ownerRef, label strin
 
 	rows, err := r.pool.Query(ctx, `
 		SELECT label, address FROM beneficiaries
-		 WHERE owner_ref = $1 AND lower(label) LIKE '%' || $2 || '%'
+		 WHERE org_id = $1 AND owner_ref = $2 AND lower(label) LIKE '%' || $3 || '%'
 		 ORDER BY label`,
-		ownerRef, needle,
+		int64(org), ownerRef, needle,
 	)
 	if err != nil {
 		return Destination{}, fmt.Errorf("intent: search beneficiaries for %q: %w", label, err)

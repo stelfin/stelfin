@@ -28,6 +28,7 @@ import (
 	"github.com/stelfin/stelfin/internal/discord"
 	"github.com/stelfin/stelfin/internal/telegram"
 	"github.com/stelfin/stelfin/ledger"
+	"github.com/stelfin/stelfin/ledger/store"
 	"github.com/stelfin/stelfin/settlement"
 	"github.com/stelfin/stelfin/web"
 )
@@ -76,11 +77,21 @@ func run(log *slog.Logger) error {
 		return fmt.Errorf("ping database: %w", err)
 	}
 
-	store := ledger.New(pool)
-	assetID, err := store.EnsureAsset(ctx, cfg.AssetCode, cfg.AssetIssuer)
+	db := store.New(pool)
+	assetID, err := db.Ledger().EnsureAsset(ctx, cfg.AssetCode, cfg.AssetIssuer)
 	if err != nil {
 		return err
 	}
+
+	// The deployment's own org, holding the float it sponsors reserves and pays
+	// fees from. Created here rather than in a migration because the network is
+	// configuration, and a network-specific row baked into a migration is how a
+	// testnet deployment ends up claiming to be mainnet.
+	platform, err := db.EnsurePlatformOrg(ctx, networkName(cfg))
+	if err != nil {
+		return err
+	}
+	log.Info("platform org ready", "org", platform.ID, "network", platform.Network)
 
 	treasury, err := keypair.ParseFull(cfg.TreasurySeed)
 	if err != nil {
@@ -181,7 +192,7 @@ func run(log *slog.Logger) error {
 
 	ingester, err := ingestion.New(ctx,
 		&horizonclient.Client{HorizonURL: cfg.HorizonURL},
-		store, pool, ingestion.Config{Stream: "payments"})
+		db, pool, ingestion.Config{Stream: "payments"})
 	if err != nil {
 		return err
 	}
@@ -242,4 +253,12 @@ func run(log *slog.Logger) error {
 
 	log.Info("stopped")
 	return nil
+}
+
+// networkName renders the configured network the way the schema names it.
+func networkName(cfg *config.Config) string {
+	if cfg.IsMainnet() {
+		return "public"
+	}
+	return "testnet"
 }
