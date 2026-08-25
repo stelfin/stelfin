@@ -2,12 +2,14 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -40,6 +42,7 @@ func newServer(t *testing.T, f *fixture, treasury *keypair.Full) *Server {
 	srv, err := NewServer(f.svc, tokens, enrollTokens, ServerConfig{
 		BaseURL:           "https://stelfin.example",
 		Transports:        transports,
+		Handler:           &stubHandler{},
 		TreasuryAddress:   treasury.Address(),
 		SignFeeBump:       signWith(treasury),
 		SignProvision:     signProvisionWith(treasury),
@@ -51,6 +54,28 @@ func newServer(t *testing.T, f *fixture, treasury *keypair.Full) *Server {
 		t.Fatalf("NewServer: %v", err)
 	}
 	return srv
+}
+
+// stubHandler records the messages the server dispatched to it. Routing itself
+// lives in core; what these tests check is that the HTTP surface authenticates,
+// acknowledges, and hands over.
+type stubHandler struct {
+	mu  sync.Mutex
+	got []chat.Inbound
+	err error
+}
+
+func (h *stubHandler) Handle(_ context.Context, m chat.Inbound, _ Replier, _ Linker) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.got = append(h.got, m)
+	return h.err
+}
+
+func (h *stubHandler) handled() []chat.Inbound {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]chat.Inbound(nil), h.got...)
 }
 
 // mustRegistry returns a registry with one fake transport, for tests that do
@@ -129,7 +154,7 @@ func TestWebhookAcknowledgesAnUnreadableDelivery(t *testing.T) {
 		t.Fatalf("new registry: %v", err)
 	}
 	srv, err := NewServer(f.svc, tokens, enrollTokens, ServerConfig{
-		BaseURL: "https://stelfin.example", Transports: reg,
+		BaseURL: "https://stelfin.example", Transports: reg, Handler: &stubHandler{},
 		TreasuryAddress: treasury.Address(), SignFeeBump: signWith(treasury),
 		SignProvision:     signProvisionWith(treasury),
 		NetworkPassphrase: network.TestNetworkPassphrase,
@@ -434,7 +459,7 @@ func TestEnrollEndpoint(t *testing.T) {
 	tokens := newTokens(t)
 	enrollTokens := newEnrollTokens(t)
 	srv, err := NewServer(svc, tokens, enrollTokens, ServerConfig{
-		BaseURL: "https://stelfin.example", Transports: mustRegistry(t),
+		BaseURL: "https://stelfin.example", Transports: mustRegistry(t), Handler: &stubHandler{},
 		TreasuryAddress: treasury.Address(), SignFeeBump: signWith(treasury), SignProvision: signProvisionWith(treasury),
 		NetworkPassphrase: network.TestNetworkPassphrase,
 		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -471,7 +496,7 @@ func TestEnrollSubmitEndpoint(t *testing.T) {
 	tokens := newTokens(t)
 	enrollTokens := newEnrollTokens(t)
 	srv, err := NewServer(svc, tokens, enrollTokens, ServerConfig{
-		BaseURL: "https://stelfin.example", Transports: mustRegistry(t),
+		BaseURL: "https://stelfin.example", Transports: mustRegistry(t), Handler: &stubHandler{},
 		TreasuryAddress: treasury.Address(), SignFeeBump: signWith(treasury), SignProvision: signProvisionWith(treasury),
 		NetworkPassphrase: network.TestNetworkPassphrase,
 		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -513,6 +538,7 @@ func TestNewServerValidatesConfig(t *testing.T) {
 	full := ServerConfig{
 		BaseURL:           "https://stelfin.example",
 		Transports:        mustRegistry(t),
+		Handler:           &stubHandler{},
 		NetworkPassphrase: network.TestNetworkPassphrase,
 		TreasuryAddress:   treasury.Address(),
 		SignFeeBump:       signWith(treasury),
@@ -520,6 +546,7 @@ func TestNewServerValidatesConfig(t *testing.T) {
 	}
 	for name, mutate := range map[string]func(*ServerConfig){
 		"no transports":       func(c *ServerConfig) { c.Transports = nil },
+		"no handler":          func(c *ServerConfig) { c.Handler = nil },
 		"no base url":         func(c *ServerConfig) { c.BaseURL = "" },
 		"no network":          func(c *ServerConfig) { c.NetworkPassphrase = "" },
 		"no treasury":         func(c *ServerConfig) { c.TreasuryAddress = "" },
@@ -549,6 +576,7 @@ func TestConfirmPageIsServedWithAStrictPolicy(t *testing.T) {
 	srv, err := NewServer(f.svc, tokens, enrollTokens, ServerConfig{
 		BaseURL:           "https://stelfin.example",
 		Transports:        mustRegistry(t),
+		Handler:           &stubHandler{},
 		TreasuryAddress:   treasury.Address(),
 		SignFeeBump:       signWith(treasury),
 		SignProvision:     signProvisionWith(treasury),
@@ -631,7 +659,7 @@ func TestStaticAssetsAreServed(t *testing.T) {
 	treasury := keypair.MustRandom()
 
 	srv, err := NewServer(f.svc, tokens, enrollTokens, ServerConfig{
-		BaseURL: "https://stelfin.example", Transports: mustRegistry(t),
+		BaseURL: "https://stelfin.example", Transports: mustRegistry(t), Handler: &stubHandler{},
 		TreasuryAddress: treasury.Address(), SignFeeBump: signWith(treasury), SignProvision: signProvisionWith(treasury),
 		NetworkPassphrase: network.TestNetworkPassphrase,
 		Assets:            web.Handler(),

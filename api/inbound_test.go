@@ -88,14 +88,14 @@ func inboundIn(a chat.Actor, space, dedupeID, text string) chat.Inbound {
 	}
 }
 
-func TestHandleInboundRepliesWithAConfirmLink(t *testing.T) {
+func TestHandleSendRepliesWithAConfirmLink(t *testing.T) {
 	actor := actorFor(t)
 	f := newFixtureFor(t, sendDecoded(), actor.Ref())
 	out := &fakeReplier{}
 
 	msg := inboundIn(actor, f.space, "telegram:1", sendMessage)
-	if err := f.svc.HandleInbound(t.Context(), msg, out, stubLinker{}); err != nil {
-		t.Fatalf("HandleInbound: %v", err)
+	if err := f.svc.HandleSend(t.Context(), f.scope, msg, out, stubLinker{}); err != nil {
+		t.Fatalf("HandleSend: %v", err)
 	}
 
 	body := out.only(t).Text
@@ -124,8 +124,8 @@ func TestRepliesAreAlwaysEphemeral(t *testing.T) {
 	out := &fakeReplier{}
 
 	// One success and one failure, so both reply paths are covered.
-	if err := f.svc.HandleInbound(t.Context(), inboundIn(actor, f.space, "telegram:ok", sendMessage), out, stubLinker{}); err != nil {
-		t.Fatalf("HandleInbound: %v", err)
+	if err := f.svc.HandleSend(t.Context(), f.scope, inboundIn(actor, f.space, "telegram:ok", sendMessage), out, stubLinker{}); err != nil {
+		t.Fatalf("HandleSend: %v", err)
 	}
 	if err := f.svc.replyWithProblem(t.Context(), out, inboundIn(actor, f.space, "telegram:bad", "x"),
 		intent.ErrDestinationNotFound); err != nil {
@@ -139,89 +139,10 @@ func TestRepliesAreAlwaysEphemeral(t *testing.T) {
 	}
 }
 
-// TestHandleInboundIsIdempotent: platforms retry deliveries, and one
-// instruction must not produce two confirmations.
-func TestHandleInboundIsIdempotent(t *testing.T) {
-	actor := actorFor(t)
-	f := newFixtureFor(t, sendDecoded(), actor.Ref())
-	out := &fakeReplier{}
-	msg := inboundIn(actor, f.space, "telegram:dup", sendMessage)
-
-	for i := 0; i < 3; i++ {
-		if err := f.svc.HandleInbound(t.Context(), msg, out, stubLinker{}); err != nil {
-			t.Fatalf("delivery %d: %v", i, err)
-		}
-	}
-	if got := len(out.replies()); got != 1 {
-		t.Errorf("sent %d replies for 3 deliveries of one message, want 1", got)
-	}
-}
-
-// TestDedupeIsChannelScoped: the same numeric id on two platforms is two
-// different messages from two different people, and collapsing them would drop
-// one of them silently.
-func TestDedupeIsChannelScoped(t *testing.T) {
-	actor := actorFor(t)
-	f := newFixtureFor(t, sendDecoded(), actor.Ref())
-	out := &fakeReplier{}
-
-	for _, id := range []string{"telegram:7", "discord:7"} {
-		if err := f.svc.HandleInbound(t.Context(), inboundIn(actor, f.space, id, sendMessage), out, stubLinker{}); err != nil {
-			t.Fatalf("%s: %v", id, err)
-		}
-	}
-	if got := len(out.replies()); got != 2 {
-		t.Errorf("sent %d replies for two messages from different platforms, want 2", got)
-	}
-}
-
-// TestHandleInboundRefusesAMessageWithNoDedupeID: without one, the claim that
-// makes retries safe cannot be made, so the message must not be processed at
-// all rather than processed unprotected.
-func TestHandleInboundRefusesAMessageWithNoDedupeID(t *testing.T) {
-	actor := actorFor(t)
-	f := newFixtureFor(t, sendDecoded(), actor.Ref())
-	out := &fakeReplier{}
-
-	msg := inboundIn(actor, f.space, "", sendMessage)
-	if err := f.svc.HandleInbound(t.Context(), msg, out, stubLinker{}); err == nil {
-		t.Fatal("a message with no dedupe id was accepted")
-	}
-	if got := len(out.replies()); got != 0 {
-		t.Errorf("sent %d replies for a message that should not have been processed", got)
-	}
-}
-
-// TestConcurrentDeliveriesReplyOnce: two retries arriving together must not
-// both win the claim.
-func TestConcurrentDeliveriesReplyOnce(t *testing.T) {
-	actor := actorFor(t)
-	f := newFixtureFor(t, sendDecoded(), actor.Ref())
-	out := &fakeReplier{}
-	msg := inboundIn(actor, f.space, "telegram:race", sendMessage)
-
-	const workers = 8
-	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := f.svc.HandleInbound(context.Background(), msg, out, stubLinker{}); err != nil {
-				t.Errorf("HandleInbound: %v", err)
-			}
-		}()
-	}
-	wg.Wait()
-
-	if got := len(out.replies()); got != 1 {
-		t.Errorf("sent %d replies for %d concurrent deliveries, want 1", got, workers)
-	}
-}
-
 // TestHandleInboundExplainsFailures: every failure the user can act on becomes
 // a specific question, and everything else becomes a generic apology that does
 // not describe what broke.
-func TestHandleInboundExplainsFailures(t *testing.T) {
+func TestHandleSendExplainsFailures(t *testing.T) {
 	cases := map[string]struct {
 		message string
 		want    string
@@ -251,8 +172,8 @@ func TestHandleInboundExplainsFailures(t *testing.T) {
 			out := &fakeReplier{}
 
 			msg := inboundIn(actor, f.space, "telegram:"+name, c.message)
-			if err := f.svc.HandleInbound(t.Context(), msg, out, stubLinker{}); err != nil {
-				t.Fatalf("HandleInbound: %v", err)
+			if err := f.svc.HandleSend(t.Context(), f.scope, msg, out, stubLinker{}); err != nil {
+				t.Fatalf("HandleSend: %v", err)
 			}
 			if body := out.only(t).Text; !strings.Contains(body, c.want) {
 				t.Errorf("reply %q does not contain %q", body, c.want)
@@ -261,10 +182,10 @@ func TestHandleInboundExplainsFailures(t *testing.T) {
 	}
 }
 
-// TestHandleInboundOffersEnrollmentBeforeAnAccountExists: an owner with no
+// TestHandleSendOffersEnrollmentBeforeAnAccountExists: an owner with no
 // account gets a wallet-creation link instead of stelfin trying — and failing —
 // to decode a payment it has no "from" account to build.
-func TestHandleInboundOffersEnrollmentBeforeAnAccountExists(t *testing.T) {
+func TestHandleSendOffersEnrollmentBeforeAnAccountExists(t *testing.T) {
 	ctx := context.Background()
 	actor := actorFor(t)
 
@@ -287,8 +208,8 @@ func TestHandleInboundOffersEnrollmentBeforeAnAccountExists(t *testing.T) {
 
 	out := &fakeReplier{}
 	msg := inboundIn(actor, spaceFor(org), "telegram:enroll", sendMessage)
-	if err := svc.HandleInbound(ctx, msg, out, stubLinker{}); err != nil {
-		t.Fatalf("HandleInbound: %v", err)
+	if err := svc.HandleSend(ctx, Scope{Org: org.ID, OwnerRef: actor.Ref()}, msg, out, stubLinker{}); err != nil {
+		t.Fatalf("HandleSend: %v", err)
 	}
 
 	body := out.only(t).Text
@@ -311,8 +232,8 @@ func TestFailureRepliesNeverLeakInternals(t *testing.T) {
 	out := &fakeReplier{}
 
 	msg := inboundIn(actor, f.space, "telegram:leak", "send 5,000 to landlord")
-	if err := f.svc.HandleInbound(t.Context(), msg, out, stubLinker{}); err != nil {
-		t.Fatalf("HandleInbound: %v", err)
+	if err := f.svc.HandleSend(t.Context(), f.scope, msg, out, stubLinker{}); err != nil {
+		t.Fatalf("HandleSend: %v", err)
 	}
 	body := out.only(t).Text
 	for _, leak := range []string{"intent:", "api:", "ledger:", "SQLSTATE", "pgx", "G" + strings.Repeat("A", 55)} {

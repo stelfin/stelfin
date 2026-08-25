@@ -23,6 +23,7 @@ import (
 	"github.com/stelfin/stelfin/api/decoder"
 	"github.com/stelfin/stelfin/api/intent"
 	"github.com/stelfin/stelfin/chat"
+	"github.com/stelfin/stelfin/core"
 	"github.com/stelfin/stelfin/ingestion"
 	"github.com/stelfin/stelfin/internal/config"
 	"github.com/stelfin/stelfin/internal/discord"
@@ -172,8 +173,26 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
+	router, err := core.New(core.Config{
+		Store:   db,
+		Sender:  svc,
+		Admins:  transports,
+		Network: networkName(cfg),
+		Logger:  log,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Published to every platform that is configured. Idempotent, so it runs on
+	// each start rather than being a deploy step someone has to remember.
+	if err := transports.RegisterCommands(ctx, router.Commands()); err != nil {
+		return err
+	}
+
 	server, err := api.NewServer(svc, tokens, enrollTokens, api.ServerConfig{
 		BaseURL:         cfg.BaseURL,
+		Handler:         router,
 		Transports:      transports,
 		TreasuryAddress: treasury.Address(),
 		SignFeeBump: func(tx *txnbuild.FeeBumpTransaction) (*txnbuild.FeeBumpTransaction, error) {
