@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"testing"
 
@@ -36,11 +37,32 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func saveBeneficiary(t *testing.T, owner, label, address string) {
+// testOrg creates an org for one test, so beneficiaries saved by one test are
+// unreachable from another — which is also the property being tested.
+func testOrg(t *testing.T) ledger.OrgID {
+	t.Helper()
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(t.Name()))
+
+	var id ledger.OrgID
+	err := testPool.QueryRow(context.Background(), `
+		INSERT INTO orgs (kind, slug, display_name, network)
+		VALUES ('dao', $1, $2, 'testnet')
+		ON CONFLICT (lower(slug)) DO UPDATE SET display_name = EXCLUDED.display_name
+		RETURNING id`,
+		fmt.Sprintf("t-%016x", h.Sum64()), t.Name(),
+	).Scan(&id)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	return id
+}
+
+func saveBeneficiary(t *testing.T, org ledger.OrgID, owner, label, address string) {
 	t.Helper()
 	_, err := testPool.Exec(context.Background(),
-		`INSERT INTO beneficiaries (owner_ref, label, address) VALUES ($1, $2, $3)`,
-		owner, label, address)
+		`INSERT INTO beneficiaries (org_id, owner_ref, label, address) VALUES ($1, $2, $3, $4)`,
+		int64(org), owner, label, address)
 	if err != nil {
 		t.Fatalf("save beneficiary %q: %v", label, err)
 	}
@@ -51,13 +73,14 @@ func beneficiaryIntent(text string) *Grounded {
 }
 
 func TestResolveExactBeneficiary(t *testing.T) {
+	org := testOrg(t)
 	owner := t.Name()
 	addr := keypair.MustRandom().Address()
-	saveBeneficiary(t, owner, "Brother", addr)
+	saveBeneficiary(t, org, owner, "Brother", addr)
 
 	r := NewResolver(testPool)
 	// The user typed lowercase; the saved label is capitalised.
-	got, err := r.Resolve(context.Background(), owner, beneficiaryIntent("brother"))
+	got, err := r.Resolve(context.Background(), org, owner, beneficiaryIntent("brother"))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -71,12 +94,13 @@ func TestResolveExactBeneficiary(t *testing.T) {
 }
 
 func TestResolveUniqueSubstringBeneficiary(t *testing.T) {
+	org := testOrg(t)
 	owner := t.Name()
 	addr := keypair.MustRandom().Address()
-	saveBeneficiary(t, owner, "Brother Chidi", addr)
+	saveBeneficiary(t, org, owner, "Brother Chidi", addr)
 
 	r := NewResolver(testPool)
-	got, err := r.Resolve(context.Background(), owner, beneficiaryIntent("brother"))
+	got, err := r.Resolve(context.Background(), org, owner, beneficiaryIntent("brother"))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -89,12 +113,13 @@ func TestResolveUniqueSubstringBeneficiary(t *testing.T) {
 // matters here. A payment to the wrong Stellar account cannot be recalled, so
 // two plausible recipients must become a question, never a coin flip.
 func TestResolveAmbiguousBeneficiaryAsksRatherThanGuesses(t *testing.T) {
+	org := testOrg(t)
 	owner := t.Name()
-	saveBeneficiary(t, owner, "Brother Chidi", keypair.MustRandom().Address())
-	saveBeneficiary(t, owner, "Brother Emeka", keypair.MustRandom().Address())
+	saveBeneficiary(t, org, owner, "Brother Chidi", keypair.MustRandom().Address())
+	saveBeneficiary(t, org, owner, "Brother Emeka", keypair.MustRandom().Address())
 
 	r := NewResolver(testPool)
-	_, err := r.Resolve(context.Background(), owner, beneficiaryIntent("brother"))
+	_, err := r.Resolve(context.Background(), org, owner, beneficiaryIntent("brother"))
 	if !errors.Is(err, ErrDestinationAmbiguous) {
 		t.Fatalf("error = %v, want ErrDestinationAmbiguous", err)
 	}
@@ -113,13 +138,14 @@ func TestResolveAmbiguousBeneficiaryAsksRatherThanGuesses(t *testing.T) {
 // TestExactMatchBeatsAmbiguity: someone with "Bro" and "Brother" saved who
 // types "bro" means "Bro".
 func TestExactMatchBeatsAmbiguity(t *testing.T) {
+	org := testOrg(t)
 	owner := t.Name()
 	exact := keypair.MustRandom().Address()
-	saveBeneficiary(t, owner, "Bro", exact)
-	saveBeneficiary(t, owner, "Brother", keypair.MustRandom().Address())
+	saveBeneficiary(t, org, owner, "Bro", exact)
+	saveBeneficiary(t, org, owner, "Brother", keypair.MustRandom().Address())
 
 	r := NewResolver(testPool)
-	got, err := r.Resolve(context.Background(), owner, beneficiaryIntent("bro"))
+	got, err := r.Resolve(context.Background(), org, owner, beneficiaryIntent("bro"))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -130,21 +156,46 @@ func TestExactMatchBeatsAmbiguity(t *testing.T) {
 
 func TestResolveUnknownBeneficiary(t *testing.T) {
 	r := NewResolver(testPool)
-	_, err := r.Resolve(context.Background(), t.Name(), beneficiaryIntent("nobody"))
+	_, err := r.Resolve(context.Background(), testOrg(t), t.Name(), beneficiaryIntent("nobody"))
 	if !errors.Is(err, ErrDestinationNotFound) {
 		t.Fatalf("error = %v, want ErrDestinationNotFound", err)
 	}
 }
 
-// TestBeneficiariesAreScopedToTheirOwner: one user's saved recipients must
+// TestBeneficiariesAreScopedToTheirOwner: one member's saved recipients must
 // never be reachable from another's message.
 func TestBeneficiariesAreScopedToTheirOwner(t *testing.T) {
-	saveBeneficiary(t, t.Name()+"/alice", "Brother", keypair.MustRandom().Address())
+	org := testOrg(t)
+	saveBeneficiary(t, org, t.Name()+"/alice", "Brother", keypair.MustRandom().Address())
 
 	r := NewResolver(testPool)
-	_, err := r.Resolve(context.Background(), t.Name()+"/bob", beneficiaryIntent("brother"))
+	_, err := r.Resolve(context.Background(), org, t.Name()+"/bob", beneficiaryIntent("brother"))
 	if !errors.Is(err, ErrDestinationNotFound) {
 		t.Fatalf("error = %v, want ErrDestinationNotFound: bob must not see alice's recipients", err)
+	}
+}
+
+// TestBeneficiariesAreScopedToTheirOrg: the same owner reference in a different
+// org is a different person entirely, and their address book must not follow
+// them across tenants.
+func TestBeneficiariesAreScopedToTheirOrg(t *testing.T) {
+	owner := t.Name()
+	mine := testOrg(t)
+	saveBeneficiary(t, mine, owner, "Payroll", keypair.MustRandom().Address())
+
+	var theirs ledger.OrgID
+	err := testPool.QueryRow(context.Background(), `
+		INSERT INTO orgs (kind, slug, display_name, network)
+		VALUES ('dao', 't-other-tenant', 'other', 'testnet')
+		ON CONFLICT (lower(slug)) DO UPDATE SET display_name = EXCLUDED.display_name
+		RETURNING id`).Scan(&theirs)
+	if err != nil {
+		t.Fatalf("create the other org: %v", err)
+	}
+
+	r := NewResolver(testPool)
+	if _, err := r.Resolve(context.Background(), theirs, owner, beneficiaryIntent("payroll")); !errors.Is(err, ErrDestinationNotFound) {
+		t.Fatalf("error = %v, want ErrDestinationNotFound: another org read this one's address book", err)
 	}
 }
 
@@ -152,7 +203,7 @@ func TestResolveRawAddress(t *testing.T) {
 	addr := keypair.MustRandom().Address()
 	r := NewResolver(testPool)
 
-	got, err := r.Resolve(context.Background(), t.Name(),
+	got, err := r.Resolve(context.Background(), testOrg(t), t.Name(),
 		&Grounded{DestinationText: addr, DestinationKind: DestinationAddress})
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
@@ -177,7 +228,7 @@ func TestResolveRejectsCorruptedAddress(t *testing.T) {
 
 	r := NewResolver(testPool)
 	for _, bad := range corrupted {
-		_, err := r.Resolve(context.Background(), t.Name(),
+		_, err := r.Resolve(context.Background(), testOrg(t), t.Name(),
 			&Grounded{DestinationText: bad, DestinationKind: DestinationAddress})
 		if !errors.Is(err, ErrDestinationInvalid) {
 			t.Errorf("Resolve(%q) error = %v, want ErrDestinationInvalid", bad, err)
@@ -193,7 +244,7 @@ func TestResolveRejectsCorruptedAddress(t *testing.T) {
 func TestResolveRejectsAnUnknownDestinationKind(t *testing.T) {
 	r := NewResolver(testPool)
 	for _, kind := range []DestinationKind{"phone", "", "handle", "email"} {
-		_, err := r.Resolve(context.Background(), t.Name(),
+		_, err := r.Resolve(context.Background(), testOrg(t), t.Name(),
 			&Grounded{DestinationText: "+2348012345678", DestinationKind: kind})
 		if err == nil {
 			t.Errorf("destination kind %q was accepted", kind)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"testing"
 	"time"
@@ -14,9 +15,11 @@ import (
 	"github.com/stellar/go-stellar-sdk/protocols/horizon/base"
 	"github.com/stellar/go-stellar-sdk/protocols/horizon/operations"
 
+	"github.com/stelfin/stelfin/chat"
 	"github.com/stelfin/stelfin/internal/money"
 	"github.com/stelfin/stelfin/internal/pgtest"
 	"github.com/stelfin/stelfin/ledger"
+	"github.com/stelfin/stelfin/ledger/store"
 )
 
 // testPGPort must differ from every other package's: `go test ./...` runs
@@ -80,42 +83,60 @@ func payment(id, from, to, amount string) operations.Payment {
 
 type fixture struct {
 	ing      *Ingester
-	store    *ledger.Store
+	store    *store.Store
 	horizon  *fakeHorizon
+	org      ledger.OrgID
 	usdc     ledger.AssetID
-	user     ledger.AccountID
+	member   ledger.AccountID
 	userAddr string
 	external ledger.AccountID
+}
+
+// newOrg creates a tenant for one test.
+func newOrg(t *testing.T, s *store.Store, suffix string) store.Org {
+	t.Helper()
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(t.Name() + suffix))
+	org, err := s.CreateOrg(context.Background(), store.CreateOrgParams{
+		Slug:        fmt.Sprintf("t-%016x", h.Sum64()),
+		DisplayName: t.Name() + suffix,
+		Network:     "testnet",
+		Channel:     chat.Telegram,
+		SpaceID:     fmt.Sprintf("%d%s", h.Sum64(), suffix),
+	})
+	must(t, err, "create org")
+	return org
 }
 
 func newFixture(t *testing.T, pages map[string]operations.OperationsPage) *fixture {
 	t.Helper()
 	ctx := context.Background()
 
-	store := ledger.New(testPool)
-	usdc, err := store.EnsureAsset(ctx, "USDC", testIssuer)
+	db := store.New(testPool)
+	usdc, err := db.Ledger().EnsureAsset(ctx, "USDC", testIssuer)
 	must(t, err, "ensure USDC")
 
-	user, err := store.EnsureAccount(ctx, ledger.AccountUser, t.Name(), "user "+t.Name())
-	must(t, err, "ensure user")
-	external, err := store.EnsureAccount(ctx, ledger.AccountExternal, "", "external")
+	org := newOrg(t, db, "")
+	member, err := db.EnsureAccount(ctx, org.ID, ledger.AccountMember, t.Name(), "member "+t.Name())
+	must(t, err, "ensure member")
+	external, err := db.EnsureAccount(ctx, org.ID, ledger.AccountExternal, "", "external")
 	must(t, err, "ensure external")
 
 	h := &fakeHorizon{pages: pages}
 	// Stream is per-test so each gets an independent cursor.
-	ing, err := New(ctx, h, store, testPool, Config{Stream: t.Name(), PageSize: 200})
+	ing, err := New(ctx, h, db, testPool, Config{Stream: t.Name(), PageSize: 200})
 	must(t, err, "new ingester")
 
 	addr := keypair.MustRandom().Address()
-	must(t, ing.Track(ctx, addr, user), "track user address")
+	must(t, ing.Track(ctx, org.ID, addr, member, store.RoleMember), "track member address")
 
-	return &fixture{ing: ing, store: store, horizon: h, usdc: usdc,
-		user: user, userAddr: addr, external: external}
+	return &fixture{ing: ing, store: db, horizon: h, org: org.ID, usdc: usdc,
+		member: member, userAddr: addr, external: external}
 }
 
 func (f *fixture) balance(t *testing.T) money.Stroops {
 	t.Helper()
-	b, err := f.store.Balance(context.Background(), f.user, f.usdc)
+	b, err := f.store.Balance(context.Background(), f.org, f.member, f.usdc)
 	must(t, err, "balance")
 	return b
 }
@@ -136,7 +157,7 @@ func TestIngestDeposit(t *testing.T) {
 		t.Errorf("user balance = %s, want %s", got, want)
 	}
 
-	ext, err := f.store.Balance(context.Background(), f.external, f.usdc)
+	ext, err := f.store.Balance(context.Background(), f.org, f.external, f.usdc)
 	must(t, err, "external balance")
 	if ext.Sign() != -1 {
 		t.Errorf("external balance = %s, want negative: value entered the system", ext)
@@ -167,10 +188,10 @@ func TestIngestInternalSend(t *testing.T) {
 	f := newFixture(t, nil)
 	ctx := context.Background()
 
-	other, err := f.store.EnsureAccount(ctx, ledger.AccountUser, t.Name()+"/other", "other")
+	other, err := f.store.EnsureAccount(ctx, f.org, ledger.AccountMember, t.Name()+"/other", "other")
 	must(t, err, "ensure other user")
 	otherAddr := keypair.MustRandom().Address()
-	must(t, f.ing.Track(ctx, otherAddr, other), "track other")
+	must(t, f.ing.Track(ctx, f.org, otherAddr, other, store.RoleMember), "track other")
 
 	stranger := keypair.MustRandom().Address()
 	f.horizon.pages = map[string]operations.OperationsPage{
@@ -178,12 +199,12 @@ func TestIngestInternalSend(t *testing.T) {
 		"s-in": page(payment("s-mv", f.userAddr, otherAddr, "30.0000000")),
 	}
 
-	extBefore, err := f.store.Balance(ctx, f.external, f.usdc)
+	extBefore, err := f.store.Balance(ctx, f.org, f.external, f.usdc)
 	must(t, err, "external before")
 
 	_, err = f.ing.Once(ctx)
 	must(t, err, "ingest deposit")
-	extAfterDeposit, err := f.store.Balance(ctx, f.external, f.usdc)
+	extAfterDeposit, err := f.store.Balance(ctx, f.org, f.external, f.usdc)
 	must(t, err, "external after deposit")
 
 	_, err = f.ing.Once(ctx)
@@ -192,13 +213,13 @@ func TestIngestInternalSend(t *testing.T) {
 	if got, want := f.balance(t), money.MustParse("50"); got != want {
 		t.Errorf("sender balance = %s, want %s", got, want)
 	}
-	otherBal, err := f.store.Balance(ctx, other, f.usdc)
+	otherBal, err := f.store.Balance(ctx, f.org, other, f.usdc)
 	must(t, err, "recipient balance")
 	if want := money.MustParse("30"); otherBal != want {
 		t.Errorf("recipient balance = %s, want %s", otherBal, want)
 	}
 
-	extAfterSend, err := f.store.Balance(ctx, f.external, f.usdc)
+	extAfterSend, err := f.store.Balance(ctx, f.org, f.external, f.usdc)
 	must(t, err, "external after send")
 	if extAfterSend != extAfterDeposit {
 		t.Errorf("external moved by %s on an internal transfer; it should not move at all",
@@ -348,9 +369,9 @@ func TestIngestNativeAsset(t *testing.T) {
 
 	must(t, mustErr(f.ing.Once(context.Background())), "ingest native")
 
-	xlm, err := f.store.EnsureAsset(context.Background(), "XLM", "")
+	xlm, err := f.store.Ledger().EnsureAsset(context.Background(), "XLM", "")
 	must(t, err, "resolve XLM")
-	got, err := f.store.Balance(context.Background(), f.user, xlm)
+	got, err := f.store.Balance(context.Background(), f.org, f.member, xlm)
 	must(t, err, "xlm balance")
 	if want := money.MustParse("3.5"); got != want {
 		t.Errorf("XLM balance = %s, want %s", got, want)
@@ -382,5 +403,63 @@ func must(t *testing.T, err error, what string) {
 	t.Helper()
 	if err != nil {
 		t.Fatalf("%s: %v", what, err)
+	}
+}
+
+// TestPaymentBetweenTenantsIsRecordedTwice is the multi-tenant case, and the
+// one a single-tenant ingester gets silently wrong.
+//
+// Two DAOs both bank here, and one pays the other. That is not one transaction
+// touching both sets of books — the database refuses that, and rightly, because
+// one org's journal would then contain another org's account. It is a
+// withdrawal from the sender's org and a deposit into the recipient's, each
+// balanced against its own counterparty account, sharing one idempotency key
+// because the key is unique per org rather than globally.
+func TestPaymentBetweenTenantsIsRecordedTwice(t *testing.T) {
+	f := newFixture(t, nil)
+	ctx := context.Background()
+
+	// A second tenant with its own member and its own tracked address.
+	other := newOrg(t, f.store, "/other-tenant")
+	otherMember, err := f.store.EnsureAccount(ctx, other.ID, ledger.AccountMember, "them", "them")
+	must(t, err, "ensure the other org's member")
+	otherAddr := keypair.MustRandom().Address()
+	must(t, f.ing.Track(ctx, other.ID, otherAddr, otherMember, store.RoleMember), "track")
+
+	// Fund the sender so the withdrawal does not drive them negative.
+	f.horizon.pages = map[string]operations.OperationsPage{
+		"": page(payment("cross-seed", keypair.MustRandom().Address(), f.userAddr, "100.0000000")),
+	}
+	_, err = f.ing.Once(ctx)
+	must(t, err, "seed")
+
+	f.horizon.pages = map[string]operations.OperationsPage{
+		"cross-seed": page(payment("cross-1", f.userAddr, otherAddr, "40.0000000")),
+	}
+	_, err = f.ing.Once(ctx)
+	must(t, err, "ingest a payment between tenants")
+
+	if got, want := f.balance(t), money.MustParse("60"); got != want {
+		t.Errorf("sender balance = %s, want %s", got, want)
+	}
+	recipient, err := f.store.Balance(ctx, other.ID, otherMember, f.usdc)
+	must(t, err, "recipient balance")
+	if want := money.MustParse("40"); recipient != want {
+		t.Errorf("recipient balance = %s, want %s", recipient, want)
+	}
+
+	// Each org's counterparty carries its own side, and neither carries the
+	// other's: the sender's org saw value leave, the recipient's saw it arrive.
+	senderExternal, err := f.store.Balance(ctx, f.org, f.external, f.usdc)
+	must(t, err, "sender external")
+	if want := money.MustParse("-60"); senderExternal != want {
+		t.Errorf("sender's external = %s, want %s", senderExternal, want)
+	}
+	otherExternal, err := f.store.EnsureAccount(ctx, other.ID, ledger.AccountExternal, "", "external")
+	must(t, err, "other external account")
+	recipientExternal, err := f.store.Balance(ctx, other.ID, otherExternal, f.usdc)
+	must(t, err, "recipient external")
+	if want := money.MustParse("-40"); recipientExternal != want {
+		t.Errorf("recipient's external = %s, want %s", recipientExternal, want)
 	}
 }
