@@ -32,7 +32,7 @@ func signProvisionWith(kp *keypair.Full) func(*txnbuild.Transaction) (*txnbuild.
 func issueAndSign(t *testing.T, f *fixture, userKey *keypair.Full) (*Confirmation, string) {
 	t.Helper()
 
-	c, err := f.svc.PrepareSend(context.Background(), f.owner, []string{sendMessage})
+	c, err := f.svc.PrepareSend(context.Background(), f.scope, []string{sendMessage})
 	if err != nil {
 		t.Fatalf("PrepareSend: %v", err)
 	}
@@ -60,12 +60,12 @@ func TestPrepareRecordsAPendingSend(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	ctx := context.Background()
 
-	c, err := f.svc.PrepareSend(ctx, f.owner, []string{sendMessage})
+	c, err := f.svc.PrepareSend(ctx, f.scope, []string{sendMessage})
 	if err != nil {
 		t.Fatalf("PrepareSend: %v", err)
 	}
 
-	pending, err := f.svc.Pending(ctx, f.owner)
+	pending, err := f.svc.Pending(ctx, f.scope)
 	if err != nil {
 		t.Fatalf("Pending: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestSubmitIssuedTransaction(t *testing.T) {
 	treasury := keypair.MustRandom()
 	_, signedXDR := issueAndSign(t, f, keypair.MustRandom())
 
-	res, err := f.svc.Submit(context.Background(), f.owner, signedXDR,
+	res, err := f.svc.Submit(context.Background(), f.scope, signedXDR,
 		treasury.Address(), signWith(treasury))
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
@@ -124,23 +124,40 @@ func TestSubmitRejectsTransactionWeNeverIssued(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 
-	_, err = f.svc.Submit(context.Background(), f.owner, xdr, treasury.Address(), signWith(treasury))
+	_, err = f.svc.Submit(context.Background(), f.scope, xdr, treasury.Address(), signWith(treasury))
 	if !errors.Is(err, ErrUnknownTransaction) {
 		t.Fatalf("error = %v, want ErrUnknownTransaction", err)
 	}
 }
 
-// TestSubmitRejectsAnotherUsersTransaction: knowing a valid envelope is not
+// TestSubmitRejectsAnotherMembersTransaction: knowing a valid envelope is not
 // authority to spend against it.
-func TestSubmitRejectsAnotherUsersTransaction(t *testing.T) {
+func TestSubmitRejectsAnotherMembersTransaction(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	treasury := keypair.MustRandom()
 	_, signedXDR := issueAndSign(t, f, keypair.MustRandom())
 
-	_, err := f.svc.Submit(context.Background(), "someone-else", signedXDR,
+	stranger := Scope{Org: f.org, OwnerRef: "telegram:someone-else"}
+	_, err := f.svc.Submit(context.Background(), stranger, signedXDR,
 		treasury.Address(), signWith(treasury))
 	if !errors.Is(err, ErrNotYours) {
 		t.Fatalf("error = %v, want ErrNotYours", err)
+	}
+}
+
+// TestSubmitRejectsAnotherOrgsTransaction: the same envelope presented from a
+// different tenant must be unknown there. Answering "not yours" would confirm
+// it exists, which is a fact about another org's business.
+func TestSubmitRejectsAnotherOrgsTransaction(t *testing.T) {
+	f := newFixture(t, sendDecoded())
+	treasury := keypair.MustRandom()
+	_, signedXDR := issueAndSign(t, f, keypair.MustRandom())
+
+	elsewhere := Scope{Org: orgFor(t, "/elsewhere").ID, OwnerRef: f.owner}
+	_, err := f.svc.Submit(context.Background(), elsewhere, signedXDR,
+		treasury.Address(), signWith(treasury))
+	if !errors.Is(err, ErrUnknownTransaction) {
+		t.Fatalf("error = %v, want ErrUnknownTransaction", err)
 	}
 }
 
@@ -152,10 +169,10 @@ func TestSubmitRejectsReplay(t *testing.T) {
 	treasury := keypair.MustRandom()
 	_, signedXDR := issueAndSign(t, f, keypair.MustRandom())
 
-	if _, err := f.svc.Submit(ctx, f.owner, signedXDR, treasury.Address(), signWith(treasury)); err != nil {
+	if _, err := f.svc.Submit(ctx, f.scope, signedXDR, treasury.Address(), signWith(treasury)); err != nil {
 		t.Fatalf("first submit: %v", err)
 	}
-	_, err := f.svc.Submit(ctx, f.owner, signedXDR, treasury.Address(), signWith(treasury))
+	_, err := f.svc.Submit(ctx, f.scope, signedXDR, treasury.Address(), signWith(treasury))
 	if !errors.Is(err, ErrAlreadySubmitted) {
 		t.Fatalf("error = %v, want ErrAlreadySubmitted", err)
 	}
@@ -176,7 +193,7 @@ func TestConcurrentSubmitClaimsOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := f.svc.Submit(ctx, f.owner, signedXDR, treasury.Address(), signWith(treasury))
+			_, err := f.svc.Submit(ctx, f.scope, signedXDR, treasury.Address(), signWith(treasury))
 			results <- err
 		}()
 	}
@@ -202,13 +219,13 @@ func TestSubmitRejectsUnsignedEnvelope(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	treasury := keypair.MustRandom()
 
-	c, err := f.svc.PrepareSend(context.Background(), f.owner, []string{sendMessage})
+	c, err := f.svc.PrepareSend(context.Background(), f.scope, []string{sendMessage})
 	if err != nil {
 		t.Fatalf("PrepareSend: %v", err)
 	}
 
 	// The XDR exactly as issued — never signed.
-	_, err = f.svc.Submit(context.Background(), f.owner, c.XDR, treasury.Address(), signWith(treasury))
+	_, err = f.svc.Submit(context.Background(), f.scope, c.XDR, treasury.Address(), signWith(treasury))
 	if !errors.Is(err, ErrUnsigned) {
 		t.Fatalf("error = %v, want ErrUnsigned", err)
 	}
@@ -232,7 +249,7 @@ func TestSubmitRejectsExpiredTransaction(t *testing.T) {
 		t.Fatalf("age pending send: %v", err)
 	}
 
-	_, err := f.svc.Submit(ctx, f.owner, signedXDR, treasury.Address(), signWith(treasury))
+	_, err := f.svc.Submit(ctx, f.scope, signedXDR, treasury.Address(), signWith(treasury))
 	if !errors.Is(err, ErrExpired) {
 		t.Fatalf("error = %v, want ErrExpired", err)
 	}
@@ -264,7 +281,7 @@ func TestSubmitRejectsAFeeBump(t *testing.T) {
 		t.Fatalf("encode bump: %v", err)
 	}
 
-	_, err = f.svc.Submit(context.Background(), f.owner, bumpXDR, treasury.Address(), signWith(treasury))
+	_, err = f.svc.Submit(context.Background(), f.scope, bumpXDR, treasury.Address(), signWith(treasury))
 	if err == nil {
 		t.Fatal("expected an error: the client must not build the outer envelope")
 	}
@@ -276,11 +293,11 @@ func TestPendingExcludesSubmittedAndExpired(t *testing.T) {
 	treasury := keypair.MustRandom()
 	_, signedXDR := issueAndSign(t, f, keypair.MustRandom())
 
-	if _, err := f.svc.Submit(ctx, f.owner, signedXDR, treasury.Address(), signWith(treasury)); err != nil {
+	if _, err := f.svc.Submit(ctx, f.scope, signedXDR, treasury.Address(), signWith(treasury)); err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
 
-	pending, err := f.svc.Pending(ctx, f.owner)
+	pending, err := f.svc.Pending(ctx, f.scope)
 	if err != nil {
 		t.Fatalf("Pending: %v", err)
 	}
@@ -293,7 +310,7 @@ func TestPendingExpiryMatchesTransactionTimebounds(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	ctx := context.Background()
 
-	c, err := f.svc.PrepareSend(ctx, f.owner, []string{sendMessage})
+	c, err := f.svc.PrepareSend(ctx, f.scope, []string{sendMessage})
 	if err != nil {
 		t.Fatalf("PrepareSend: %v", err)
 	}
@@ -302,7 +319,7 @@ func TestPendingExpiryMatchesTransactionTimebounds(t *testing.T) {
 	tx, _ := parsed.Transaction()
 	want := time.Unix(tx.Timebounds().MaxTime, 0).UTC()
 
-	pending, err := f.svc.Pending(ctx, f.owner)
+	pending, err := f.svc.Pending(ctx, f.scope)
 	if err != nil {
 		t.Fatalf("Pending: %v", err)
 	}

@@ -162,9 +162,9 @@ func TestWebhookWritesThePlatformsAck(t *testing.T) {
 	}
 }
 
-func authed(t *testing.T, srv *Server, method, path, owner, hash, body string) *http.Request {
+func authed(t *testing.T, srv *Server, method, path string, scope Scope, hash, body string) *http.Request {
 	t.Helper()
-	token, err := srv.tokens.Issue(owner, hash, time.Now().Add(time.Hour))
+	token, err := srv.tokens.Issue(scope, hash, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -181,12 +181,12 @@ func TestConfirmEndpoint(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	srv := newServer(t, f, keypair.MustRandom())
 
-	c, err := f.svc.PrepareSend(t.Context(), f.owner, []string{sendMessage})
+	c, err := f.svc.PrepareSend(t.Context(), f.scope, []string{sendMessage})
 	if err != nil {
 		t.Fatalf("PrepareSend: %v", err)
 	}
 
-	rec := do(t, srv, authed(t, srv, http.MethodGet, "/v1/confirm", f.owner, c.Hash, ""))
+	rec := do(t, srv, authed(t, srv, http.MethodGet, "/v1/confirm", f.scope, c.Hash, ""))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
@@ -212,14 +212,14 @@ func TestConfirmIsScopedToTheTokensTransaction(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	srv := newServer(t, f, keypair.MustRandom())
 
-	c, err := f.svc.PrepareSend(t.Context(), f.owner, []string{sendMessage})
+	c, err := f.svc.PrepareSend(t.Context(), f.scope, []string{sendMessage})
 	if err != nil {
 		t.Fatalf("PrepareSend: %v", err)
 	}
 
 	// A token for a different (nonexistent) transaction, same user.
 	other := strings.Repeat("b", 64)
-	rec := do(t, srv, authed(t, srv, http.MethodGet, "/v1/confirm", f.owner, other, ""))
+	rec := do(t, srv, authed(t, srv, http.MethodGet, "/v1/confirm", f.scope, other, ""))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)
 	}
@@ -232,13 +232,13 @@ func TestConfirmHidesOtherUsersSends(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	srv := newServer(t, f, keypair.MustRandom())
 
-	c, err := f.svc.PrepareSend(t.Context(), f.owner, []string{sendMessage})
+	c, err := f.svc.PrepareSend(t.Context(), f.scope, []string{sendMessage})
 	if err != nil {
 		t.Fatalf("PrepareSend: %v", err)
 	}
 
-	real := do(t, srv, authed(t, srv, http.MethodGet, "/v1/confirm", "mallory", c.Hash, ""))
-	fake := do(t, srv, authed(t, srv, http.MethodGet, "/v1/confirm", "mallory", strings.Repeat("c", 64), ""))
+	real := do(t, srv, authed(t, srv, http.MethodGet, "/v1/confirm", Scope{Org: f.org, OwnerRef: "mallory"}, c.Hash, ""))
+	fake := do(t, srv, authed(t, srv, http.MethodGet, "/v1/confirm", Scope{Org: f.org, OwnerRef: "mallory"}, strings.Repeat("c", 64), ""))
 
 	if real.Code != http.StatusNotFound || fake.Code != http.StatusNotFound {
 		t.Fatalf("statuses = %d and %d, want both 404", real.Code, fake.Code)
@@ -280,7 +280,7 @@ func TestEnrollEndpointsRejectAConfirmToken(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	srv := newServer(t, f, keypair.MustRandom())
 
-	confirmToken, err := srv.tokens.Issue(f.owner, strings.Repeat("a", 64), time.Now().Add(time.Hour))
+	confirmToken, err := srv.tokens.Issue(f.scope, strings.Repeat("a", 64), time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -295,11 +295,11 @@ func TestConfirmEndpointRejectsAnEnrollToken(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	srv := newServer(t, f, keypair.MustRandom())
 
-	c, err := f.svc.PrepareSend(t.Context(), f.owner, []string{sendMessage})
+	c, err := f.svc.PrepareSend(t.Context(), f.scope, []string{sendMessage})
 	if err != nil {
 		t.Fatalf("PrepareSend: %v", err)
 	}
-	enrollToken, err := srv.enrollTokens.Issue(f.owner, time.Now().Add(time.Hour))
+	enrollToken, err := srv.enrollTokens.Issue(f.scope, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestSubmitEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode request: %v", err)
 	}
-	rec := do(t, srv, authed(t, srv, http.MethodPost, "/v1/submit", f.owner, c.Hash, string(body)))
+	rec := do(t, srv, authed(t, srv, http.MethodPost, "/v1/submit", f.scope, c.Hash, string(body)))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
@@ -342,10 +342,10 @@ func TestSubmitEndpointRejectsReplay(t *testing.T) {
 	c, signedXDR := issueAndSign(t, f, keypair.MustRandom())
 
 	body, _ := json.Marshal(submitRequest{SignedXDR: signedXDR})
-	if rec := do(t, srv, authed(t, srv, http.MethodPost, "/v1/submit", f.owner, c.Hash, string(body))); rec.Code != http.StatusOK {
+	if rec := do(t, srv, authed(t, srv, http.MethodPost, "/v1/submit", f.scope, c.Hash, string(body))); rec.Code != http.StatusOK {
 		t.Fatalf("first submit: status = %d", rec.Code)
 	}
-	rec := do(t, srv, authed(t, srv, http.MethodPost, "/v1/submit", f.owner, c.Hash, string(body)))
+	rec := do(t, srv, authed(t, srv, http.MethodPost, "/v1/submit", f.scope, c.Hash, string(body)))
 	if rec.Code != http.StatusConflict {
 		t.Errorf("replay status = %d, want 409", rec.Code)
 	}
@@ -372,7 +372,7 @@ func TestSubmitEndpointRejectsForeignTransaction(t *testing.T) {
 	body, _ := json.Marshal(submitRequest{SignedXDR: xdr})
 
 	hash, _ := signed.HashHex(network.TestNetworkPassphrase)
-	rec := do(t, srv, authed(t, srv, http.MethodPost, "/v1/submit", f.owner, hash, string(body)))
+	rec := do(t, srv, authed(t, srv, http.MethodPost, "/v1/submit", f.scope, hash, string(body)))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404: the treasury must not fee-bump a transaction we never issued", rec.Code)
 	}
@@ -384,7 +384,7 @@ func TestConfirmLinkPutsTokenInTheFragment(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	srv := newServer(t, f, keypair.MustRandom())
 
-	link, err := srv.IssueConfirmLink(f.owner, strings.Repeat("a", 64), time.Now().Add(time.Hour))
+	link, err := srv.IssueConfirmLink(f.scope, strings.Repeat("a", 64), time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("IssueConfirmLink: %v", err)
 	}
@@ -401,7 +401,7 @@ func TestEnrollLinkPutsTokenInTheFragment(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	srv := newServer(t, f, keypair.MustRandom())
 
-	link, err := srv.IssueEnrollLink("+2348012345678", time.Now().Add(time.Hour))
+	link, err := srv.IssueEnrollLink(f.scope, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("IssueEnrollLink: %v", err)
 	}
@@ -413,9 +413,9 @@ func TestEnrollLinkPutsTokenInTheFragment(t *testing.T) {
 	}
 }
 
-func authedEnroll(t *testing.T, srv *Server, method, path, owner, body string) *http.Request {
+func authedEnroll(t *testing.T, srv *Server, method, path string, scope Scope, body string) *http.Request {
 	t.Helper()
-	token, err := srv.enrollTokens.Issue(owner, time.Now().Add(time.Hour))
+	token, err := srv.enrollTokens.Issue(scope, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -658,11 +658,11 @@ func TestConfirmResponseCarriesTheNetwork(t *testing.T) {
 	f := newFixture(t, sendDecoded())
 	srv := newServer(t, f, keypair.MustRandom())
 
-	c, err := f.svc.PrepareSend(t.Context(), f.owner, []string{sendMessage})
+	c, err := f.svc.PrepareSend(t.Context(), f.scope, []string{sendMessage})
 	if err != nil {
 		t.Fatalf("PrepareSend: %v", err)
 	}
-	rec := do(t, srv, authed(t, srv, http.MethodGet, "/v1/confirm", f.owner, c.Hash, ""))
+	rec := do(t, srv, authed(t, srv, http.MethodGet, "/v1/confirm", f.scope, c.Hash, ""))
 
 	var got map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
