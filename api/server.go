@@ -18,6 +18,13 @@ import (
 type ServerConfig struct {
 	// BaseURL is where the confirmation page is served from.
 	BaseURL string
+	// Handler processes each inbound message: tenancy, the exactly-once claim,
+	// role checks and command dispatch.
+	//
+	// An interface rather than a concrete type because that work lives in core,
+	// which imports this package for its service and its tokens. Inverting the
+	// dependency here is what keeps the two from importing each other.
+	Handler Handler
 	// Transports holds the chat platforms this deployment serves. It both
 	// routes an inbound webhook to the transport that can authenticate it and
 	// delivers every reply — including the refusal to post a link carrying
@@ -50,6 +57,15 @@ type ServerConfig struct {
 	Logger *slog.Logger
 }
 
+// Handler processes one inbound message.
+//
+// Implemented by core.Service. Declared here because the HTTP surface is what
+// calls it and the two must agree on the shape, not because this package knows
+// what routing means.
+type Handler interface {
+	Handle(ctx context.Context, m chat.Inbound, out Replier, links Linker) error
+}
+
 // Server exposes the service over HTTP.
 type Server struct {
 	svc          *Service
@@ -78,6 +94,8 @@ func NewServer(svc *Service, tokens *ConfirmTokens, enrollTokens *EnrollTokens, 
 		return nil, errors.New("api: base url is required")
 	case cfg.Transports == nil:
 		return nil, errors.New("api: transport registry is required")
+	case cfg.Handler == nil:
+		return nil, errors.New("api: inbound handler is required")
 	case cfg.NetworkPassphrase == "":
 		return nil, errors.New("api: network passphrase is required")
 	}
@@ -173,7 +191,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 
 		for _, m := range delivery.Messages {
-			if err := s.svc.HandleInbound(ctx, m, s.cfg.Transports, s); err != nil {
+			if err := s.cfg.Handler.Handle(ctx, m, s.cfg.Transports, s); err != nil {
 				// Logged, not retried: the message is already claimed, and
 				// replaying it would risk a second confirmation.
 				s.log.Error("inbound message failed",

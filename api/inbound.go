@@ -7,24 +7,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/stelfin/stelfin/api/intent"
 	"github.com/stelfin/stelfin/chat"
 )
 
-// Inbound handling: what to do with one message from a chat platform.
+// The free-text send path: a message that is an instruction to pay someone
+// rather than a command.
 //
-// Two properties matter more than any of the plumbing.
-//
-// Platforms retry a delivery they consider slow or failed, so the same message
-// arrives more than once. A message is therefore claimed exactly once, by its
-// dedupe id, before anything acts on it — otherwise one instruction would
-// produce two confirmations and, if the user tapped both, two payments.
-//
-// And the message body is untrusted input from the open internet. It reaches
-// the model only as tokens the backend produced, and anything the model says
-// about it is re-checked against those tokens. Nothing here trusts the text for
+// The message body is untrusted input from the open internet. It reaches the
+// model only as tokens the backend produced, and anything the model says about
+// it is re-checked against those tokens. Nothing here trusts the text for
 // anything except being text.
 
 // Replier delivers a reply back to the conversation a message arrived on.
@@ -36,77 +28,23 @@ type Replier interface {
 	Send(ctx context.Context, to chat.Conversation, actor chat.Actor, r chat.Reply) error
 }
 
-// claimMessage records a dedupe id, reporting whether this caller won it.
+// HandleSend turns one free-text message into a payment awaiting approval.
 //
-// An insert that either succeeds or conflicts, rather than a read followed by a
-// write: two concurrent retries of the same delivery cannot both proceed.
-func (s *Service) claimMessage(ctx context.Context, m chat.Inbound) (bool, error) {
-	var claimed bool
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO processed_messages (id, sender)
-		VALUES ($1, $2)
-		ON CONFLICT (id) DO NOTHING
-		RETURNING true`,
-		m.DedupeID, m.Actor.Ref(),
-	).Scan(&claimed)
-	if errors.Is(err, pgx.ErrNoRows) {
-		// The conflict path: another delivery of this message already claimed it.
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("api: claim message %s: %w", m.DedupeID, err)
-	}
-	return true, nil
-}
-
-// HandleInbound processes one message end to end.
-//
-// It returns nil for messages it deliberately ignores — a duplicate delivery,
-// something it cannot act on — because the caller's job is to keep the webhook
-// healthy, not to surface every non-event as a failure.
-func (s *Service) HandleInbound(
-	ctx context.Context, m chat.Inbound, out Replier, links Linker,
+// Tenancy, the exactly-once claim and command dispatch all happen before this,
+// in core. By the time anything here runs the org is known, the message is this
+// process's to act on, and what is left is the part this package exists for:
+// turning untrusted text into something a person can check and sign.
+func (s *Service) HandleSend(
+	ctx context.Context, scope Scope, m chat.Inbound, out Replier, links Linker,
 ) error {
-	if m.DedupeID == "" {
-		return errors.New("api: inbound message has no dedupe id")
-	}
-
-	// Tenancy first, before a single byte of the message content is looked at.
-	//
-	// An unregistered space is not an error and gets no reply: the bot has been
-	// added somewhere nobody has run setup, and answering would be talking to a
-	// room that never asked. It also costs nothing — no claim, no decoder call.
-	org, ok, err := s.store.OrgForSpace(ctx, m.Conversation.Channel, m.Conversation.SpaceID)
-	if err != nil {
+	if err := scope.check(); err != nil {
 		return err
 	}
-	if !ok {
-		return nil
-	}
-	if !org.Active() {
-		// Suspended tenants keep their history readable and move no money.
-		return s.reply(ctx, out, m, "This workspace is suspended. Nothing can be sent right now.")
-	}
-	claimed, err := s.claimMessage(ctx, m)
-	if err != nil {
-		return err
-	}
-	if !claimed {
-		// The platform retried something already handled. Silence is correct:
-		// replying again would tell the user twice.
-		return nil
-	}
 
-	// The transport identity becomes the domain identity here, and nowhere
-	// else. Actor.Ref is channel-scoped, so the same numeric id on two
-	// platforms stays two different owners; the org comes from the space the
-	// message arrived in, resolved before any of its content was looked at.
-	scope := Scope{Org: org.ID, OwnerRef: m.Actor.Ref()}
-
-	// An unenrolled owner has nothing PrepareSend could resolve "from", and
-	// running the decoder for them would spend an LLM call to reject something
-	// the account state already rules out. Checked first, deciding before any
-	// message content is even looked at.
+	// An owner with no account has nothing PrepareSend could resolve "from",
+	// and running the decoder for them would spend an LLM call to reject
+	// something the account state already rules out. Checked first, deciding
+	// before any message content is even looked at.
 	enrolled, err := s.hasStellarAccount(ctx, scope)
 	if err != nil {
 		return err
