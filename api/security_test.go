@@ -9,6 +9,12 @@ import (
 
 var testSecret = []byte("0123456789abcdef0123456789abcdef")
 
+// scope builds a token scope for one owner, in a fixed org. Which org does not
+// matter to these tests, only that it is carried and comes back intact.
+func scope(ownerRef string) Scope {
+	return Scope{Org: 7, OwnerRef: ownerRef}
+}
+
 func newTokens(t *testing.T) *ConfirmTokens {
 	t.Helper()
 	c, err := NewConfirmTokens(testSecret)
@@ -22,16 +28,43 @@ func TestConfirmTokenRoundTrip(t *testing.T) {
 	c := newTokens(t)
 	hash := strings.Repeat("a", 64)
 
-	token, err := c.Issue("+2348012345678", hash, time.Now().Add(time.Hour))
+	token, err := c.Issue(scope("+2348012345678"), hash, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	owner, gotHash, err := c.Verify(token)
+	got, gotHash, err := c.Verify(token)
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if owner != "+2348012345678" || gotHash != hash {
-		t.Errorf("verified %q/%q, want %q/%q", owner, gotHash, "+2348012345678", hash)
+	if want := scope("+2348012345678"); got != want || gotHash != hash {
+		t.Errorf("verified %+v/%q, want %+v/%q", got, gotHash, want, hash)
+	}
+}
+
+// TestConfirmTokenCarriesTheOrg: the token is the only thing that reaches the
+// browser, so it has to say which tenant the payment belongs to. Without it, an
+// owner reference alone would authorise whichever org's row was found.
+func TestConfirmTokenCarriesTheOrg(t *testing.T) {
+	c := newTokens(t)
+	hash := strings.Repeat("a", 64)
+
+	token, err := c.Issue(Scope{Org: 42, OwnerRef: "telegram:9"}, hash, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	got, _, err := c.Verify(token)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if got.Org != 42 {
+		t.Errorf("org = %d, want 42", got.Org)
+	}
+}
+
+func TestConfirmTokenRefusesAnOrglessScope(t *testing.T) {
+	c := newTokens(t)
+	if _, err := c.Issue(Scope{OwnerRef: "alice"}, strings.Repeat("a", 64), time.Now().Add(time.Hour)); err == nil {
+		t.Fatal("issued a token with no org")
 	}
 }
 
@@ -40,7 +73,7 @@ func TestConfirmTokenRoundTrip(t *testing.T) {
 // different payment or a different user.
 func TestConfirmTokenRejectsTampering(t *testing.T) {
 	c := newTokens(t)
-	token, err := c.Issue("alice", strings.Repeat("a", 64), time.Now().Add(time.Hour))
+	token, err := c.Issue(scope("alice"), strings.Repeat("a", 64), time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -55,7 +88,7 @@ func TestConfirmTokenRejectsTampering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewConfirmTokens: %v", err)
 	}
-	forged, err := forger.Issue("mallory", strings.Repeat("b", 64), time.Now().Add(time.Hour))
+	forged, err := forger.Issue(scope("mallory"), strings.Repeat("b", 64), time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("Issue forged: %v", err)
 	}
@@ -65,7 +98,7 @@ func TestConfirmTokenRejectsTampering(t *testing.T) {
 		"signature stripped":  parts[0] + "." + parts[1],
 		"signature blanked":   parts[0] + "." + parts[1] + ".",
 		"signature mutated":   parts[0] + "." + parts[1] + "." + flipLast(parts[2]),
-		"version changed":     "v2." + parts[1] + "." + parts[2],
+		"version changed":     "v3." + parts[1] + "." + parts[2],
 		"forged with own key": forged,
 		"empty":               "",
 		"garbage":             "not-a-token",
@@ -78,7 +111,7 @@ func TestConfirmTokenRejectsTampering(t *testing.T) {
 
 func TestConfirmTokenExpires(t *testing.T) {
 	c := newTokens(t)
-	token, err := c.Issue("alice", strings.Repeat("a", 64), time.Now().Add(time.Minute))
+	token, err := c.Issue(scope("alice"), strings.Repeat("a", 64), time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -96,7 +129,7 @@ func TestConfirmTokenScopesToOneTransaction(t *testing.T) {
 	first := strings.Repeat("a", 64)
 	second := strings.Repeat("b", 64)
 
-	token, err := c.Issue("alice", first, time.Now().Add(time.Hour))
+	token, err := c.Issue(scope("alice"), first, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -122,7 +155,7 @@ func TestConfirmTokenRejectsNULInFields(t *testing.T) {
 	c := newTokens(t)
 	// The payload is NUL-joined, so a NUL inside a field could re-split into a
 	// different owner/hash pair.
-	if _, err := c.Issue("alice\x00mallory", strings.Repeat("a", 64), time.Now().Add(time.Hour)); err == nil {
+	if _, err := c.Issue(Scope{Org: 1, OwnerRef: "alice\x00mallory"}, strings.Repeat("a", 64), time.Now().Add(time.Hour)); err == nil {
 		t.Fatal("expected an error for a NUL in the owner")
 	}
 }
