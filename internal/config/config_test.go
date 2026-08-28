@@ -273,3 +273,37 @@ func TestBothTransportsCanBeConfigured(t *testing.T) {
 		t.Errorf("telegram = %v, discord = %v; want both", cfg.HasTelegram(), cfg.HasDiscord())
 	}
 }
+
+// TestWebAuthSeedMustNotBeTheTreasury: it signs attacker-chosen material and is
+// the one key here that cannot go behind a remote signer. Pointing it at the
+// treasury would put the key that pays for everything in that position.
+func TestWebAuthSeedMustNotBeTheTreasury(t *testing.T) {
+	env := validEnv(t)
+	env["STELFIN_WEBAUTH_SEED"] = env["STELFIN_TREASURY_SEED"]
+	withEnv(t, env)
+
+	if _, err := Load(); err == nil {
+		t.Fatal("the treasury key was accepted as the web-auth key")
+	}
+}
+
+func TestWebAuthSeedMustBeAStellarSecret(t *testing.T) {
+	env := validEnv(t)
+	env["STELFIN_WEBAUTH_SEED"] = "not-a-seed"
+	withEnv(t, env)
+
+	if _, err := Load(); err == nil {
+		t.Fatal("an invalid web-auth seed was accepted")
+	}
+}
+
+func TestWebAuthIsOptional(t *testing.T) {
+	withEnv(t, validEnv(t))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.HasWebAuth() {
+		t.Error("web auth reported as configured with no seed set")
+	}
+}

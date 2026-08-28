@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -24,6 +25,7 @@ import (
 	"github.com/stelfin/stelfin/api/intent"
 	"github.com/stelfin/stelfin/chat"
 	"github.com/stelfin/stelfin/core"
+	"github.com/stelfin/stelfin/identity"
 	"github.com/stelfin/stelfin/ingestion"
 	"github.com/stelfin/stelfin/internal/config"
 	"github.com/stelfin/stelfin/internal/discord"
@@ -143,6 +145,26 @@ func run(log *slog.Logger) error {
 		log.Warn("no chat transport is configured; the webhook route will refuse every delivery")
 	}
 
+	// SEP-10 challenges, if a web-auth key is configured. Its absence is a
+	// missing capability rather than a missing dependency: the bot runs, and
+	// says linking is unavailable when someone asks for it.
+	var challenges *identity.Challenges
+	if cfg.HasWebAuth() {
+		host := baseHost(cfg.BaseURL)
+		challenges, err = identity.New(identity.Config{
+			Seed:              cfg.WebAuthSeed,
+			HomeDomain:        host,
+			WebAuthDomain:     host,
+			NetworkPassphrase: cfg.NetworkPassphrase,
+		})
+		if err != nil {
+			return err
+		}
+		log.Info("address linking enabled", "web_auth_account", challenges.ServerAccount())
+	} else {
+		log.Warn("no web-auth key configured; members cannot link a wallet")
+	}
+
 	svc, err := api.NewService(pool,
 		decoder.New(decoder.Config{
 			APIKey: cfg.AnthropicAPIKey,
@@ -152,9 +174,10 @@ func run(log *slog.Logger) error {
 		intent.NewResolver(pool),
 		settle,
 		api.Config{
-			Asset:     txnbuild.CreditAsset{Code: cfg.AssetCode, Issuer: cfg.AssetIssuer},
-			AssetCode: cfg.AssetCode,
-			AssetID:   int16(assetID),
+			Asset:      txnbuild.CreditAsset{Code: cfg.AssetCode, Issuer: cfg.AssetIssuer},
+			AssetCode:  cfg.AssetCode,
+			AssetID:    int16(assetID),
+			Challenges: challenges,
 		})
 	if err != nil {
 		return err
@@ -169,6 +192,10 @@ func run(log *slog.Logger) error {
 	// verifying as a confirm token or vice versa, so a second secret would add
 	// deployment friction without adding safety.
 	enrollTokens, err := api.NewEnrollTokens(cfg.ConfirmTokenSecret)
+	if err != nil {
+		return err
+	}
+	linkTokens, err := api.NewLinkTokens(cfg.ConfirmTokenSecret)
 	if err != nil {
 		return err
 	}
@@ -196,7 +223,7 @@ func run(log *slog.Logger) error {
 			"but autocomplete may be stale", "error", err)
 	}
 
-	server, err := api.NewServer(svc, tokens, enrollTokens, api.ServerConfig{
+	server, err := api.NewServer(svc, tokens, enrollTokens, linkTokens, api.ServerConfig{
 		BaseURL:         cfg.BaseURL,
 		Handler:         router,
 		Transports:      transports,
@@ -286,4 +313,21 @@ func networkName(cfg *config.Config) string {
 		return "public"
 	}
 	return "testnet"
+}
+
+// baseHost is the host part of the deployment's base URL.
+//
+// SEP-10 shows a signer the domain they are authenticating to, and checks it
+// again on the way back, so it has to be this deployment's own host rather than
+// anything configurable independently — a mismatch between the two would let a
+// challenge issued here be presented somewhere else.
+func baseHost(baseURL string) string {
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Host == "" {
+		// config.Load has already required an https base URL, so this is
+		// unreachable; returning the raw value keeps the failure visible in the
+		// challenge rather than turning it into an empty domain.
+		return baseURL
+	}
+	return u.Host
 }

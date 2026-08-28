@@ -38,6 +38,20 @@ type Config struct {
 	// TreasurySeed is the treasury's secret seed. See the warning on Load.
 	TreasurySeed string
 
+	// WebAuthSeed signs SEP-10 challenges.
+	//
+	// Optional: without it a deployment simply cannot link addresses, and says
+	// so, rather than refusing to start.
+	//
+	// It must be a different key from the treasury, and that is checked. It
+	// signs arbitrary attacker-chosen challenge material and controls nothing,
+	// which is the only reason it is acceptable for it to live in the process
+	// at all — txnbuild.BuildChallengeTx takes a seed rather than a signing
+	// function, so this is the one key here that cannot go behind a remote
+	// signer. Pointing it at the treasury would put the key that pays for
+	// everything in exactly that position.
+	WebAuthSeed string
+
 	// AssetCode and AssetIssuer identify the asset users transact in.
 	AssetCode   string
 	AssetIssuer string
@@ -107,6 +121,7 @@ func Load() (*Config, error) {
 		DatabaseURL:  req("STELFIN_DATABASE_URL"),
 		HorizonURL:   opt("STELFIN_HORIZON_URL", "https://horizon-testnet.stellar.org"),
 		TreasurySeed: req("STELFIN_TREASURY_SEED"),
+		WebAuthSeed:  strings.TrimSpace(os.Getenv("STELFIN_WEBAUTH_SEED")),
 		AssetCode:    opt("STELFIN_ASSET_CODE", "USDC"),
 		AssetIssuer:  req("STELFIN_ASSET_ISSUER"),
 
@@ -191,6 +206,17 @@ func (c *Config) validate() error {
 	if !strkey.IsValidEd25519SecretSeed(c.TreasurySeed) {
 		return errors.New("config: STELFIN_TREASURY_SEED is not a valid Stellar secret seed")
 	}
+	if c.WebAuthSeed != "" {
+		if !strkey.IsValidEd25519SecretSeed(c.WebAuthSeed) {
+			return errors.New("config: STELFIN_WEBAUTH_SEED is not a valid Stellar secret seed")
+		}
+		if c.WebAuthSeed == c.TreasurySeed {
+			return errors.New(
+				"config: STELFIN_WEBAUTH_SEED must not be the treasury key — it signs " +
+					"attacker-chosen material and is the one key here that cannot go " +
+					"behind a remote signer")
+		}
+	}
 	if !strkey.IsValidEd25519PublicKey(c.AssetIssuer) {
 		return errors.New("config: STELFIN_ASSET_ISSUER is not a valid Stellar address")
 	}
@@ -218,6 +244,9 @@ func (c *Config) HasTelegram() bool { return c.TelegramBotToken != "" }
 // HasDiscord reports whether the Discord transport is configured.
 func (c *Config) HasDiscord() bool { return c.DiscordPublicKey != "" }
 
+// HasWebAuth reports whether SEP-10 linking is configured.
+func (c *Config) HasWebAuth() bool { return c.WebAuthSeed != "" }
+
 // IsMainnet reports whether this configuration points at the public network.
 func (c *Config) IsMainnet() bool {
 	return c.NetworkPassphrase == network.PublicNetworkPassphrase
@@ -239,6 +268,7 @@ func (c *Config) Redacted() map[string]any {
 		"asset":          c.AssetCode + ":" + c.AssetIssuer,
 		"telegram":       c.HasTelegram(),
 		"discord":        c.HasDiscord(),
+		"web_auth":       c.HasWebAuth(),
 		"decoder_effort": c.DecoderEffort,
 		"shutdown_grace": c.ShutdownGrace.String(),
 		// Secrets are named, never valued, so a startup log confirms they were
