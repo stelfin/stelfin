@@ -57,6 +57,8 @@ func (s *Service) registerCommands() {
 		},
 	}
 
+	cmds = append(cmds, s.linkCommands()...)
+
 	s.commands = make(map[string]*command, len(cmds))
 	s.catalog = make([]chat.Command, 0, len(cmds))
 	for _, c := range cmds {

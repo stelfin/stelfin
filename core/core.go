@@ -27,6 +27,7 @@ import (
 
 	"github.com/stelfin/stelfin/api"
 	"github.com/stelfin/stelfin/chat"
+	"github.com/stelfin/stelfin/identity"
 	"github.com/stelfin/stelfin/ledger/store"
 )
 
@@ -36,9 +37,12 @@ type Admins interface {
 	IsSpaceAdmin(ctx context.Context, to chat.Conversation, actor chat.Actor) (bool, error)
 }
 
-// Sender runs the free-text payment path. *api.Service implements it.
+// Sender runs the free-text payment path and issues address challenges.
+// *api.Service implements it.
 type Sender interface {
 	HandleSend(ctx context.Context, scope api.Scope, m chat.Inbound, out api.Replier, links api.Linker) error
+	PrepareLink(ctx context.Context, scope api.Scope, identity store.IdentityID, address string) (*api.LinkChallenge, error)
+	Challenges() *identity.Challenges
 }
 
 // Config wires the router.
@@ -54,13 +58,14 @@ type Config struct {
 
 // Service routes inbound messages.
 type Service struct {
-	store    *store.Store
-	sender   Sender
-	admins   Admins
-	network  string
-	log      *slog.Logger
-	commands map[string]*command
-	catalog  []chat.Command
+	store      *store.Store
+	sender     Sender
+	admins     Admins
+	challenges *identity.Challenges
+	network    string
+	log        *slog.Logger
+	commands   map[string]*command
+	catalog    []chat.Command
 }
 
 // New returns a Service.
@@ -81,11 +86,12 @@ func New(cfg Config) (*Service, error) {
 	}
 
 	s := &Service{
-		store:   cfg.Store,
-		sender:  cfg.Sender,
-		admins:  cfg.Admins,
-		network: cfg.Network,
-		log:     log,
+		store:      cfg.Store,
+		sender:     cfg.Sender,
+		admins:     cfg.Admins,
+		challenges: cfg.Sender.Challenges(),
+		network:    cfg.Network,
+		log:        log,
 	}
 	s.registerCommands()
 	return s, nil
