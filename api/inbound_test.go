@@ -60,6 +60,10 @@ func (stubLinker) IssueEnrollLink(scope Scope, _ time.Time) (string, error) {
 	return "https://stelfin.example/enroll#token-for-" + scope.OwnerRef, nil
 }
 
+func (stubLinker) IssueLinkLink(_ Scope, hash string, _ time.Time) (string, error) {
+	return "https://stelfin.example/link#token-for-" + hash, nil
+}
+
 // actorFor derives a stable actor for a test. Its Ref is the owner reference
 // the fixture is keyed on, so a test's messages and its ledger rows agree.
 func actorFor(t *testing.T) chat.Actor {

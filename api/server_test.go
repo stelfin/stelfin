@@ -39,7 +39,7 @@ func newServer(t *testing.T, f *fixture, treasury *keypair.Full) *Server {
 	tokens := newTokens(t)
 	enrollTokens := newEnrollTokens(t)
 	transports, _ := testTransports(t)
-	srv, err := NewServer(f.svc, tokens, enrollTokens, ServerConfig{
+	srv, err := NewServer(f.svc, tokens, enrollTokens, newLinkTokens(t), ServerConfig{
 		BaseURL:           "https://stelfin.example",
 		Transports:        transports,
 		Handler:           &stubHandler{},
@@ -76,6 +76,15 @@ func (h *stubHandler) handled() []chat.Inbound {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append([]chat.Inbound(nil), h.got...)
+}
+
+func newLinkTokens(t *testing.T) *LinkTokens {
+	t.Helper()
+	c, err := NewLinkTokens(testSecret)
+	if err != nil {
+		t.Fatalf("NewLinkTokens: %v", err)
+	}
+	return c
 }
 
 // mustRegistry returns a registry with one fake transport, for tests that do
@@ -153,7 +162,7 @@ func TestWebhookAcknowledgesAnUnreadableDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new registry: %v", err)
 	}
-	srv, err := NewServer(f.svc, tokens, enrollTokens, ServerConfig{
+	srv, err := NewServer(f.svc, tokens, enrollTokens, newLinkTokens(t), ServerConfig{
 		BaseURL: "https://stelfin.example", Transports: reg, Handler: &stubHandler{},
 		TreasuryAddress: treasury.Address(), SignFeeBump: signWith(treasury),
 		SignProvision:     signProvisionWith(treasury),
@@ -458,7 +467,7 @@ func TestEnrollEndpoint(t *testing.T) {
 	treasury := keypair.MustRandom()
 	tokens := newTokens(t)
 	enrollTokens := newEnrollTokens(t)
-	srv, err := NewServer(svc, tokens, enrollTokens, ServerConfig{
+	srv, err := NewServer(svc, tokens, enrollTokens, newLinkTokens(t), ServerConfig{
 		BaseURL: "https://stelfin.example", Transports: mustRegistry(t), Handler: &stubHandler{},
 		TreasuryAddress: treasury.Address(), SignFeeBump: signWith(treasury), SignProvision: signProvisionWith(treasury),
 		NetworkPassphrase: network.TestNetworkPassphrase,
@@ -495,7 +504,7 @@ func TestEnrollSubmitEndpoint(t *testing.T) {
 	treasury := keypair.MustRandom()
 	tokens := newTokens(t)
 	enrollTokens := newEnrollTokens(t)
-	srv, err := NewServer(svc, tokens, enrollTokens, ServerConfig{
+	srv, err := NewServer(svc, tokens, enrollTokens, newLinkTokens(t), ServerConfig{
 		BaseURL: "https://stelfin.example", Transports: mustRegistry(t), Handler: &stubHandler{},
 		TreasuryAddress: treasury.Address(), SignFeeBump: signWith(treasury), SignProvision: signProvisionWith(treasury),
 		NetworkPassphrase: network.TestNetworkPassphrase,
@@ -555,14 +564,14 @@ func TestNewServerValidatesConfig(t *testing.T) {
 	} {
 		cfg := full
 		mutate(&cfg)
-		if _, err := NewServer(f.svc, tokens, enrollTokens, cfg); err == nil {
+		if _, err := NewServer(f.svc, tokens, enrollTokens, newLinkTokens(t), cfg); err == nil {
 			t.Errorf("%s: expected an error", name)
 		}
 	}
-	if _, err := NewServer(f.svc, nil, enrollTokens, full); err == nil {
+	if _, err := NewServer(f.svc, nil, enrollTokens, newLinkTokens(t), full); err == nil {
 		t.Error("expected an error when confirm tokens are missing")
 	}
-	if _, err := NewServer(f.svc, tokens, nil, full); err == nil {
+	if _, err := NewServer(f.svc, tokens, nil, newLinkTokens(t), full); err == nil {
 		t.Error("expected an error when enroll tokens are missing")
 	}
 }
@@ -573,7 +582,7 @@ func TestConfirmPageIsServedWithAStrictPolicy(t *testing.T) {
 	enrollTokens := newEnrollTokens(t)
 	treasury := keypair.MustRandom()
 
-	srv, err := NewServer(f.svc, tokens, enrollTokens, ServerConfig{
+	srv, err := NewServer(f.svc, tokens, enrollTokens, newLinkTokens(t), ServerConfig{
 		BaseURL:           "https://stelfin.example",
 		Transports:        mustRegistry(t),
 		Handler:           &stubHandler{},
@@ -658,7 +667,7 @@ func TestStaticAssetsAreServed(t *testing.T) {
 	enrollTokens := newEnrollTokens(t)
 	treasury := keypair.MustRandom()
 
-	srv, err := NewServer(f.svc, tokens, enrollTokens, ServerConfig{
+	srv, err := NewServer(f.svc, tokens, enrollTokens, newLinkTokens(t), ServerConfig{
 		BaseURL: "https://stelfin.example", Transports: mustRegistry(t), Handler: &stubHandler{},
 		TreasuryAddress: treasury.Address(), SignFeeBump: signWith(treasury), SignProvision: signProvisionWith(treasury),
 		NetworkPassphrase: network.TestNetworkPassphrase,
