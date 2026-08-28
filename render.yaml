@@ -64,6 +64,11 @@ services:
       - key: STELFIN_TREASURY_SEED
         sync: false
 
+      # Signs SEP-10 challenges. Must be a different key from the treasury —
+      # it signs attacker-chosen material and holds nothing.
+      - key: STELFIN_WEBAUTH_SEED
+        sync: false
+
 
       # Telegram. Both or neither. The secret is echoed back on every
       # delivery and is the only thing authenticating it, since Telegram does

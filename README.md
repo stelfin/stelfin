@@ -112,6 +112,7 @@ descriptions; the essentials:
 | `STELFIN_NETWORK`                | No       | `testnet` (default) or `public`.                                                        |
 | `STELFIN_TREASURY_SEED`          | Yes      | Pays fees, sponsors reserves. Testnet-only as an env var — move to KMS/HSM for mainnet. |
 | `STELFIN_ASSET_CODE` / `_ISSUER` | Yes      | The asset users transact in (network-specific issuer).                                  |
+| `STELFIN_WEBAUTH_SEED`           | No       | Signs SEP-10 challenges. Must differ from the treasury seed. Without it, no linking.    |
 | `STELFIN_TELEGRAM_BOT_TOKEN`     | No       | Telegram bot token. Required together with the webhook secret.                          |
 | `STELFIN_TELEGRAM_WEBHOOK_SECRET`| No       | Echoed back on every delivery — Telegram does not sign, so this authenticates it. ≥32.  |
 | `STELFIN_DISCORD_PUBLIC_KEY`     | No       | Application public key. Verifies the Ed25519 signature on each delivery.                |
@@ -132,6 +133,9 @@ descriptions; the essentials:
 | `settlement/`       | Stellar transaction building and submission.                |
 | `ingestion/`        | Horizon → ledger reconciliation worker.                     |
 | `chat/`             | The platform-agnostic contract every transport implements.  |
+| `core/`             | Routing: tenancy, the delivery claim, roles, commands.      |
+| `identity/`         | SEP-10 challenges, for proving control of an address.       |
+| `ledger/store`      | Every query in the system, org-scoped.                      |
 | `internal/telegram` | The Telegram Bot API transport.                             |
 | `internal/discord`  | The Discord interactions transport.                         |
 | `internal/config`   | Environment loading and validation.                         |
