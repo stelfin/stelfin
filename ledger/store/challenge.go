@@ -234,12 +234,21 @@ func (s *Store) IssueLinkCode(
 	return code, nil
 }
 
-// ClaimLinkCode spends a code and attaches a chat account to the member it
-// names.
+// ClaimLinkCode spends a code and points a chat account at the member it names.
+//
+// Points, not inserts. By the time anyone runs this, the claiming account has
+// already spoken once and therefore already has a member of its own — an empty
+// one, with no address and no roles, created the moment it was first seen. What
+// the code does is merge that away: the identity moves to the member that
+// issued the code, and the husk it left behind is deleted.
+//
+// The husk is only deleted when it is genuinely empty. A member with an address
+// or a role is somebody, and quietly removing one because a code was typed
+// would be a way to erase a person rather than to link them.
 //
 // The claim is a conditional UPDATE, so two people racing on one code cannot
-// both win. The identity insert is in the same transaction: a spent code that
-// attached nothing would be unrecoverable, since the code is gone.
+// both win, and everything happens in one transaction: a spent code that
+// attached nothing would be unrecoverable, because the code is gone.
 func (s *Store) ClaimLinkCode(
 	ctx context.Context, org ledger.OrgID, code string,
 	channel chat.Channel, channelUserID, handle string,
@@ -250,7 +259,7 @@ func (s *Store) ClaimLinkCode(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var member MemberID
+	var target MemberID
 	var issuedBy IdentityID
 	err = tx.QueryRow(ctx, `
 		UPDATE identity_link_codes
@@ -261,7 +270,7 @@ func (s *Store) ClaimLinkCode(
 		   AND expires_at > now()
 		RETURNING member_id, issued_by`,
 		code, int64(org),
-	).Scan(&member, &issuedBy)
+	).Scan(&target, &issuedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, ErrNoLinkCode
 	}
@@ -269,15 +278,55 @@ func (s *Store) ClaimLinkCode(
 		return 0, fmt.Errorf("store: claim link code: %w", err)
 	}
 
-	_, err = tx.Exec(ctx, `
-		INSERT INTO user_identities (member_id, org_id, channel, channel_user_id, handle, linked_by)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		int64(member), int64(org), string(channel), channelUserID, handle, int64(issuedBy))
-	if isUniqueViolation(err) {
-		return 0, fmt.Errorf("store: %s/%s already speaks for a member of this org", channel, channelUserID)
-	}
-	if err != nil {
-		return 0, fmt.Errorf("store: attach identity: %w", err)
+	// What this account currently speaks for, if anything.
+	var identity IdentityID
+	var previous MemberID
+	var previousAddress *string
+	err = tx.QueryRow(ctx, `
+		SELECT i.id, i.member_id, m.address
+		  FROM user_identities i
+		  JOIN members m ON m.id = i.member_id AND m.org_id = i.org_id
+		 WHERE i.org_id = $1 AND i.channel = $2 AND i.channel_user_id = $3`,
+		int64(org), string(channel), channelUserID,
+	).Scan(&identity, &previous, &previousAddress)
+
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// Never spoken here before. Straightforward insert.
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO user_identities (member_id, org_id, channel, channel_user_id, handle, linked_by)
+			VALUES ($1, $2, $3, $4, $5, $6)`,
+			int64(target), int64(org), string(channel), channelUserID, handle, int64(issuedBy),
+		); err != nil {
+			return 0, fmt.Errorf("store: attach identity: %w", err)
+		}
+
+	case err != nil:
+		return 0, fmt.Errorf("store: read current identity: %w", err)
+
+	case previous == target:
+		// Already the right member. Spending the code changed nothing, which is
+		// not an error — someone claimed their own code.
+
+	case previousAddress != nil:
+		// This account speaks for somebody who has proved an address. Moving it
+		// would take a proved member's handle away on the strength of a shared
+		// secret, which is exactly what the code is not allowed to do.
+		return 0, fmt.Errorf(
+			"store: %s/%s already speaks for a member with a linked wallet", channel, channelUserID)
+
+	default:
+		if _, err := tx.Exec(ctx, `
+			UPDATE user_identities
+			   SET member_id = $1, handle = $2, linked_by = $3
+			 WHERE id = $4`,
+			int64(target), handle, int64(issuedBy), int64(identity),
+		); err != nil {
+			return 0, fmt.Errorf("store: move identity: %w", err)
+		}
+		if err := deleteEmptyMember(ctx, tx, org, previous); err != nil {
+			return 0, err
+		}
 	}
 
 	if _, err := tx.Exec(ctx,
@@ -293,7 +342,27 @@ func (s *Store) ClaimLinkCode(
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("store: commit: %w", err)
 	}
-	return member, nil
+	return target, nil
+}
+
+// deleteEmptyMember removes a member that nothing points at any more.
+//
+// Guarded on every count: an address, a role, or another identity all mean this
+// is somebody, and the predicates are in the statement rather than checked
+// first so a concurrent grant cannot slip between the two.
+func deleteEmptyMember(ctx context.Context, q querier, org ledger.OrgID, member MemberID) error {
+	_, err := q.Exec(ctx, `
+		DELETE FROM members m
+		 WHERE m.id = $1
+		   AND m.org_id = $2
+		   AND m.address IS NULL
+		   AND NOT EXISTS (SELECT 1 FROM user_identities i WHERE i.member_id = m.id)
+		   AND NOT EXISTS (SELECT 1 FROM member_roles r WHERE r.member_id = m.id)`,
+		int64(member), int64(org))
+	if err != nil {
+		return fmt.Errorf("store: remove the emptied member: %w", err)
+	}
+	return nil
 }
 
 // newLinkCode returns a random code from the reduced alphabet.
