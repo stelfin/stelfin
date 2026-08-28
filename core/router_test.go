@@ -11,9 +11,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stellar/go-stellar-sdk/keypair"
+	"github.com/stellar/go-stellar-sdk/network"
 
 	"github.com/stelfin/stelfin/api"
 	"github.com/stelfin/stelfin/chat"
+	"github.com/stelfin/stelfin/identity"
 	"github.com/stelfin/stelfin/internal/pgtest"
 	"github.com/stelfin/stelfin/ledger"
 	"github.com/stelfin/stelfin/ledger/store"
@@ -71,8 +74,10 @@ func (r *fakeReplier) only(t *testing.T) chat.Reply {
 
 // fakeSender records the free-text messages routed to the payment path.
 type fakeSender struct {
-	mu    sync.Mutex
-	calls []api.Scope
+	mu         sync.Mutex
+	calls      []api.Scope
+	linked     []string
+	challenges *identity.Challenges
 }
 
 func (f *fakeSender) HandleSend(
@@ -82,6 +87,30 @@ func (f *fakeSender) HandleSend(
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, scope)
 	return nil
+}
+
+// PrepareLink records challenge requests. The real one talks to SEP-10; what
+// the router is responsible for is refusing before it gets there.
+func (f *fakeSender) PrepareLink(
+	_ context.Context, _ api.Scope, _ store.IdentityID, address string,
+) (*api.LinkChallenge, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.linked = append(f.linked, address)
+	return &api.LinkChallenge{
+		Address: address, XDR: "AAAAAgAAAAA=", Hash: "cafe",
+		NetworkPassphrase: network.TestNetworkPassphrase,
+	}, nil
+}
+
+// Challenges reports whether linking is available at all. A fake with none
+// configured is how a deployment without a web-auth key behaves.
+func (f *fakeSender) Challenges() *identity.Challenges { return f.challenges }
+
+func (f *fakeSender) linkedAddresses() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.linked...)
 }
 
 func (f *fakeSender) sent() []api.Scope {
@@ -111,6 +140,10 @@ func (stubLinker) IssueEnrollLink(scope api.Scope, _ time.Time) (string, error) 
 	return "https://stelfin.example/enroll#" + scope.OwnerRef, nil
 }
 
+func (stubLinker) IssueLinkLink(_ api.Scope, hash string, _ time.Time) (string, error) {
+	return "https://stelfin.example/link#" + hash, nil
+}
+
 type harness struct {
 	svc    *Service
 	store  *store.Store
@@ -121,7 +154,16 @@ type harness struct {
 func newHarness(t *testing.T, admin bool) *harness {
 	t.Helper()
 	db := store.New(testPool)
-	sender := &fakeSender{}
+	challenges, err := identity.New(identity.Config{
+		Seed:              keypair.MustRandom().Seed(),
+		HomeDomain:        "stelfin.test",
+		WebAuthDomain:     "stelfin.test",
+		NetworkPassphrase: network.TestNetworkPassphrase,
+	})
+	if err != nil {
+		t.Fatalf("challenges: %v", err)
+	}
+	sender := &fakeSender{challenges: challenges}
 	svc, err := New(Config{
 		Store: db, Sender: sender, Admins: fakeAdmins{admin: admin}, Network: "testnet",
 	})

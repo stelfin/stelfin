@@ -429,3 +429,94 @@ func TestReclaimGrant(t *testing.T) {
 		t.Error("a grant was reclaimed twice")
 	}
 }
+
+// TestClaimMovesAnExistingIdentity is the case the router creates and the
+// obvious implementation gets wrong.
+//
+// By the time anyone runs /claim, the claiming account has already spoken once
+// and therefore already has a member of its own — empty, with no address and no
+// roles. Inserting a second identity row for it fails on the unique index; what
+// has to happen is that the identity moves, and the husk it leaves is removed.
+func TestClaimMovesAnExistingIdentity(t *testing.T) {
+	s := New(testPool)
+	ctx := context.Background()
+	tn := newTenant(t, s, "-310001")
+
+	address := keypair.MustRandom().Address()
+	must(t, s.SetMemberAddress(ctx, tn.org.ID, tn.member.ID, address, AddressLinked), "prove an address")
+
+	// A second chat account that has already spoken, so it has a member.
+	stray, err := s.EnsureMember(ctx, tn.org.ID, chat.Discord, "d-stray", "ada-phone")
+	must(t, err, "second account speaks")
+
+	code, err := s.IssueLinkCode(ctx, tn.org.ID, tn.member.ID, identityOf(t, tn), 10*time.Minute)
+	must(t, err, "issue")
+
+	got, err := s.ClaimLinkCode(ctx, tn.org.ID, code, chat.Discord, "d-stray", "ada-phone")
+	must(t, err, "claim")
+	if got != tn.member.ID {
+		t.Fatalf("claimed for member %d, want %d", got, tn.member.ID)
+	}
+
+	// The second account now speaks for the proved member.
+	viaDiscord, ok, err := s.MemberByIdentity(ctx, tn.org.ID, chat.Discord, "d-stray")
+	must(t, err, "member by identity")
+	if !ok || viaDiscord.ID != tn.member.ID {
+		t.Fatalf("resolved to %+v, want member %d", viaDiscord, tn.member.ID)
+	}
+
+	// And the husk is gone rather than lingering as a member nobody speaks for.
+	if _, err := s.Member(ctx, tn.org.ID, stray.ID); !errors.Is(err, ErrMemberNotFound) {
+		t.Errorf("the emptied member survived: %v", err)
+	}
+}
+
+// TestClaimWillNotTakeAProvedAccount: moving an identity that already speaks for
+// someone with a linked wallet would take a proved member's handle away on the
+// strength of a shared secret. The code is not allowed to do that.
+func TestClaimWillNotTakeAProvedAccount(t *testing.T) {
+	s := New(testPool)
+	ctx := context.Background()
+	tn := newTenant(t, s, "-310002")
+
+	must(t, s.SetMemberAddress(ctx, tn.org.ID, tn.member.ID,
+		keypair.MustRandom().Address(), AddressLinked), "prove the issuer")
+
+	// Another member, also proved, speaking through their own account.
+	other, err := s.EnsureMember(ctx, tn.org.ID, chat.Discord, "d-proved", "bob")
+	must(t, err, "second member")
+	must(t, s.SetMemberAddress(ctx, tn.org.ID, other.ID,
+		keypair.MustRandom().Address(), AddressLinked), "prove the other")
+
+	code, err := s.IssueLinkCode(ctx, tn.org.ID, tn.member.ID, identityOf(t, tn), 10*time.Minute)
+	must(t, err, "issue")
+
+	if _, err := s.ClaimLinkCode(ctx, tn.org.ID, code, chat.Discord, "d-proved", "bob"); err == nil {
+		t.Fatal("a proved account was moved to another member by a code")
+	}
+
+	// And it still speaks for whom it did.
+	still, ok, err := s.MemberByIdentity(ctx, tn.org.ID, chat.Discord, "d-proved")
+	must(t, err, "member by identity")
+	if !ok || still.ID != other.ID {
+		t.Errorf("the proved account moved: %+v", still)
+	}
+}
+
+// TestClaimingYourOwnCodeIsHarmless: nothing changes, and it is not an error.
+func TestClaimingYourOwnCodeIsHarmless(t *testing.T) {
+	s := New(testPool)
+	ctx := context.Background()
+	tn := newTenant(t, s, "-310003")
+	must(t, s.SetMemberAddress(ctx, tn.org.ID, tn.member.ID,
+		keypair.MustRandom().Address(), AddressLinked), "prove")
+
+	code, err := s.IssueLinkCode(ctx, tn.org.ID, tn.member.ID, identityOf(t, tn), 10*time.Minute)
+	must(t, err, "issue")
+
+	got, err := s.ClaimLinkCode(ctx, tn.org.ID, code, chat.Telegram, "u-310003", "ada")
+	must(t, err, "claim own code")
+	if got != tn.member.ID {
+		t.Errorf("claimed for member %d, want %d", got, tn.member.ID)
+	}
+}
