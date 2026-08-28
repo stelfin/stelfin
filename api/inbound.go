@@ -120,6 +120,7 @@ const enrollLinkLifetime = 2 * time.Minute
 type Linker interface {
 	IssueConfirmLink(scope Scope, hash string, expiresAt time.Time) (string, error)
 	IssueEnrollLink(scope Scope, expiresAt time.Time) (string, error)
+	IssueLinkLink(scope Scope, hash string, expiresAt time.Time) (string, error)
 }
 
 // replyWithProblem turns a failure into something the user can act on.

@@ -24,6 +24,7 @@ import (
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 
 	"github.com/stelfin/stelfin/api/intent"
+	"github.com/stelfin/stelfin/identity"
 	"github.com/stelfin/stelfin/internal/money"
 	"github.com/stelfin/stelfin/ledger/store"
 	"github.com/stelfin/stelfin/settlement"
@@ -61,16 +62,21 @@ type Config struct {
 	// AssetID is the ledger's id for that asset, recorded against pending
 	// sends so the approval is auditable alongside the ledger entries.
 	AssetID int16
+	// Challenges issues and verifies SEP-10 challenges. Optional: a deployment
+	// with no web-auth key simply cannot link addresses, and says so, rather
+	// than refusing to start.
+	Challenges *identity.Challenges
 }
 
 // Service prepares payments for approval.
 type Service struct {
-	pool     *pgxpool.Pool
-	decoder  Decoder
-	resolver *intent.Resolver
-	settle   *settlement.Client
-	store    *store.Store
-	cfg      Config
+	pool       *pgxpool.Pool
+	decoder    Decoder
+	resolver   *intent.Resolver
+	settle     *settlement.Client
+	store      *store.Store
+	challenges *identity.Challenges
+	cfg        Config
 }
 
 // NewService returns a Service.
@@ -83,7 +89,10 @@ func NewService(
 	if cfg.AssetCode == "" {
 		return nil, errors.New("api: asset code is required")
 	}
-	return &Service{pool: pool, decoder: d, resolver: r, settle: s, store: store.New(pool), cfg: cfg}, nil
+	return &Service{
+		pool: pool, decoder: d, resolver: r, settle: s,
+		store: store.New(pool), challenges: cfg.Challenges, cfg: cfg,
+	}, nil
 }
 
 // Confirmation is what the user is asked to approve.

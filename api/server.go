@@ -12,6 +12,8 @@ import (
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 
 	"github.com/stelfin/stelfin/chat"
+	"github.com/stelfin/stelfin/identity"
+	"github.com/stelfin/stelfin/ledger/store"
 )
 
 // ServerConfig wires the HTTP surface.
@@ -71,12 +73,16 @@ type Server struct {
 	svc          *Service
 	tokens       *ConfirmTokens
 	enrollTokens *EnrollTokens
+	linkTokens   *LinkTokens
 	cfg          ServerConfig
 	log          *slog.Logger
 }
 
 // NewServer returns a Server.
-func NewServer(svc *Service, tokens *ConfirmTokens, enrollTokens *EnrollTokens, cfg ServerConfig) (*Server, error) {
+func NewServer(
+	svc *Service, tokens *ConfirmTokens, enrollTokens *EnrollTokens,
+	linkTokens *LinkTokens, cfg ServerConfig,
+) (*Server, error) {
 	switch {
 	case svc == nil:
 		return nil, errors.New("api: service is required")
@@ -84,6 +90,8 @@ func NewServer(svc *Service, tokens *ConfirmTokens, enrollTokens *EnrollTokens, 
 		return nil, errors.New("api: confirmation tokens are required")
 	case enrollTokens == nil:
 		return nil, errors.New("api: enroll tokens are required")
+	case linkTokens == nil:
+		return nil, errors.New("api: link tokens are required")
 	case cfg.TreasuryAddress == "":
 		return nil, errors.New("api: treasury address is required")
 	case cfg.SignFeeBump == nil:
@@ -104,7 +112,10 @@ func NewServer(svc *Service, tokens *ConfirmTokens, enrollTokens *EnrollTokens, 
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{svc: svc, tokens: tokens, enrollTokens: enrollTokens, cfg: cfg, log: log}, nil
+	return &Server{
+		svc: svc, tokens: tokens, enrollTokens: enrollTokens,
+		linkTokens: linkTokens, cfg: cfg, log: log,
+	}, nil
 }
 
 // Routes returns the HTTP handler.
@@ -118,6 +129,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/submit", s.handleSubmit)
 	mux.HandleFunc("POST /v1/enroll", s.handleEnroll)
 	mux.HandleFunc("POST /v1/enroll/submit", s.handleEnrollSubmit)
+	mux.HandleFunc("GET /v1/link", s.handleLink)
+	mux.HandleFunc("POST /v1/link/submit", s.handleLinkSubmit)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -131,6 +144,7 @@ func (s *Server) Routes() http.Handler {
 	if s.cfg.Assets != nil {
 		mux.Handle("GET /confirm", s.cfg.Assets)
 		mux.Handle("GET /enroll", s.cfg.Assets)
+		mux.Handle("GET /link", s.cfg.Assets)
 		mux.Handle("GET /static/", s.cfg.Assets)
 	}
 	return mux
@@ -386,6 +400,83 @@ func (s *Server) handleEnrollSubmit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleLink returns the challenge the browser is asked to sign.
+func (s *Server) handleLink(w http.ResponseWriter, r *http.Request) {
+	scope, hash, ok := s.authoriseLink(w, r)
+	if !ok {
+		return
+	}
+
+	challenge, err := s.svc.LoadChallenge(r.Context(), scope, hash)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"address":            challenge.Address,
+		"xdr":                challenge.XDR,
+		"network_passphrase": challenge.NetworkPassphrase,
+	})
+}
+
+type linkSubmitRequest struct {
+	SignedXDR string `json:"signed_xdr"`
+}
+
+// handleLinkSubmit accepts the signed challenge and binds the address.
+func (s *Server) handleLinkSubmit(w http.ResponseWriter, r *http.Request) {
+	scope, hash, ok := s.authoriseLink(w, r)
+	if !ok {
+		return
+	}
+
+	var req linkSubmitRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		http.Error(w, "malformed request", http.StatusBadRequest)
+		return
+	}
+	if req.SignedXDR == "" {
+		http.Error(w, "signed_xdr is required", http.StatusBadRequest)
+		return
+	}
+
+	res, err := s.svc.SubmitLink(r.Context(), scope, hash, req.SignedXDR)
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"address": res.Address})
+}
+
+// authoriseLink verifies the link token and reports what it grants.
+func (s *Server) authoriseLink(w http.ResponseWriter, r *http.Request) (scope Scope, hash string, ok bool) {
+	token := bearer(r.Header.Get("Authorization"))
+	if token == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return Scope{}, "", false
+	}
+	scope, hash, err := s.linkTokens.Verify(token)
+	if err != nil {
+		s.log.Warn("link token refused", "error", err)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return Scope{}, "", false
+	}
+	return scope, hash, true
+}
+
+// IssueLinkLink mints the URL a member proves an address through.
+//
+// Same fragment placement, same reasoning as the others: the token never
+// reaches the server on page load, so it stays out of access logs, proxy logs
+// and Referer headers.
+func (s *Server) IssueLinkLink(scope Scope, hash string, expiresAt time.Time) (string, error) {
+	token, err := s.linkTokens.Issue(scope, hash, expiresAt)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(s.cfg.BaseURL, "/") + "/link#" + token, nil
+}
+
 // authoriseEnroll verifies the enroll token and reports the owner it
 // authorises.
 func (s *Server) authoriseEnroll(w http.ResponseWriter, r *http.Request) (scope Scope, ok bool) {
@@ -427,6 +518,15 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 		http.Error(w, "transaction is not signed", http.StatusBadRequest)
 	case errors.Is(err, ErrAlreadyEnrolled):
 		http.Error(w, "already enrolled", http.StatusConflict)
+	case errors.Is(err, ErrNoChallenge):
+		// Unknown, expired and already-used are one answer on purpose.
+		http.Error(w, "not found", http.StatusNotFound)
+	case errors.Is(err, identity.ErrChallengeFailed), errors.Is(err, identity.ErrInvalidAddress):
+		http.Error(w, "the signature does not prove that address", http.StatusBadRequest)
+	case errors.Is(err, store.ErrAddressTaken):
+		http.Error(w, "that address already belongs to another member", http.StatusConflict)
+	case errors.Is(err, ErrLinkingUnavailable):
+		http.Error(w, "address linking is not available", http.StatusServiceUnavailable)
 	default:
 		s.log.Error("request failed", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
