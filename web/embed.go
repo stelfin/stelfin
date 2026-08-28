@@ -1,9 +1,9 @@
-// Package web serves the confirmation page.
+// Package web serves the pages a member signs things on.
 //
 // The assets are embedded in the binary rather than read from disk, so a
 // deployment cannot end up serving a page that does not match the server it is
-// talking to — the confirmation screen and the API that authorises payments
-// ship as one artifact.
+// talking to — the screens that verify what is being signed and the API that
+// authorises it ship as one artifact.
 package web
 
 import (
@@ -27,7 +27,7 @@ func Static() fs.FS {
 	return sub
 }
 
-// Handler serves the confirmation page and its assets.
+// Handler serves the signing pages and their assets.
 //
 // The response headers are the page's security posture, and they are set here
 // rather than in a proxy so they cannot be lost by a deployment change:
@@ -65,7 +65,7 @@ func Handler() http.Handler {
 		h.Set("Cache-Control", "no-store")
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
 
-		// /confirm and /enroll are pages; /static/ is a prefix over the same
+		// /confirm, /enroll and /link are pages; /static/ is a prefix over the same
 		// root Static() already sits at, so it must be stripped rather than
 		// passed straight through — otherwise a request for /static/confirm.js
 		// resolves against static/static/confirm.js inside the embedded FS,
@@ -77,6 +77,9 @@ func Handler() http.Handler {
 		case r.URL.Path == "/enroll" || r.URL.Path == "/enroll/":
 			r = r.Clone(r.Context())
 			r.URL.Path = "/enroll.html"
+		case r.URL.Path == "/link" || r.URL.Path == "/link/":
+			r = r.Clone(r.Context())
+			r.URL.Path = "/link.html"
 		case strings.HasPrefix(r.URL.Path, "/static/"):
 			r = r.Clone(r.Context())
 			r.URL.Path = strings.TrimPrefix(r.URL.Path, "/static")

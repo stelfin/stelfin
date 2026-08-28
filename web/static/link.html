@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Prove you control a Stellar address.
+
+  The server builds a SEP-10 challenge; this page parses it, checks it is a
+  challenge and not a payment, and has it signed. The check that matters is the
+  sequence number: a SEP-10 challenge is built with sequence 0, which can never
+  be valid on chain, so signing it cannot move anything. This page refuses to
+  show a sign button for anything else, whatever the server said it was.
+
+  Two ways to sign, because a member linking a wallet they already had does not
+  have its key on this device: the key stelfin created here, if there is one, or
+  a signature produced in their own wallet and pasted back.
+
+  Referrer-Policy keeps the fragment-borne token out of any outbound request.
+-->
+<meta name="referrer" content="no-referrer">
+<title>Link your wallet · stelfin</title>
+<style>
+
+  :root {
+    --bg: #ffffff; --fg: #16181d; --muted: #5c6370;
+    --line: #e3e6ea; --accent: #14713d; --danger: #a4291f; --danger-bg: #fdf2f1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --fg: #f0f2f5; --muted: #9aa3af;
+      --line: #2a2e36; --accent: #4ec27f; --danger: #ff8b80; --danger-bg: #2a1b1a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; justify-content: center; padding: 24px 16px 48px;
+  }
+  main { width: 100%; max-width: 26rem; }
+  h1 { font-size: 1.05rem; font-weight: 600; margin: 0 0 0.6rem; }
+  p.lede { color: var(--muted); margin: 0 0 1.5rem; font-size: 0.92rem; }
+  dl { border-top: 1px solid var(--line); margin: 0 0 1.5rem; padding-top: 0.75rem; }
+  .row { display: flex; justify-content: space-between; gap: 1rem; padding: 0.4rem 0; font-size: 0.9rem; }
+  .row dt { color: var(--muted); margin: 0; flex: none; }
+  .row dd { margin: 0; text-align: right; word-break: break-all; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; }
+  button {
+    width: 100%; padding: 0.85rem 1rem; font: inherit; font-weight: 600;
+    color: #fff; background: var(--accent); border: 0; border-radius: 10px; cursor: pointer;
+  }
+  button[disabled] { opacity: 0.5; cursor: not-allowed; }
+  .note { font-size: 0.85rem; color: var(--muted); margin-top: 0.85rem; text-align: center; }
+  .alert {
+    background: var(--danger-bg); border: 1px solid var(--danger); color: var(--danger);
+    border-radius: 10px; padding: 0.85rem 1rem; margin-bottom: 1.25rem; font-size: 0.9rem;
+  }
+  .alert strong { display: block; margin-bottom: 0.25rem; }
+  [hidden] { display: none !important; }
+  textarea {
+    width: 100%; min-height: 6.5rem; padding: 0.7rem; font: inherit;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem;
+    color: var(--fg); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 10px; resize: vertical;
+  }
+  h2 { font-size: 0.9rem; font-weight: 600; margin: 1.5rem 0 0.5rem; }
+  button.secondary { color: var(--fg); background: transparent; border: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<main>
+  <div id="alert" class="alert" hidden></div>
+
+  <section id="pending" hidden>
+    <h1>Link your wallet</h1>
+    <p class="lede">
+      Sign this challenge to prove you control the address. It is built so that
+      it can never be submitted — signing it cannot move anything.
+    </p>
+    <dl>
+      <div class="row"><dt>Address</dt><dd><code id="address"></code></dd></div>
+      <div class="row"><dt>Sequence</dt><dd><code id="sequence"></code></dd></div>
+      <div class="row"><dt>Network</dt><dd><code id="network"></code></dd></div>
+    </dl>
+
+    <section id="device" hidden>
+      <button id="sign" type="button">Sign with this device</button>
+      <p class="note">Uses the key stelfin created on this device.</p>
+    </section>
+
+    <h2>Or sign in your own wallet</h2>
+    <p class="note" style="text-align: left; margin-top: 0;">
+      Copy the challenge below, sign it in your wallet, and paste the signed
+      result back.
+    </p>
+    <textarea id="challenge" readonly aria-label="Challenge to sign"></textarea>
+    <h2>Signed challenge</h2>
+    <textarea id="signed" placeholder="Paste the signed XDR here" aria-label="Signed challenge"></textarea>
+    <button id="submit" type="button" class="secondary" style="margin-top: 0.75rem;">Submit signature</button>
+  </section>
+
+  <section id="done" hidden>
+    <h1>Wallet linked</h1>
+    <p class="lede">You can close this page and go back to your chat.</p>
+  </section>
+</main>
+
+<script src="/static/stellar-sdk.min.js"></script>
+<script src="/static/link.js"></script>
+</body>
+</html>
