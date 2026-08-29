@@ -1,0 +1,6 @@
+{
+  "name": "payment_native_with_memo",
+  "xdr": "AAAAAgAAAACKiOPddAnxlf1S2y08ul1yymcJvx2UEhvzdIgBtA9vXAAAJxAAAAAAAAAAKgAAAAEAAAAAZVPxAAAAAABlU/G0AAAAAQAAAARyZW50AAAAAQAAAAAAAAABAAAAAIE5dw6ofRdfVqNUZsNMfszLjYqRtO43ol32D1uPybOUAAAAAAAAAAAA5OHAAAAAAAAAAAA=",
+  "network": "Test SDF Network ; September 2015",
+  "canonical": "stelfin-tx-description-1\nkind\ttx\nnetwork\tTest SDF Network ; September 2015\nsource\tGCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR\nsequence\t42\nfee\t10000\nmin_time\t1700000000\nmax_time\t1700000180\nmemo\ttext\trent\noperations\t1\nop\t0\tpayment\tGCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR\nfield\t0\tamount\tamount\t1.5000000\nfield\t0\tasset\tasset\tnative\nfield\t0\tdestination\taddress\tGCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U\nhash\tb691b0ec3c41808bb1091f52f134ac0fcb5c5864456e11a571b31d8b62031403\n"
+}
