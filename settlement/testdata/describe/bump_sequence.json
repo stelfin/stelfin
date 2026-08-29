@@ -1,0 +1,6 @@
+{
+  "name": "bump_sequence",
+  "xdr": "AAAAAgAAAACKiOPddAnxlf1S2y08ul1yymcJvx2UEhvzdIgBtA9vXAAAJxAAAAAAAAAAKgAAAAEAAAAAZVPxAAAAAABlU/G0AAAAAAAAAAEAAAAAAAAACwAAAAAAiVRAAAAAAAAAAAA=",
+  "network": "Test SDF Network ; September 2015",
+  "canonical": "stelfin-tx-description-1\nkind\ttx\nnetwork\tTest SDF Network ; September 2015\nsource\tGCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR\nsequence\t42\nfee\t10000\nmin_time\t1700000000\nmax_time\t1700000180\nmemo\tnone\t\noperations\t1\nop\t0\tbump_sequence\tGCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR\nfield\t0\tbump to\tnumber\t9000000\nhash\t7c540f7b3ed606a0fddd425ef085f4da3dc35798e7c7c2769d3bcd9988a89864\n"
+}
