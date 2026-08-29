@@ -6,11 +6,12 @@
 
 .DEFAULT_GOAL := check
 
-GO      ?= go
+GO       ?= go
+NODE     ?= node
 FUZZTIME ?= 30s
 
 .PHONY: check
-check: fmt vet test ## Format, vet and test everything
+check: fmt vet test test-js ## Format, vet and test everything
 
 .PHONY: fmt
 fmt: ## Report files that gofmt would change
@@ -24,6 +25,10 @@ vet: ## Static analysis
 .PHONY: test
 test: ## Unit and integration tests
 	$(GO) test ./...
+
+.PHONY: test-js
+test-js: ## Check the browser's transaction renderer against the Go corpus
+	@cd web/static && $(NODE) --test describe.test.js
 
 .PHONY: test-race
 test-race: ## Tests under the race detector
