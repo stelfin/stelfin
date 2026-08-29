@@ -1,0 +1,6 @@
+{
+  "name": "manage_data",
+  "xdr": "AAAAAgAAAACKiOPddAnxlf1S2y08ul1yymcJvx2UEhvzdIgBtA9vXAAAJxAAAAAAAAAAKgAAAAEAAAAAZVPxAAAAAABlU/G0AAAAAAAAAAEAAAAAAAAACgAAAAZjb25maWcAAAAAAAEAAAADAP8QAAAAAAAAAAAA",
+  "network": "Test SDF Network ; September 2015",
+  "canonical": "stelfin-tx-description-1\nkind\ttx\nnetwork\tTest SDF Network ; September 2015\nsource\tGCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR\nsequence\t42\nfee\t10000\nmin_time\t1700000000\nmax_time\t1700000180\nmemo\tnone\t\noperations\t1\nop\t0\tmanage_data\tGCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR\nfield\t0\tname\ttext\tconfig\nfield\t0\tvalue\traw\t00ff10\nhash\taa4e6216f423e76a1129329c4652c9b4e3c27d866d451510817c5f8c50b82c82\n"
+}

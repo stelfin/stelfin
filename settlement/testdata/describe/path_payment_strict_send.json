@@ -1,0 +1,6 @@
+{
+  "name": "path_payment_strict_send",
+  "xdr": "AAAAAgAAAACKiOPddAnxlf1S2y08ul1yymcJvx2UEhvzdIgBtA9vXAAAJxAAAAAAAAAAKgAAAAEAAAAAZVPxAAAAAABlU/G0AAAAAAAAAAEAAAAAAAAADQAAAAFVU0RDAAAAAO1JKMYo0cLG6ukDOJBZlWEpWSc6XGP5NjbBRhSshzfRAAAAADuaygAAAAAAgTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5QAAAAAAAAAAIljgkAAAAABAAAAAAAAAAAAAAAA",
+  "network": "Test SDF Network ; September 2015",
+  "canonical": "stelfin-tx-description-1\nkind\ttx\nnetwork\tTest SDF Network ; September 2015\nsource\tGCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR\nsequence\t42\nfee\t10000\nmin_time\t1700000000\nmax_time\t1700000180\nmemo\tnone\t\noperations\t1\nop\t0\tpath_payment_strict_send\tGCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR\nfield\t0\tsend amount\tamount\t100.0000000\nfield\t0\tsend asset\tasset\tUSDC:GDWUSKGGFDI4FRXK5EBTRECZSVQSSWJHHJOGH6JWG3AUMFFMQ435DIAG\nfield\t0\tdestination\taddress\tGCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U\nfield\t0\tdestination asset\tasset\tnative\nfield\t0\tminimum received\tamount\t230.5000000\nfield\t0\tpath\traw\tnative\nhash\tebae077d9a7950b4a0a372ac81088eb3f0894316a9579fff41a26b8c29737807\n"
+}
