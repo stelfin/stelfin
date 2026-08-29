@@ -59,14 +59,14 @@ func (s *Service) Handle(ctx context.Context, m chat.Inbound, out api.Replier, l
 		if m.Command != commandSetup {
 			return nil
 		}
-		claimed, err := s.claim(ctx, m)
+		claimed, err := s.claimDelivery(ctx, m)
 		if err != nil || !claimed {
 			return err
 		}
 		return s.runSetup(ctx, m, out)
 	}
 
-	claimed, err := s.claim(ctx, m)
+	claimed, err := s.claimDelivery(ctx, m)
 	if err != nil || !claimed {
 		return err
 	}
@@ -113,12 +113,12 @@ func (s *Service) Handle(ctx context.Context, m chat.Inbound, out api.Replier, l
 	return cmd.run(ctx, s, req)
 }
 
-// claim records the delivery, reporting whether this caller won it.
+// claimDelivery records the delivery, reporting whether this caller won it.
 //
 // Platforms retry anything they consider slow or failed. Claiming before
 // dispatch means one instruction cannot become two confirmations whatever that
 // instruction turns out to be — and a duplicate gets silence, because replying
 // again would tell the same person twice.
-func (s *Service) claim(ctx context.Context, m chat.Inbound) (bool, error) {
+func (s *Service) claimDelivery(ctx context.Context, m chat.Inbound) (bool, error) {
 	return s.store.ClaimMessage(ctx, m.DedupeID, m.Actor.Ref())
 }
