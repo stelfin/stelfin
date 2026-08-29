@@ -1,0 +1,6 @@
+{
+  "name": "set_options_multisig",
+  "xdr": "AAAAAgAAAACKiOPddAnxlf1S2y08ul1yymcJvx2UEhvzdIgBtA9vXAAAJxAAAAAAAAAAKgAAAAEAAAAAZVPxAAAAAABlU/G0AAAAAAAAAAEAAAAAAAAABQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAQAAAAIAAAABAAAAAgAAAAEAAAACAAAAAQAAAA9zdGVsZmluLmV4YW1wbGUAAAAAAQAAAADKk6wXBRhwcdZ7g8f/Dv6BCOjsRTBXXXcmh5Mz29q+fAAAAAEAAAAAAAAAAA==",
+  "network": "Test SDF Network ; September 2015",
+  "canonical": "stelfin-tx-description-1\nkind\ttx\nnetwork\tTest SDF Network ; September 2015\nsource\tGCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR\nsequence\t42\nfee\t10000\nmin_time\t1700000000\nmax_time\t1700000180\nmemo\tnone\t\noperations\t1\nop\t0\tset_options\tGCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR\nfield\t0\tmaster weight\tnumber\t0\nfield\t0\tlow threshold\tnumber\t2\nfield\t0\tmedium threshold\tnumber\t2\nfield\t0\thigh threshold\tnumber\t2\nfield\t0\tsigner\taddress\tGDFJHLAXAUMHA4OWPOB4P7YO72AQR2HMIUYFOXLXE2DZGM633K7HZDQP\nfield\t0\tsigner weight\tnumber\t1\nfield\t0\thome domain\ttext\tstelfin.example\nhash\tbc75007872754ba55ddfad11e033f489d4525fe2f8ce50fd86fb0a3d7f3fa8a8\n"
+}
