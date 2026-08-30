@@ -2,6 +2,7 @@ package settlement
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stellar/go-stellar-sdk/keypair"
@@ -40,7 +41,7 @@ func TestDescribeMatchesWhatWasBuilt(t *testing.T) {
 	} {
 		c, tx, req := buildTestPayment(t, amount)
 
-		desc, err := c.Describe(tx)
+		desc, err := describeSinglePayment(t, c, tx)
 		if err != nil {
 			t.Fatalf("Describe(%s): %v", amount, err)
 		}
@@ -67,7 +68,7 @@ func TestDescribeMatchesWhatWasBuilt(t *testing.T) {
 func TestDescribeIsTiedToTheEnvelope(t *testing.T) {
 	c, tx, _ := buildTestPayment(t, money.MustParse("10"))
 
-	desc, err := c.Describe(tx)
+	desc, err := describeSinglePayment(t, c, tx)
 	if err != nil {
 		t.Fatalf("Describe: %v", err)
 	}
@@ -104,7 +105,7 @@ func TestDescribeRefusesMultipleOperations(t *testing.T) {
 	}
 
 	c := testClient(&fakeHorizon{})
-	if _, err := c.Describe(tx); !errors.Is(err, ErrIndescribable) {
+	if _, err := describeSinglePayment(t, c, tx); !errors.Is(err, ErrIndescribable) {
 		t.Fatalf("Describe error = %v, want ErrIndescribable: a second operation must not ride along", err)
 	}
 }
@@ -123,7 +124,7 @@ func TestDescribeRefusesNonPayment(t *testing.T) {
 	}
 
 	c := testClient(&fakeHorizon{})
-	if _, err := c.Describe(tx); !errors.Is(err, ErrIndescribable) {
+	if _, err := describeSinglePayment(t, c, tx); !errors.Is(err, ErrIndescribable) {
 		t.Fatalf("Describe error = %v, want ErrIndescribable", err)
 	}
 }
@@ -137,7 +138,7 @@ func TestDescribeNativeAsset(t *testing.T) {
 		t.Fatalf("buildPaymentOn: %v", err)
 	}
 
-	desc, err := c.Describe(tx)
+	desc, err := describeSinglePayment(t, c, tx)
 	if err != nil {
 		t.Fatalf("Describe: %v", err)
 	}
@@ -186,7 +187,7 @@ func TestPaymentAmountSurvivesTheWire(t *testing.T) {
 		1, 1 << 53, 1<<53 + 1, money.MustParse("922337203685.4775807"),
 	} {
 		c, tx, _ := buildTestPayment(t, amount)
-		desc, err := c.Describe(tx)
+		desc, err := describeSinglePayment(t, c, tx)
 		if err != nil {
 			t.Fatalf("Describe(%d): %v", int64(amount), err)
 		}
@@ -194,4 +195,26 @@ func TestPaymentAmountSurvivesTheWire(t *testing.T) {
 			t.Errorf("amount %d became %d through the transaction", int64(amount), int64(desc.Amount))
 		}
 	}
+}
+
+// describeSinglePayment is what the old Describe did, expressed through the
+// renderer that replaced it.
+//
+// The tests below pin properties that still hold — the display comes from the
+// artifact, an envelope carrying more than the payment shown is refused — so
+// they run against the code that actually serves them rather than against a
+// function nothing calls.
+func describeSinglePayment(
+	t *testing.T, c *Client, tx *txnbuild.Transaction,
+) (*PaymentDescription, error) {
+	t.Helper()
+	described, err := c.DescribeTx(tx)
+	if err != nil {
+		return nil, err
+	}
+	desc, ok := described.SinglePayment()
+	if !ok {
+		return nil, fmt.Errorf("%w: not a single payment", ErrIndescribable)
+	}
+	return desc, nil
 }

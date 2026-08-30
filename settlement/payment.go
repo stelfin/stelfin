@@ -10,10 +10,8 @@ import (
 	"github.com/stelfin/stelfin/internal/money"
 )
 
-// ErrIndescribable reports a transaction this package will not summarise for a
-// user. It is returned rather than a partial description on purpose: see
-// Describe.
-var ErrIndescribable = errors.New("settlement: transaction cannot be described")
+// ErrIndescribable lives in describe.go now, alongside the renderer that raises
+// it for every operation type rather than only for a payment.
 
 // PaymentRequest describes a transfer to build.
 type PaymentRequest struct {
@@ -86,71 +84,4 @@ type PaymentDescription struct {
 
 	// Hash ties the description to the exact envelope being signed.
 	Hash string
-}
-
-// Describe reads a built transaction back and reports what it does.
-//
-// The confirmation shown to a user must be rendered from this, never from the
-// PaymentRequest that produced the transaction. If the two ever diverge — a bug
-// in the builder, a tampered request object, a future code path that mutates
-// the transaction after building — then the user approves one thing while
-// signing another, and their signature is on the wrong instruction. Deriving
-// the display from the artifact under signature makes that divergence
-// impossible rather than unlikely.
-//
-// Anything it cannot describe in full is refused. In particular a transaction
-// carrying more than one operation is rejected: showing the user one payment
-// while a second operation rides along in the same envelope is precisely the
-// attack this guards against.
-func (c *Client) Describe(tx *txnbuild.Transaction) (*PaymentDescription, error) {
-	ops := tx.Operations()
-	if len(ops) != 1 {
-		return nil, fmt.Errorf("%w: %d operations, want exactly 1; a user cannot meaningfully "+
-			"approve an envelope carrying more than the payment shown", ErrIndescribable, len(ops))
-	}
-
-	payment, ok := ops[0].(*txnbuild.Payment)
-	if !ok {
-		return nil, fmt.Errorf("%w: operation is %T, not a payment", ErrIndescribable, ops[0])
-	}
-
-	amount, err := money.Parse(payment.Amount)
-	if err != nil {
-		return nil, fmt.Errorf("%w: unreadable amount %q: %v", ErrIndescribable, payment.Amount, err)
-	}
-	if amount.Sign() <= 0 {
-		return nil, fmt.Errorf("%w: amount %s is not positive", ErrIndescribable, amount)
-	}
-
-	hash, err := tx.HashHex(c.network)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrIndescribable, err)
-	}
-
-	desc := &PaymentDescription{
-		From:   payment.SourceAccount,
-		To:     payment.Destination,
-		Amount: amount,
-		Hash:   hash,
-	}
-	if desc.From == "" {
-		// No explicit operation source means the transaction's source pays.
-		desc.From = tx.SourceAccount().AccountID
-	}
-
-	if payment.Asset == nil {
-		return nil, fmt.Errorf("%w: payment has no asset", ErrIndescribable)
-	}
-	if payment.Asset.IsNative() {
-		desc.AssetNative = true
-		desc.AssetCode = "XLM"
-		return desc, nil
-	}
-
-	desc.AssetCode = payment.Asset.GetCode()
-	desc.AssetIssuer = payment.Asset.GetIssuer()
-	if desc.AssetCode == "" || desc.AssetIssuer == "" {
-		return nil, fmt.Errorf("%w: issued asset is missing its code or issuer", ErrIndescribable)
-	}
-	return desc, nil
 }
