@@ -177,9 +177,17 @@ func (s *Service) PrepareSend(ctx context.Context, scope Scope, turns []string) 
 
 	// The confirmation comes out of the transaction, not out of the request
 	// that built it.
-	desc, err := s.settle.Describe(tx)
+	// Through the general renderer, so there is one implementation of "what does
+	// this transaction do" rather than two that can drift. The bridge is as
+	// strict as the old Describe was: a caller asking for the payment must not
+	// be handed the first of several while the rest ride along unmentioned.
+	described, err := s.settle.DescribeTx(tx)
 	if err != nil {
 		return nil, err
+	}
+	desc, ok := described.SinglePayment()
+	if !ok {
+		return nil, fmt.Errorf("%w: not a single payment", settlement.ErrIndescribable)
 	}
 
 	// Belt and braces. Describe already guarantees the screen matches the

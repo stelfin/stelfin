@@ -7,6 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/stellar/go-stellar-sdk/txnbuild"
+
+	"github.com/stelfin/stelfin/settlement"
 )
 
 // ErrNoSuchSend reports a hash with no live pending send.
@@ -46,9 +48,17 @@ func (s *Service) LoadConfirmation(ctx context.Context, scope Scope, hash string
 		return nil, fmt.Errorf("api: stored envelope for %s is not a plain transaction", hash)
 	}
 
-	desc, err := s.settle.Describe(tx)
+	// Through the general renderer, so there is one implementation of "what does
+	// this transaction do" rather than two that can drift. The bridge is as
+	// strict as the old Describe was: a caller asking for the payment must not
+	// be handed the first of several while the rest ride along unmentioned.
+	described, err := s.settle.DescribeTx(tx)
 	if err != nil {
 		return nil, err
+	}
+	desc, ok := described.SinglePayment()
+	if !ok {
+		return nil, fmt.Errorf("%w: not a single payment", settlement.ErrIndescribable)
 	}
 	// The stored hash is what the token authorises; the envelope must still
 	// hash to it. A mismatch would mean the row and the envelope disagree
