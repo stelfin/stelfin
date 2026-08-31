@@ -77,6 +77,72 @@
     return out;
   }
 
+  function describePath(path) {
+    if (!path || path.length === 0) return "direct";
+    return path.map(describeAsset).join(" \u2192 ");
+  }
+
+  const FLAG_NAMES = {
+    1: "auth required",
+    2: "auth revocable",
+    4: "auth immutable",
+    8: "clawback enabled",
+  };
+
+  function flagName(f) {
+    return FLAG_NAMES[f] || "flag " + String(f);
+  }
+
+  // describeSetOptions mirrors the Go side field for field, including the order.
+  //
+  // Every part is shown even when only one changed: a threshold left alone next
+  // to a master weight set to zero is exactly the shape of a lockout, and a
+  // renderer that omitted the unchanged half would hide it.
+  function describeSetOptions(op) {
+    const fields = [];
+    const changes = [];
+
+    if (op.masterWeight !== undefined) {
+      fields.push({ label: "master weight", kind: "number", value: String(op.masterWeight) });
+      changes.push("master weight");
+    }
+    for (const [label, value] of [
+      ["low threshold", op.lowThreshold],
+      ["medium threshold", op.medThreshold],
+      ["high threshold", op.highThreshold],
+    ]) {
+      if (value === undefined) continue;
+      fields.push({ label, kind: "number", value: String(value) });
+      changes.push(label);
+    }
+    if (op.signer) {
+      const address = op.signer.ed25519PublicKey || op.signer.key;
+      if (!address) throw new Indescribable("a signer this renderer cannot name");
+      fields.push({ label: "signer", kind: "address", value: address });
+      fields.push({ label: "signer weight", kind: "number", value: String(op.signer.weight) });
+      changes.push(op.signer.weight === 0 ? "remove a signer" : "add or change a signer");
+    }
+    if (op.homeDomain !== undefined) {
+      fields.push({ label: "home domain", kind: "text", value: op.homeDomain });
+      changes.push("home domain");
+    }
+    if (op.inflationDest !== undefined) {
+      fields.push({ label: "inflation destination", kind: "address", value: op.inflationDest });
+      changes.push("inflation destination");
+    }
+    for (const f of op.setFlags || []) {
+      fields.push({ label: "set flag", kind: "flag", value: flagName(f) });
+      changes.push("set " + flagName(f));
+    }
+    for (const f of op.clearFlags || []) {
+      fields.push({ label: "clear flag", kind: "flag", value: flagName(f) });
+      changes.push("clear " + flagName(f));
+    }
+
+    if (!fields.length) throw new Indescribable("set_options changes nothing");
+    return { fields, summary: "Change account settings: " + changes.join(", ") };
+  }
+
   function describeMemo(memo) {
     if (!memo || memo.type === "none" || memo.type === undefined) {
       return { type: "none", value: "" };
@@ -107,7 +173,35 @@
   // The default is a refusal on both sides, and the set of cases is deliberately
   // the same set: an operation the browser cannot render is one nobody gets to
   // sign here, whatever the server can say about it.
-  function describeOp(index, op, txSource) {
+  // priceOf reads an offer's price as the rational it actually is.
+  //
+  // The parsed operation exposes price as a decimal string —
+  // "2.33333333333333333333" for 7/3 — which is precisely the lossy rendering
+  // the Go side refuses to produce. Two implementations cannot agree on a value
+  // one of them has already rounded, so this reaches past the parsed form to
+  // the numerator and denominator in the envelope.
+  function priceOf(rawOp) {
+    const body = rawOp.body();
+    const arm = body.switch().name;
+    let op;
+    switch (arm) {
+      case "manageSellOffer":
+        op = body.manageSellOfferOp();
+        break;
+      case "manageBuyOffer":
+        op = body.manageBuyOfferOp();
+        break;
+      case "createPassiveSellOffer":
+        op = body.createPassiveSellOfferOp();
+        break;
+      default:
+        throw new Indescribable("no price on a " + arm);
+    }
+    const price = op.price();
+    return price.n() + "/" + price.d();
+  }
+
+  function describeOp(index, op, txSource, rawOp) {
     const source = op.source || txSource;
     const out = { index, type: null, source, summary: "", fields: [] };
 
@@ -193,11 +287,103 @@
         break;
       }
 
+      case "manageSellOffer":
+      case "manageBuyOffer":
+      case "createPassiveSellOffer": {
+        const verb =
+          op.type === "manageBuyOffer"
+            ? "Buy"
+            : op.type === "createPassiveSellOffer"
+              ? "Passively sell"
+              : "Sell";
+        const amount = normalizeAmount(op.amount);
+        const selling = describeAsset(op.selling);
+        const buying = describeAsset(op.buying);
+        const rate = priceOf(rawOp);
+        const offerId = op.offerId === undefined ? "0" : String(op.offerId);
+
+        out.type =
+          op.type === "manageBuyOffer"
+            ? "manage_buy_offer"
+            : op.type === "createPassiveSellOffer"
+              ? "create_passive_sell_offer"
+              : "manage_sell_offer";
+        out.summary =
+          amount === "0.0000000"
+            ? "Cancel offer " + offerId
+            : verb +
+              " " +
+              amount +
+              " " +
+              assetCode(selling) +
+              " for " +
+              assetCode(buying) +
+              " at " +
+              rate;
+        out.fields = [
+          { label: "selling", kind: "asset", value: selling },
+          { label: "buying", kind: "asset", value: buying },
+          { label: "amount", kind: "amount", value: amount },
+          { label: "price", kind: "price", value: rate },
+          { label: "offer", kind: "number", value: offerId },
+        ];
+        break;
+      }
+
+      case "pathPaymentStrictSend": {
+        const send = normalizeAmount(op.sendAmount);
+        // The floor, not a quote. What the signature commits to is the worst
+        // outcome, and that is the number a person needs in front of them.
+        const destMin = normalizeAmount(op.destMin);
+        const sendAsset = describeAsset(op.sendAsset);
+        const destAsset = describeAsset(op.destAsset);
+        out.type = "path_payment_strict_send";
+        out.summary =
+          "Send " + send + " " + assetCode(sendAsset) + " to " + op.destination +
+          ", who receives at least " + destMin + " " + assetCode(destAsset);
+        out.fields = [
+          { label: "send amount", kind: "amount", value: send },
+          { label: "send asset", kind: "asset", value: sendAsset },
+          { label: "destination", kind: "address", value: op.destination },
+          { label: "destination asset", kind: "asset", value: destAsset },
+          { label: "minimum received", kind: "amount", value: destMin },
+          { label: "path", kind: "raw", value: describePath(op.path) },
+        ];
+        break;
+      }
+
+      case "pathPaymentStrictReceive": {
+        const sendMax = normalizeAmount(op.sendMax);
+        const destAmount = normalizeAmount(op.destAmount);
+        const sendAsset = describeAsset(op.sendAsset);
+        const destAsset = describeAsset(op.destAsset);
+        out.type = "path_payment_strict_receive";
+        out.summary =
+          "Send " + op.destination + " at most " + sendMax + " " + assetCode(sendAsset) +
+          " so they receive " + destAmount + " " + assetCode(destAsset);
+        out.fields = [
+          { label: "maximum sent", kind: "amount", value: sendMax },
+          { label: "send asset", kind: "asset", value: sendAsset },
+          { label: "destination", kind: "address", value: op.destination },
+          { label: "destination asset", kind: "asset", value: destAsset },
+          { label: "received", kind: "amount", value: destAmount },
+          { label: "path", kind: "raw", value: describePath(op.path) },
+        ];
+        break;
+      }
+
+      case "setOptions": {
+        out.type = "set_options";
+        const { fields, summary } = describeSetOptions(op);
+        out.summary = summary;
+        out.fields = fields;
+        break;
+      }
+
       default:
-        // Offers, path payments, set_options and everything Soroban land here.
-        // The Go renderer describes some of those; this one does not yet, and
-        // until it does they cannot be signed through a stelfin page. Refusing
-        // is the safe direction, and the corpus records which is which.
+        // Everything Soroban lands here, along with any operation neither side
+        // renders. Refusing is the safe direction: an operation nobody can read
+        // is one nobody gets to sign.
         throw new Indescribable("operation " + index + " is a " + op.type);
     }
 
@@ -230,8 +416,9 @@
     };
 
     if (!tx.operations.length) throw new Indescribable("no operations");
+    const raw = tx.tx.operations();
     tx.operations.forEach((op, i) => {
-      description.operations.push(describeOp(i, op, source));
+      description.operations.push(describeOp(i, op, source, raw[i]));
     });
     return description;
   }

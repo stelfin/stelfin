@@ -23,12 +23,14 @@ const CORPUS = path.join(__dirname, "..", "..", "settlement", "testdata", "descr
 //
 // Listed rather than skipped silently: each name here is a transaction a stelfin
 // page currently refuses to let anyone sign, which is the safe direction and
-// still a gap. Removing a name means implementing it, not relaxing the test.
-const NOT_YET_IN_THE_BROWSER = new Set([
-  "manage_sell_offer",
-  "path_payment_strict_send",
-  "set_options_multisig",
-]);
+// still a gap. Removing a name means implementing it, not relaxing the test —
+// and the test enforces that in both directions, so a name left here after the
+// renderer learned the operation fails just as loudly as one removed too soon.
+//
+// Empty, as of the phase that taught the browser offers, path payments and
+// signer changes. Soroban operations will land here when the Go side learns
+// them and this side has not yet.
+const NOT_YET_IN_THE_BROWSER = new Set([]);
 
 function corpus() {
   return fs
@@ -100,11 +102,30 @@ test("escaping keeps a memo on one line", () => {
   assert.ok(canonical.includes("a\\tb\\nc\\\\d"), "the memo was not escaped as expected");
 });
 
-test("a refused operation is refused, not summarised", () => {
+test("an unrenderable operation is refused, not summarised", () => {
   // The rule both sides share: anything not fully rendered stops the signature.
   // A renderer that returned a partial description would let an operation ride
   // along unmentioned, which is the attack the whole layer exists to stop.
+  //
+  // Inflation is a real operation and deliberately in neither switch, so it
+  // stands in for whatever nobody has taught either side yet.
+  const inflationTx =
+    "AAAAAgAAAACKiOPddAnxlf1S2y08ul1yymcJvx2UEhvzdIgBtA9vXAAAJxAAAAAAAAAAKgAAAAAA" +
+    "AAAAAAAAAQAAAAAAAAAJAAAAAAAAAAA=";
+  assert.throws(
+    () => describe.describeTx(inflationTx, "Test SDF Network ; September 2015"),
+    describe.Indescribable
+  );
+});
+
+test("an offer's price survives as a rational", () => {
+  // The parsed operation spells 7/3 as "2.33333333333333333333". Agreeing with
+  // the server on a value one side has already rounded is impossible, so the
+  // renderer reaches past the parsed form into the envelope.
   const offer = corpus().find((c) => c.name === "manage_sell_offer");
   assert.ok(offer, "the offer case is missing from the corpus");
-  assert.throws(() => describe.describeTx(offer.xdr, offer.network), describe.Indescribable);
+
+  const derived = describe.describeTx(offer.xdr, offer.network);
+  const price = derived.operations[0].fields.find((f) => f.label === "price");
+  assert.equal(price.value, "7/3", "the price was rendered as a decimal");
 });
