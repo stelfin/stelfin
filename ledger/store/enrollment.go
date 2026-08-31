@@ -81,9 +81,6 @@ type GrantParams struct {
 	// SponsorBalance is the sponsor account's current XLM, read from the chain
 	// by the caller. Zero means unknown, which is treated as too low.
 	SponsorBalance money.Stroops
-	// TreasuryVerified reports whether this workspace has proved control of a
-	// treasury. Provisioning cannot be enabled without it.
-	TreasuryVerified bool
 }
 
 // GrantEnrollment records that the operator is paying for an account, after
@@ -139,7 +136,18 @@ func (s *Store) GrantEnrollment(ctx context.Context, p GrantParams) error {
 	if budget <= 0 {
 		return ErrProvisioningOff
 	}
-	if !p.TreasuryVerified {
+	// Asked of the database, in this transaction, rather than taken as a
+	// parameter. A boolean the caller supplies is a boolean somebody
+	// eventually passes true — and the whole point of this gate is that it
+	// cannot be satisfied by anything other than a signature that reached a
+	// treasury's medium threshold.
+	var verified bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM org_treasuries WHERE org_id = $1)`,
+		int64(p.Org)).Scan(&verified); err != nil {
+		return fmt.Errorf("store: check verified treasury: %w", err)
+	}
+	if !verified {
 		return fmt.Errorf("%w: no treasury has been verified for this workspace", ErrProvisioningOff)
 	}
 

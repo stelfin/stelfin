@@ -245,6 +245,16 @@ func containsRune(s string, r rune) bool {
 // thing at a time.
 func grantParams(t *testing.T, s *Store, tn *tenant) GrantParams {
 	t.Helper()
+	// The treasury gate is answered by the database now, so satisfying it means
+	// linking one rather than setting a field.
+	linkTreasury(t, s, tn, 1)
+	return grantParamsWithoutATreasury(t, s, tn)
+}
+
+// grantParamsWithoutATreasury does everything except prove control of money,
+// which is the one check the workspace cannot talk its way past.
+func grantParamsWithoutATreasury(t *testing.T, s *Store, tn *tenant) GrantParams {
+	t.Helper()
 	ctx := context.Background()
 
 	identity := identityOf(t, tn)
@@ -265,8 +275,7 @@ func grantParams(t *testing.T, s *Store, tn *tenant) GrantParams {
 	return GrantParams{
 		Org: tn.org.ID, Member: tn.member.ID, Identity: identity,
 		Address: keypair.MustRandom().Address(), ReserveCost: cost,
-		SponsorBalance:   cost * FloatFloorMultiple,
-		TreasuryVerified: true,
+		SponsorBalance: cost * FloatFloorMultiple,
 	}
 }
 
@@ -324,8 +333,7 @@ func TestProvisioningIsOffByDefault(t *testing.T) {
 func TestProvisioningNeedsAVerifiedTreasury(t *testing.T) {
 	s := New(testPool)
 	tn := newTenant(t, s, "-300014")
-	p := grantParams(t, s, tn)
-	p.TreasuryVerified = false
+	p := grantParamsWithoutATreasury(t, s, tn)
 
 	if err := s.GrantEnrollment(context.Background(), p); !errors.Is(err, ErrProvisioningOff) {
 		t.Fatalf("error = %v, want ErrProvisioningOff", err)
