@@ -335,3 +335,37 @@ func TestTreasuryChallengeIsScopedToItsOrg(t *testing.T) {
 		t.Fatalf("the owning org could no longer complete it: %v", err)
 	}
 }
+
+// TestOrgCarriesItsProposalWindow: the envelope's time bounds are built from
+// this, so reading it wrongly would produce proposals that expire before their
+// signers can reach them — or long after anyone remembers agreeing.
+func TestOrgCarriesItsProposalWindow(t *testing.T) {
+	s := New(testPool)
+	ctx := context.Background()
+	tn := newTenant(t, s, "org-ttl")
+
+	if tn.org.ProposalTTL != 72*time.Hour {
+		t.Fatalf("default proposal TTL = %s, want 72h", tn.org.ProposalTTL)
+	}
+
+	if _, err := testPool.Exec(ctx,
+		`UPDATE orgs SET proposal_ttl = interval '36 hours' WHERE id = $1`,
+		int64(tn.org.ID)); err != nil {
+		t.Fatalf("set ttl: %v", err)
+	}
+	got, err := s.Org(ctx, tn.org.ID)
+	must(t, err, "read org")
+	if got.ProposalTTL != 36*time.Hour {
+		t.Fatalf("proposal TTL = %s, want 36h", got.ProposalTTL)
+	}
+
+	// The database refuses a window nobody could sign inside, and one long
+	// enough that an approval outlives the membership that gave it.
+	for _, bad := range []string{"30 minutes", "30 days"} {
+		if _, err := testPool.Exec(ctx,
+			`UPDATE orgs SET proposal_ttl = $2::interval WHERE id = $1`,
+			int64(tn.org.ID), bad); err == nil {
+			t.Errorf("accepted a proposal window of %s", bad)
+		}
+	}
+}

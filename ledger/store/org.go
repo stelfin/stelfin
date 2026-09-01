@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/stelfin/stelfin/chat"
 	"github.com/stelfin/stelfin/ledger"
@@ -54,16 +56,29 @@ type Org struct {
 	// mainnet envelope.
 	Network string
 	Status  string
+	// ProposalTTL is how long a proposal may collect signatures.
+	//
+	// Per-org because the answer is a property of the group, not of the code: a
+	// five-person treasury across three time zones is not the same signing
+	// window as one person with a hardware wallet. It also has to bound the
+	// envelope's own time bounds, or a proposal would outlive the transaction
+	// it is collecting signatures for.
+	ProposalTTL time.Duration
 }
 
 // Active reports whether this org may move money.
 func (o Org) Active() bool { return o.Status == OrgActive }
 
-const orgColumns = `id, kind, slug, display_name, network, status`
+const orgColumns = `id, kind, slug, display_name, network, status, proposal_ttl`
 
 func scanOrg(row pgx.Row) (Org, error) {
 	var o Org
-	err := row.Scan(&o.ID, &o.Kind, &o.Slug, &o.DisplayName, &o.Network, &o.Status)
+	var ttl pgtype.Interval
+	err := row.Scan(&o.ID, &o.Kind, &o.Slug, &o.DisplayName, &o.Network, &o.Status, &ttl)
+	// An interval in months or days would be a policy this code has not been
+	// asked to interpret; the column is CHECKed between one hour and seven days,
+	// so anything else means the schema moved without this.
+	o.ProposalTTL = time.Duration(ttl.Microseconds) * time.Microsecond
 	return o, err
 }
 
