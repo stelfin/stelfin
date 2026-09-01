@@ -33,6 +33,14 @@ type LinkChallenge struct {
 	// network the server built it for. A page that guessed would refuse a
 	// perfectly good challenge.
 	NetworkPassphrase string
+	// Purpose is what completing this challenge will do: bind a member's wallet
+	// or record a treasury.
+	//
+	// Sent to the page so it can say which, and read back from our own record
+	// rather than from the request when the signature arrives. A client that
+	// could choose its own purpose could present one person's wallet proof as
+	// proof that a group controls its money.
+	Purpose string
 }
 
 // PrepareLink issues a challenge proving control of address.
@@ -76,6 +84,7 @@ func (s *Service) PrepareLink(
 		XDR:               challenge.XDR,
 		Hash:              challenge.Hash,
 		NetworkPassphrase: s.challenges.Network(),
+		Purpose:           store.PurposeLinkMember,
 	}, nil
 }
 
@@ -101,6 +110,7 @@ func (s *Service) LoadChallenge(ctx context.Context, scope Scope, hash string) (
 		XDR:               c.XDR,
 		Hash:              c.Hash,
 		NetworkPassphrase: s.challenges.Network(),
+		Purpose:           c.Purpose,
 	}, nil
 }
 
@@ -136,6 +146,13 @@ func (s *Service) SubmitLink(
 	}
 	if err != nil {
 		return nil, err
+	}
+
+	if c.Purpose != store.PurposeLinkMember {
+		// A treasury challenge is not a wallet proof. Redeeming one here would
+		// spend the group's proof and bind the treasury's address to whoever
+		// presented it, as if it were their personal wallet.
+		return nil, fmt.Errorf("%w: %s", ErrNoChallenge, hash)
 	}
 
 	if err := s.challenges.VerifyMember(signedXDR, c.Address); err != nil {

@@ -291,3 +291,71 @@ func TestTreasuryProofIsSpentOnce(t *testing.T) {
 		t.Fatalf("replay: %v, want ErrNoChallenge", err)
 	}
 }
+
+// TestTreasuryChallengeIsNotAWalletProof is the mirror of the test above, and
+// the more dangerous direction. Redeeming a treasury challenge as a member link
+// would spend the group's proof and bind the treasury's address to whoever
+// presented it, as if it were their personal wallet.
+func TestTreasuryChallengeIsNotAWalletProof(t *testing.T) {
+	f := newTreasuryFixture(t, "/link-treasury not-a-wallet")
+	ctx := context.Background()
+	co := keypair.MustRandom()
+	f.twoOfTwo(co)
+
+	challenge, err := f.svc.PrepareTreasuryLink(ctx, f.scope, f.identity, f.treasury.Address())
+	if err != nil {
+		t.Fatalf("PrepareTreasuryLink: %v", err)
+	}
+
+	_, err = f.svc.SubmitLink(ctx, f.scope, challenge.Hash,
+		signChallengeWith(t, challenge.XDR, f.treasury, co))
+	if !errors.Is(err, ErrNoChallenge) {
+		t.Fatalf("a treasury challenge bound a member's wallet: %v", err)
+	}
+
+	// And it is still live for what it was issued for.
+	if _, err := f.svc.SubmitTreasuryLink(ctx, f.scope, challenge.Hash,
+		signChallengeWith(t, challenge.XDR, f.treasury, co), "main"); err != nil {
+		t.Fatalf("the treasury could no longer complete it: %v", err)
+	}
+}
+
+// TestSubmitChallengeDispatchesOnTheStoredPurpose: the purpose comes from our
+// own record, so a client cannot choose which verification runs against its
+// signature.
+func TestSubmitChallengeDispatchesOnTheStoredPurpose(t *testing.T) {
+	f := newTreasuryFixture(t, "/link-treasury dispatch")
+	ctx := context.Background()
+	co := keypair.MustRandom()
+	f.twoOfTwo(co)
+
+	treasuryChallenge, err := f.svc.PrepareTreasuryLink(ctx, f.scope, f.identity, f.treasury.Address())
+	if err != nil {
+		t.Fatalf("PrepareTreasuryLink: %v", err)
+	}
+	done, err := f.svc.SubmitChallenge(ctx, f.scope, treasuryChallenge.Hash,
+		signChallengeWith(t, treasuryChallenge.XDR, f.treasury, co), "main")
+	if err != nil {
+		t.Fatalf("SubmitChallenge: %v", err)
+	}
+	if done.Treasury == nil || done.Member != nil {
+		t.Fatalf("dispatched to %+v", done)
+	}
+
+	wallet := keypair.MustRandom()
+	memberChallenge, err := f.svc.PrepareLink(ctx, f.scope, f.identity, wallet.Address())
+	if err != nil {
+		t.Fatalf("PrepareLink: %v", err)
+	}
+	done, err = f.svc.SubmitChallenge(ctx, f.scope, memberChallenge.Hash,
+		signChallengeWith(t, memberChallenge.XDR, wallet), "")
+	if err != nil {
+		t.Fatalf("SubmitChallenge: %v", err)
+	}
+	if done.Member == nil || done.Treasury != nil {
+		t.Fatalf("dispatched to %+v", done)
+	}
+	if done.Member.Address != wallet.Address() {
+		t.Errorf("bound %s", done.Member.Address)
+	}
+}

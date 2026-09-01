@@ -78,6 +78,7 @@ func (s *Service) PrepareTreasuryLink(
 		XDR:               challenge.XDR,
 		Hash:              challenge.Hash,
 		NetworkPassphrase: s.challenges.Network(),
+		Purpose:           store.PurposeLinkTreasury,
 	}, nil
 }
 
@@ -179,4 +180,57 @@ func (s *Service) SubmitTreasuryLink(
 		Signed:               signed,
 		SkippedNonKeySigners: set.SkippedNonKeySigners,
 	}, nil
+}
+
+// CompletedLink is what a signed challenge turned out to prove.
+//
+// One of Member and Treasury is set, decided by the challenge's stored purpose.
+type CompletedLink struct {
+	Purpose  string
+	Member   *LinkResult
+	Treasury *TreasuryLinkResult
+}
+
+// SubmitChallenge completes whichever handshake this challenge was issued for.
+//
+// The purpose comes from our own record and never from the request. A client
+// that could name its own purpose could present a challenge signed by one
+// person as proof that a group of them controls a treasury, which is the
+// difference between "this is my wallet" and "we can spend this".
+func (s *Service) SubmitChallenge(
+	ctx context.Context, scope Scope, hash, signedXDR, label string,
+) (*CompletedLink, error) {
+	if err := scope.check(); err != nil {
+		return nil, err
+	}
+	if s.challenges == nil {
+		return nil, ErrLinkingUnavailable
+	}
+
+	c, err := s.store.LiveChallenge(ctx, scope.Org, hash)
+	if errors.Is(err, store.ErrNoChallenge) {
+		return nil, fmt.Errorf("%w: %s", ErrNoChallenge, hash)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	switch c.Purpose {
+	case store.PurposeLinkMember:
+		res, err := s.SubmitLink(ctx, scope, hash, signedXDR)
+		if err != nil {
+			return nil, err
+		}
+		return &CompletedLink{Purpose: c.Purpose, Member: res}, nil
+
+	case store.PurposeLinkTreasury:
+		res, err := s.SubmitTreasuryLink(ctx, scope, hash, signedXDR, label)
+		if err != nil {
+			return nil, err
+		}
+		return &CompletedLink{Purpose: c.Purpose, Treasury: res}, nil
+
+	default:
+		return nil, fmt.Errorf("%w: %s", ErrNoChallenge, hash)
+	}
 }
