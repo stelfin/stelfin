@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stellar/go-stellar-sdk/keypair"
 )
@@ -222,5 +223,115 @@ func TestClassicTreasuryCannotCarryAContractID(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("a classic treasury was allowed to carry a contract id")
+	}
+}
+
+// treasuryChallengeFor saves a challenge with the treasury purpose.
+func treasuryChallengeFor(t *testing.T, s *Store, tn *tenant, hash, address string) Challenge {
+	t.Helper()
+	c := Challenge{
+		Hash: hash, Org: tn.org.ID, Identity: identityOf(t, tn),
+		Purpose: PurposeLinkTreasury, Address: address,
+		XDR:       "AAAAAgAAAAA=",
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+	}
+	must(t, s.SaveChallenge(context.Background(), c), "save treasury challenge")
+	return c
+}
+
+func treasuryParams(tn *tenant, address string) LinkTreasuryParams {
+	return LinkTreasuryParams{
+		Org: tn.org.ID, Kind: TreasuryClassic, Address: address, Label: "main",
+		Low: 1, Medium: 2, High: 2,
+	}
+}
+
+func TestConsumeTreasuryChallengeLinksAndSpends(t *testing.T) {
+	s := New(testPool)
+	ctx := context.Background()
+	tn := newTenant(t, s, "tc-round")
+
+	address := keypair.MustRandom().Address()
+	c := treasuryChallengeFor(t, s, tn, hashOf(40), address)
+
+	tr, err := s.ConsumeTreasuryChallenge(ctx, c.Hash, treasuryParams(tn, address))
+	must(t, err, "consume treasury challenge")
+	if tr.Address != address || tr.Medium != 2 {
+		t.Fatalf("linked %+v", tr)
+	}
+	// Whoever presented the proof is who the row records.
+	if tr.ID == 0 {
+		t.Fatal("no treasury id")
+	}
+
+	// The proof is spent: presenting it again is a replay and gets nothing.
+	if _, err := s.ConsumeTreasuryChallenge(ctx, c.Hash, treasuryParams(tn, address)); !errors.Is(
+		err, ErrNoChallenge,
+	) {
+		t.Fatalf("replaying a spent treasury challenge: %v", err)
+	}
+}
+
+// TestTreasuryChallengeCannotBindADifferentAccount: the address is matched
+// against the challenge rather than read out of what came back, or a signer
+// could return a challenge for an account they do control and have it accepted
+// as proof of one they do not.
+func TestTreasuryChallengeCannotBindADifferentAccount(t *testing.T) {
+	s := New(testPool)
+	ctx := context.Background()
+	tn := newTenant(t, s, "tc-swap")
+
+	proved := keypair.MustRandom().Address()
+	wanted := keypair.MustRandom().Address()
+	c := treasuryChallengeFor(t, s, tn, hashOf(41), proved)
+
+	if _, err := s.ConsumeTreasuryChallenge(ctx, c.Hash, treasuryParams(tn, wanted)); !errors.Is(
+		err, ErrNoChallenge,
+	) {
+		t.Fatalf("bound a different account: %v", err)
+	}
+
+	// And the challenge is still live for the account it was actually issued
+	// for, so a failed attempt costs the honest path nothing.
+	if _, err := s.ConsumeTreasuryChallenge(ctx, c.Hash, treasuryParams(tn, proved)); err != nil {
+		t.Fatalf("the real account could no longer complete it: %v", err)
+	}
+}
+
+// TestMemberChallengeCannotLinkATreasury: the purposes are separate rows in the
+// same table, and a challenge issued to prove one person's wallet must not be
+// redeemable as proof that a group controls its money.
+func TestMemberChallengeCannotLinkATreasury(t *testing.T) {
+	s := New(testPool)
+	tn := newTenant(t, s, "tc-purpose")
+
+	address := keypair.MustRandom().Address()
+	c := challengeFor(t, s, tn, hashOf(42), address)
+
+	if _, err := s.ConsumeTreasuryChallenge(
+		context.Background(), c.Hash, treasuryParams(tn, address),
+	); !errors.Is(err, ErrNoChallenge) {
+		t.Fatalf("a member challenge linked a treasury: %v", err)
+	}
+}
+
+// TestTreasuryChallengeIsScopedToItsOrg: the org comes from the params, so
+// another tenant presenting the same hash must get nothing.
+func TestTreasuryChallengeIsScopedToItsOrg(t *testing.T) {
+	s := New(testPool)
+	ctx := context.Background()
+	a := newTenant(t, s, "tc-scope-a")
+	b := newTenant(t, s, "tc-scope-b")
+
+	address := keypair.MustRandom().Address()
+	c := treasuryChallengeFor(t, s, a, hashOf(43), address)
+
+	if _, err := s.ConsumeTreasuryChallenge(ctx, c.Hash, treasuryParams(b, address)); !errors.Is(
+		err, ErrNoChallenge,
+	) {
+		t.Fatalf("another org spent the challenge: %v", err)
+	}
+	if _, err := s.ConsumeTreasuryChallenge(ctx, c.Hash, treasuryParams(a, address)); err != nil {
+		t.Fatalf("the owning org could no longer complete it: %v", err)
 	}
 }

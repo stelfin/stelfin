@@ -75,6 +75,12 @@ type LinkTreasuryParams struct {
 // proof rather than a claim, which is the whole reason the table exists: anyone
 // can type an address into a chat.
 func (s *Store) LinkTreasury(ctx context.Context, p LinkTreasuryParams) (Treasury, error) {
+	return linkTreasuryTx(ctx, s.pool, p)
+}
+
+// linkTreasuryTx is LinkTreasury against a caller's transaction, so proving
+// control and recording it can commit together.
+func linkTreasuryTx(ctx context.Context, q querier, p LinkTreasuryParams) (Treasury, error) {
 	var verifiedBy any
 	if p.VerifiedBy != 0 {
 		verifiedBy = int64(p.VerifiedBy)
@@ -84,7 +90,7 @@ func (s *Store) LinkTreasury(ctx context.Context, p LinkTreasuryParams) (Treasur
 		contract = p.Contract
 	}
 
-	t, err := scanTreasury(s.pool.QueryRow(ctx, `
+	t, err := scanTreasury(q.QueryRow(ctx, `
 		INSERT INTO org_treasuries (
 			org_id, kind, address, label, contract_id,
 			low_threshold, medium_threshold, high_threshold, verified_by)
@@ -254,4 +260,60 @@ func (s *Store) CachedSignerSet(
 		out[address] = weight
 	}
 	return out, rows.Err()
+}
+
+// ConsumeTreasuryChallenge spends a treasury challenge and records the proof it
+// produced.
+//
+// One transaction, because the two halves are worthless apart. A challenge
+// spent without a treasury row leaves a workspace that has proved control of
+// its money and cannot say so, and asking again is refused as a replay. A
+// treasury row written without spending the challenge leaves the proof
+// reusable.
+//
+// The address is passed in and matched against the challenge rather than read
+// out of what came back, for the same reason the member path does it: otherwise
+// a signer could return a challenge for an account they do control and have it
+// accepted as proof of one they do not.
+func (s *Store) ConsumeTreasuryChallenge(
+	ctx context.Context, hash string, p LinkTreasuryParams,
+) (Treasury, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Treasury{}, fmt.Errorf("store: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var identity IdentityID
+	err = tx.QueryRow(ctx, `
+		UPDATE auth_challenges
+		   SET consumed_at = now()
+		 WHERE hash = $1
+		   AND org_id = $2
+		   AND address = $3
+		   AND purpose = $4
+		   AND consumed_at IS NULL
+		   AND expires_at > now()
+		RETURNING identity_id`,
+		hash, int64(p.Org), p.Address, PurposeLinkTreasury,
+	).Scan(&identity)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Treasury{}, fmt.Errorf("%w: %s", ErrNoChallenge, hash)
+	}
+	if err != nil {
+		return Treasury{}, fmt.Errorf("store: consume treasury challenge %s: %w", hash, err)
+	}
+
+	// Whoever presented the proof is who the row records, not whatever the
+	// caller passed alongside it.
+	p.VerifiedBy = identity
+
+	t, err := linkTreasuryTx(ctx, tx, p)
+	if err != nil {
+		return Treasury{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Treasury{}, fmt.Errorf("store: commit treasury link: %w", err)
+	}
+	return t, nil
 }
