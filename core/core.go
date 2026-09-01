@@ -42,6 +42,7 @@ type Admins interface {
 type Sender interface {
 	HandleSend(ctx context.Context, scope api.Scope, m chat.Inbound, out api.Replier, links api.Linker) error
 	PrepareLink(ctx context.Context, scope api.Scope, identity store.IdentityID, address string) (*api.LinkChallenge, error)
+	PrepareTreasuryLink(ctx context.Context, scope api.Scope, identity store.IdentityID, address string) (*api.LinkChallenge, error)
 	Challenges() *identity.Challenges
 }
 

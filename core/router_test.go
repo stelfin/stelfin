@@ -77,7 +77,11 @@ type fakeSender struct {
 	mu         sync.Mutex
 	calls      []api.Scope
 	linked     []string
-	challenges *identity.Challenges
+	treasuries []string
+	// treasuryErr is what PrepareTreasuryLink returns, so a test can stand in
+	// for an account that cannot be proved at all.
+	treasuryErr error
+	challenges  *identity.Challenges
 }
 
 func (f *fakeSender) HandleSend(
@@ -101,6 +105,30 @@ func (f *fakeSender) PrepareLink(
 		Address: address, XDR: "AAAAAgAAAAA=", Hash: "cafe",
 		NetworkPassphrase: network.TestNetworkPassphrase,
 	}, nil
+}
+
+// PrepareTreasuryLink records treasury challenge requests. The weight
+// arithmetic is the real one's job; the router's is deciding who may ask.
+func (f *fakeSender) PrepareTreasuryLink(
+	_ context.Context, _ api.Scope, _ store.IdentityID, address string,
+) (*api.LinkChallenge, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.treasuryErr != nil {
+		return nil, f.treasuryErr
+	}
+	f.treasuries = append(f.treasuries, address)
+	return &api.LinkChallenge{
+		Address: address, XDR: "AAAAAgAAAAA=", Hash: "beef",
+		NetworkPassphrase: network.TestNetworkPassphrase,
+		Purpose:           store.PurposeLinkTreasury,
+	}, nil
+}
+
+func (f *fakeSender) provedTreasuries() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.treasuries...)
 }
 
 // Challenges reports whether linking is available at all. A fake with none
