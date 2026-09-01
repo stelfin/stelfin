@@ -16,20 +16,28 @@
   have its key on this device: the key stelfin created here, if there is one, or
   a signature produced in their own wallet and pasted back.
 
+  The same page proves a treasury. That case differs in one way that matters to
+  the person using it: an M-of-N treasury needs several signatures on ONE
+  envelope, passed between signers, not one submission each. A partial envelope
+  is not an error and is not shown as one — the page says how far along it is
+  and keeps the paste box open.
+
   Referrer-Policy keeps the fragment-borne token out of any outbound request.
 -->
 <meta name="referrer" content="no-referrer">
-<title>Link your wallet · stelfin</title>
+<title>Prove your address · stelfin</title>
 <style>
 
   :root {
     --bg: #ffffff; --fg: #16181d; --muted: #5c6370;
-    --line: #e3e6ea; --accent: #14713d; --danger: #a4291f; --danger-bg: #fdf2f1;
+    --line: #e3e6ea; --accent: #14713d; --accent-bg: #f0f7f2;
+    --danger: #a4291f; --danger-bg: #fdf2f1;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #14161a; --fg: #f0f2f5; --muted: #9aa3af;
-      --line: #2a2e36; --accent: #4ec27f; --danger: #ff8b80; --danger-bg: #2a1b1a;
+      --line: #2a2e36; --accent: #4ec27f; --accent-bg: #17251c;
+      --danger: #ff8b80; --danger-bg: #2a1b1a;
     }
   }
   * { box-sizing: border-box; }
@@ -39,24 +47,37 @@
     display: flex; justify-content: center; padding: 24px 16px 48px;
   }
   main { width: 100%; max-width: 26rem; }
-  h1 { font-size: 1.05rem; font-weight: 600; margin: 0 0 0.6rem; }
+  h1 { font-size: 1.05rem; font-weight: 600; margin: 0 0 0.6rem; text-wrap: balance; }
   p.lede { color: var(--muted); margin: 0 0 1.5rem; font-size: 0.92rem; }
   dl { border-top: 1px solid var(--line); margin: 0 0 1.5rem; padding-top: 0.75rem; }
   .row { display: flex; justify-content: space-between; gap: 1rem; padding: 0.4rem 0; font-size: 0.9rem; }
   .row dt { color: var(--muted); margin: 0; flex: none; }
-  .row dd { margin: 0; text-align: right; word-break: break-all; }
+  .row dd { margin: 0; text-align: right; word-break: break-all; font-variant-numeric: tabular-nums; }
   code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; }
   button {
     width: 100%; padding: 0.85rem 1rem; font: inherit; font-weight: 600;
     color: #fff; background: var(--accent); border: 0; border-radius: 10px; cursor: pointer;
+    transition: filter 180ms ease, transform 120ms ease;
   }
+  button:hover:not([disabled]) { filter: brightness(1.08); }
+  button:active:not([disabled]) { transform: translateY(1px); }
   button[disabled] { opacity: 0.5; cursor: not-allowed; }
+  button.spaced { margin-top: 0.75rem; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .note { font-size: 0.85rem; color: var(--muted); margin-top: 0.85rem; text-align: center; }
+  .note.left { text-align: left; margin-top: 0; }
   .alert {
     background: var(--danger-bg); border: 1px solid var(--danger); color: var(--danger);
     border-radius: 10px; padding: 0.85rem 1rem; margin-bottom: 1.25rem; font-size: 0.9rem;
   }
   .alert strong { display: block; margin-bottom: 0.25rem; }
+  /* A partially signed envelope is progress, not a failure. It gets the accent
+     rather than the danger colour, because colouring it red teaches signers to
+     ignore red. */
+  .alert.progress {
+    background: var(--accent-bg); border-color: var(--accent); color: var(--fg);
+  }
+  .alert.progress strong { color: var(--accent); }
   [hidden] { display: none !important; }
   textarea {
     width: 100%; min-height: 6.5rem; padding: 0.7rem; font: inherit;
@@ -65,6 +86,10 @@
     border: 1px solid var(--line); border-radius: 10px; resize: vertical;
   }
   h2 { font-size: 0.9rem; font-weight: 600; margin: 1.5rem 0 0.5rem; }
+  input[type="text"] {
+    width: 100%; padding: 0.7rem; font: inherit; color: var(--fg);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+  }
   button.secondary { color: var(--fg); background: transparent; border: 1px solid var(--line); }
 </style>
 </head>
@@ -73,8 +98,8 @@
   <div id="alert" class="alert" hidden></div>
 
   <section id="pending" hidden>
-    <h1>Link your wallet</h1>
-    <p class="lede">
+    <h1 id="heading">Prove this address</h1>
+    <p class="lede" id="lede">
       Sign this challenge to prove you control the address. It is built so that
       it can never be submitted — signing it cannot move anything.
     </p>
@@ -84,25 +109,36 @@
       <div class="row"><dt>Network</dt><dd><code id="network"></code></dd></div>
     </dl>
 
+    <section id="labelBox" hidden>
+      <h2>Name this treasury</h2>
+      <p class="note left">
+        Optional, and cosmetic — how stelfin will refer to this account in your
+        chat. A workspace with an ops wallet and a grants wallet needs to tell
+        them apart.
+      </p>
+      <input id="label" type="text" maxlength="60" placeholder="Main treasury"
+             aria-label="Treasury name">
+    </section>
+
     <section id="device" hidden>
       <button id="sign" type="button">Sign with this device</button>
       <p class="note">Uses the key stelfin created on this device.</p>
     </section>
 
-    <h2>Or sign in your own wallet</h2>
-    <p class="note" style="text-align: left; margin-top: 0;">
+    <h2 id="pasteHeading">Or sign in your own wallet</h2>
+    <p class="note left" id="pasteNote">
       Copy the challenge below, sign it in your wallet, and paste the signed
       result back.
     </p>
     <textarea id="challenge" readonly aria-label="Challenge to sign"></textarea>
     <h2>Signed challenge</h2>
     <textarea id="signed" placeholder="Paste the signed XDR here" aria-label="Signed challenge"></textarea>
-    <button id="submit" type="button" class="secondary" style="margin-top: 0.75rem;">Submit signature</button>
+    <button id="submit" type="button" class="secondary spaced">Submit signature</button>
   </section>
 
   <section id="done" hidden>
-    <h1>Wallet linked</h1>
-    <p class="lede">You can close this page and go back to your chat.</p>
+    <h1 id="doneHeading">Wallet linked</h1>
+    <p class="lede" id="doneLede">You can close this page and go back to your chat.</p>
   </section>
 </main>
 

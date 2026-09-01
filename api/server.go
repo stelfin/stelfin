@@ -416,11 +416,19 @@ func (s *Server) handleLink(w http.ResponseWriter, r *http.Request) {
 		"address":            challenge.Address,
 		"xdr":                challenge.XDR,
 		"network_passphrase": challenge.NetworkPassphrase,
+		// The page says which handshake it is showing. It is display only: the
+		// server dispatches on its own stored purpose when the signature comes
+		// back, so a client that lied about this would change nothing but its
+		// own headings.
+		"purpose": challenge.Purpose,
 	})
 }
 
 type linkSubmitRequest struct {
 	SignedXDR string `json:"signed_xdr"`
+	// Label names a treasury in later messages. Cosmetic, and ignored for a
+	// member link.
+	Label string `json:"label"`
 }
 
 // handleLinkSubmit accepts the signed challenge and binds the address.
@@ -440,12 +448,22 @@ func (s *Server) handleLinkSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.svc.SubmitLink(r.Context(), scope, hash, req.SignedXDR)
+	done, err := s.svc.SubmitChallenge(r.Context(), scope, hash, req.SignedXDR, req.Label)
 	if err != nil {
 		s.writeError(w, err)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"address": res.Address})
+
+	body := map[string]any{"purpose": done.Purpose}
+	switch {
+	case done.Member != nil:
+		body["address"] = done.Member.Address
+	case done.Treasury != nil:
+		body["address"] = done.Treasury.Treasury.Address
+		body["signed_by"] = done.Treasury.Signed
+		body["threshold"] = done.Treasury.Treasury.Medium
+	}
+	s.writeJSON(w, http.StatusOK, body)
 }
 
 // authoriseLink verifies the link token and reports what it grants.
@@ -527,6 +545,11 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 		http.Error(w, "that address already belongs to another member", http.StatusConflict)
 	case errors.Is(err, ErrLinkingUnavailable):
 		http.Error(w, "address linking is not available", http.StatusServiceUnavailable)
+	case errors.Is(err, ErrTreasuryUnprovable):
+		// 422 rather than 400: the request is well formed and the account is
+		// the problem, and the page has something specific to say about it.
+		http.Error(w, "this account cannot prove control by signature",
+			http.StatusUnprocessableEntity)
 	default:
 		s.log.Error("request failed", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
