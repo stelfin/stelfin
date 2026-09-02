@@ -64,34 +64,50 @@ func (e *External) Sign(_ context.Context, req Request) (Response, error) {
 	}, nil
 }
 
-// hasher is the part of an envelope weightOf needs: the 32 bytes that were
-// actually signed. Taken as an interface so a fee bump — whose hash covers a
-// different structure entirely — can never be silently checked against a
-// transaction's signers.
-type hasher interface {
+// Hasher is the part of an envelope the arithmetic below needs: the 32 bytes
+// that were actually signed. Taken as an interface so a fee bump — whose hash
+// covers a different structure entirely — can never be silently checked against
+// a transaction's signers.
+type Hasher interface {
 	Hash(networkPassphrase string) ([32]byte, error)
 }
 
 // weightOf adds up the signing weight already on an envelope.
+func weightOf(
+	signatures []xdr.DecoratedSignature, env Hasher, networkPassphrase string, set Set,
+) (int32, error) {
+	signed, err := Attribute(signatures, env, networkPassphrase, set)
+	if err != nil {
+		return 0, err
+	}
+	var total int32
+	for _, weight := range signed {
+		total += weight
+	}
+	return total, nil
+}
+
+// Attribute reports which of the account's signers actually signed an envelope,
+// and at what weight.
 //
-// Only signatures from keys currently on the account count. A valid signature
+// Only signatures from keys currently on the account appear. A valid signature
 // from a key that is not a signer contributes nothing, however well formed —
 // which is the whole point of asking the account rather than counting
 // signatures.
 //
-// Each signer is counted at most once. Without that, an envelope carrying the
-// same signature twice would report double the weight it has, and the bot would
+// Each signer appears at most once. Without that, an envelope carrying the same
+// signature twice would report double the weight it has, and the bot would
 // announce a proposal ready that the network will reject.
-func weightOf(
-	signatures []xdr.DecoratedSignature, env hasher, networkPassphrase string, set Set,
-) (int32, error) {
+func Attribute(
+	signatures []xdr.DecoratedSignature, env Hasher, networkPassphrase string, set Set,
+) (map[string]int32, error) {
 	if len(set.Signers) == 0 {
-		return 0, errors.New("signer: the account has no signers; refusing to guess")
+		return nil, errors.New("signer: the account has no signers; refusing to guess")
 	}
 
 	hash, err := env.Hash(networkPassphrase)
 	if err != nil {
-		return 0, fmt.Errorf("signer: hash envelope: %w", err)
+		return nil, fmt.Errorf("signer: hash envelope: %w", err)
 	}
 
 	// Parsed once per address rather than once per (address, signature) pair,
@@ -102,16 +118,15 @@ func weightOf(
 	for address := range set.Signers {
 		kp, err := keypair.ParseAddress(address)
 		if err != nil {
-			return 0, fmt.Errorf("signer: signer %q is not a valid account: %w", address, err)
+			return nil, fmt.Errorf("signer: signer %q is not a valid account: %w", address, err)
 		}
 		keys[address] = kp
 	}
 
-	var total int32
-	counted := make(map[string]bool, len(signatures))
+	signed := make(map[string]int32)
 	for _, sig := range signatures {
 		for address, kp := range keys {
-			if counted[address] {
+			if _, already := signed[address]; already {
 				continue
 			}
 			// The hint is a cheap filter and nothing more — four bytes of the
@@ -122,10 +137,9 @@ func weightOf(
 			if kp.Verify(hash[:], sig.Signature) != nil {
 				continue
 			}
-			counted[address] = true
-			total += set.Signers[address]
+			signed[address] = set.Signers[address]
 			break
 		}
 	}
-	return total, nil
+	return signed, nil
 }

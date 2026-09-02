@@ -373,3 +373,34 @@ func TestExternalRefusesAFeeBump(t *testing.T) {
 		t.Fatal("a treasury must never be asked to sign a fee bump")
 	}
 }
+
+// TestAttributeNamesWhoSigned: the bot has to say who is still missing, not
+// only how much weight is. A number alone leaves the channel guessing which
+// three of five people to chase.
+func TestAttributeNamesWhoSigned(t *testing.T) {
+	a, b, c := keyFor(t, 30), keyFor(t, 31), keyFor(t, 32)
+	stranger := keyFor(t, 33)
+
+	set := signer.Set{
+		Signers: map[string]int32{a.Address(): 1, b.Address(): 2, c.Address(): 3},
+		Medium:  4,
+	}
+	tx := sign(t, payment(t, a.Address()), a, c, stranger)
+
+	got, err := signer.Attribute(tx.Signatures(), tx, testNet, set)
+	if err != nil {
+		t.Fatalf("attribute: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("attributed %v, want two signers", got)
+	}
+	if got[a.Address()] != 1 || got[c.Address()] != 3 {
+		t.Errorf("weights = %v", got)
+	}
+	if _, named := got[stranger.Address()]; named {
+		t.Error("a signature from a key that is not on the account was attributed")
+	}
+	if _, named := got[b.Address()]; named {
+		t.Error("a signer who did not sign was attributed")
+	}
+}
