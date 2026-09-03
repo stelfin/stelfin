@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/stelfin/stelfin/api/intent"
 	"github.com/stelfin/stelfin/chat"
+	"github.com/stelfin/stelfin/ledger/store"
 	"github.com/stelfin/stelfin/settlement"
 )
 
@@ -62,6 +64,10 @@ func (stubLinker) IssueEnrollLink(scope Scope, _ time.Time) (string, error) {
 
 func (stubLinker) IssueLinkLink(_ Scope, hash string, _ time.Time) (string, error) {
 	return "https://stelfin.example/link#token-for-" + hash, nil
+}
+
+func (stubLinker) IssueApproveLink(_ Scope, id store.ProposalID, _ time.Time) (string, error) {
+	return fmt.Sprintf("https://stelfin.example/approve#token-for-%d", id), nil
 }
 
 // actorFor derives a stable actor for a test. Its Ref is the owner reference

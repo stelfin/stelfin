@@ -172,6 +172,10 @@ func (stubLinker) IssueLinkLink(_ api.Scope, hash string, _ time.Time) (string, 
 	return "https://stelfin.example/link#" + hash, nil
 }
 
+func (stubLinker) IssueApproveLink(_ api.Scope, id store.ProposalID, _ time.Time) (string, error) {
+	return fmt.Sprintf("https://stelfin.example/approve#%d", id), nil
+}
+
 type harness struct {
 	svc    *Service
 	store  *store.Store
