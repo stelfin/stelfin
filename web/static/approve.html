@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Approve a treasury proposal.
+
+  Same posture as the confirmation page and for a stronger reason: this envelope
+  spends a group's money, and several people will sign the same bytes over
+  several days. The page re-derives the whole description from the XDR and
+  compares its canonical form, byte for byte, against the server's. They must
+  match exactly or nothing is offered for signature — a server that
+  mis-describes a payment cannot get that description signed, because the
+  description it sent is not the one this browser derived.
+
+  Everything rendered below comes from the local derivation, never from the
+  server's text. A renderer that displayed the server's summary and merely
+  checked its own in the background would show the wrong thing whenever the
+  check was the part that broke.
+
+  Referrer-Policy keeps the fragment-borne token out of any outbound request.
+-->
+<meta name="referrer" content="no-referrer">
+<title>Approve a proposal · stelfin</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #16181d; --muted: #5c6370;
+    --line: #e3e6ea; --accent: #14713d; --accent-bg: #f0f7f2;
+    --danger: #a4291f; --danger-bg: #fdf2f1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --fg: #f0f2f5; --muted: #9aa3af;
+      --line: #2a2e36; --accent: #4ec27f; --accent-bg: #17251c;
+      --danger: #ff8b80; --danger-bg: #2a1b1a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; justify-content: center; padding: 24px 16px 48px;
+  }
+  main { width: 100%; max-width: 30rem; }
+  h1 { font-size: 1.05rem; font-weight: 600; margin: 0 0 0.6rem; text-wrap: balance; }
+  h2 { font-size: 0.9rem; font-weight: 600; margin: 1.5rem 0 0.5rem; }
+  p.lede { color: var(--muted); margin: 0 0 1.5rem; font-size: 0.92rem; }
+  dl { border-top: 1px solid var(--line); margin: 0 0 1rem; padding-top: 0.75rem; }
+  .row { display: flex; justify-content: space-between; gap: 1rem; padding: 0.35rem 0; font-size: 0.9rem; }
+  .row dt { color: var(--muted); margin: 0; flex: none; }
+  .row dd { margin: 0; text-align: right; word-break: break-all; font-variant-numeric: tabular-nums; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; }
+  /* One operation, boxed, so a five-operation payroll cannot be mistaken for
+     one payment with a long description. */
+  .op { border: 1px solid var(--line); border-radius: 10px; padding: 0.6rem 0.85rem; margin-bottom: 0.6rem; }
+  .op h3 { font-size: 0.85rem; font-weight: 600; margin: 0 0 0.35rem; }
+  .op .idx { color: var(--muted); font-weight: 400; }
+  button {
+    width: 100%; padding: 0.85rem 1rem; font: inherit; font-weight: 600;
+    color: #fff; background: var(--accent); border: 0; border-radius: 10px; cursor: pointer;
+    transition: filter 180ms ease, transform 120ms ease;
+  }
+  button:hover:not([disabled]) { filter: brightness(1.08); }
+  button:active:not([disabled]) { transform: translateY(1px); }
+  button[disabled] { opacity: 0.5; cursor: not-allowed; }
+  button.secondary { color: var(--fg); background: transparent; border: 1px solid var(--line); }
+  button.spaced { margin-top: 0.75rem; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .note { font-size: 0.85rem; color: var(--muted); margin-top: 0.85rem; }
+  .note.center { text-align: center; }
+  .alert {
+    background: var(--danger-bg); border: 1px solid var(--danger); color: var(--danger);
+    border-radius: 10px; padding: 0.85rem 1rem; margin-bottom: 1.25rem; font-size: 0.9rem;
+  }
+  .alert strong { display: block; margin-bottom: 0.25rem; }
+  .alert.progress { background: var(--accent-bg); border-color: var(--accent); color: var(--fg); }
+  .alert.progress strong { color: var(--accent); }
+  [hidden] { display: none !important; }
+  textarea {
+    width: 100%; min-height: 6.5rem; padding: 0.7rem; font: inherit;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem;
+    color: var(--fg); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 10px; resize: vertical;
+  }
+  ul.people { list-style: none; padding: 0; margin: 0.25rem 0 0; font-size: 0.85rem; }
+  ul.people li { padding: 0.15rem 0; word-break: break-all; }
+  ul.people li code { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <div id="alert" class="alert" hidden></div>
+
+  <section id="proposal" hidden>
+    <h1 id="heading">Approve this proposal</h1>
+    <p class="lede" id="lede"></p>
+
+    <dl>
+      <div class="row"><dt>Treasury</dt><dd><code id="treasury"></code></dd></div>
+      <div class="row"><dt>Signatures</dt><dd id="weight"></dd></div>
+      <div class="row"><dt>Expires</dt><dd id="expires"></dd></div>
+    </dl>
+
+    <h2>What this does</h2>
+    <div id="operations"></div>
+
+    <dl>
+      <div class="row"><dt>Fee</dt><dd id="fee"></dd></div>
+      <div class="row"><dt>Memo</dt><dd id="memo"></dd></div>
+      <div class="row"><dt>Sequence</dt><dd id="sequence"></dd></div>
+    </dl>
+
+    <h2>Who has signed</h2>
+    <ul class="people" id="signed"></ul>
+    <h2>Still to sign</h2>
+    <ul class="people" id="missing"></ul>
+
+    <section id="ready" hidden>
+      <button id="execute" type="button">Submit to the network</button>
+      <p class="note center">
+        It has the weight it needs. Anyone looking at this can submit it.
+      </p>
+    </section>
+
+    <h2>Add your signature</h2>
+    <p class="note" style="margin-top: 0;">
+      Copy the envelope, sign it in your wallet, and paste it back. Each signer
+      adds to the same envelope; separate submissions do not add up.
+    </p>
+    <textarea id="envelope" readonly aria-label="Envelope to sign"></textarea>
+    <h2>Signed envelope</h2>
+    <textarea id="signed_xdr" placeholder="Paste the signed XDR here" aria-label="Signed envelope"></textarea>
+    <button id="submit" type="button" class="secondary spaced">Add signature</button>
+  </section>
+
+  <section id="done" hidden>
+    <h1 id="doneHeading">Submitted</h1>
+    <p class="lede" id="doneLede">You can close this page and go back to your chat.</p>
+  </section>
+</main>
+
+<script src="/static/stellar-sdk.min.js"></script>
+<script src="/static/describe.js"></script>
+<script src="/static/approve.js"></script>
+</body>
+</html>
