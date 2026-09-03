@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stellar/go-stellar-sdk/clients/horizonclient"
 	"github.com/stellar/go-stellar-sdk/keypair"
@@ -24,12 +25,35 @@ type signerHorizon struct {
 	fakeHorizon
 	signers    []horizon.Signer
 	thresholds horizon.AccountThresholds
+	submitted  []*txnbuild.Transaction
+}
+
+// SubmitTransactionWithOptions answers with the envelope's real hash. The
+// shared fake returns a fixed string, which is fine where nothing reads it and
+// wrong here: the hash is written to a column that checks it is 64 hex
+// characters, and a test that never hits that check would not be testing the
+// submit path.
+func (h *signerHorizon) SubmitTransactionWithOptions(
+	tx *txnbuild.Transaction, _ horizonclient.SubmitTxOpts,
+) (horizon.Transaction, error) {
+	hash, err := tx.HashHex(network.TestNetworkPassphrase)
+	if err != nil {
+		return horizon.Transaction{}, err
+	}
+	h.submitted = append(h.submitted, tx)
+	return horizon.Transaction{
+		Hash: hash, Ledger: 42, LedgerCloseTime: time.Unix(1700000000, 0),
+	}, nil
 }
 
 func (h *signerHorizon) AccountDetail(req horizonclient.AccountRequest) (horizon.Account, error) {
+	seq := h.fakeHorizon.sequence
+	if seq == 0 {
+		seq = 1
+	}
 	return horizon.Account{
 		AccountID:  req.AccountID,
-		Sequence:   1,
+		Sequence:   seq,
 		Signers:    h.signers,
 		Thresholds: h.thresholds,
 	}, nil
@@ -42,6 +66,7 @@ type treasuryFixture struct {
 	horizon  *signerHorizon
 	scope    Scope
 	identity store.IdentityID
+	user     string
 	treasury *keypair.Full
 }
 
@@ -94,6 +119,7 @@ func newTreasuryFixture(t *testing.T, name string) *treasuryFixture {
 		svc: svc, store: db, horizon: h,
 		scope:    Scope{Org: org.ID, OwnerRef: "telegram:" + user},
 		identity: id,
+		user:     user,
 		treasury: keypair.MustRandom(),
 	}
 }
@@ -104,6 +130,17 @@ func (f *treasuryFixture) twoOfTwo(co *keypair.Full) {
 	f.horizon.signers = []horizon.Signer{
 		{Key: f.treasury.Address(), Weight: 1, Type: "ed25519_public_key"},
 		{Key: co.Address(), Weight: 1, Type: "ed25519_public_key"},
+	}
+	f.horizon.thresholds = horizon.AccountThresholds{
+		LowThreshold: 2, MedThreshold: 2, HighThreshold: 2,
+	}
+}
+
+// twoOfTwoWithout removes a co-signer from the account, leaving the treasury's
+// own key at weight 1 against a threshold of 2.
+func (f *treasuryFixture) twoOfTwoWithout(_ *keypair.Full) {
+	f.horizon.signers = []horizon.Signer{
+		{Key: f.treasury.Address(), Weight: 1, Type: "ed25519_public_key"},
 	}
 	f.horizon.thresholds = horizon.AccountThresholds{
 		LowThreshold: 2, MedThreshold: 2, HighThreshold: 2,
