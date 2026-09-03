@@ -53,6 +53,13 @@ type ServerConfig struct {
 	// envelope against the same network the server signed for. A page that
 	// guessed would fail to verify a perfectly good transaction.
 	NetworkPassphrase string
+	// Approvals issues and verifies approve tokens.
+	//
+	// Optional. A deployment without it serves no approval page and refuses
+	// /v1/proposal, which is the honest state for one that has not been
+	// configured for treasuries rather than a nil dereference on the first
+	// person who taps a link.
+	Approvals *ApproveTokens
 	// Assets serves the confirmation page. Nil serves no page.
 	Assets http.Handler
 	// Logger receives request-scoped logs. Nil uses the default.
@@ -131,6 +138,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/enroll/submit", s.handleEnrollSubmit)
 	mux.HandleFunc("GET /v1/link", s.handleLink)
 	mux.HandleFunc("POST /v1/link/submit", s.handleLinkSubmit)
+	mux.HandleFunc("GET /v1/proposal", s.handleProposal)
+	mux.HandleFunc("POST /v1/proposal/approve", s.handleApprove)
+	mux.HandleFunc("POST /v1/proposal/execute", s.handleExecute)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -145,6 +155,7 @@ func (s *Server) Routes() http.Handler {
 		mux.Handle("GET /confirm", s.cfg.Assets)
 		mux.Handle("GET /enroll", s.cfg.Assets)
 		mux.Handle("GET /link", s.cfg.Assets)
+		mux.Handle("GET /approve", s.cfg.Assets)
 		mux.Handle("GET /static/", s.cfg.Assets)
 	}
 	return mux
@@ -545,6 +556,20 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 		http.Error(w, "that address already belongs to another member", http.StatusConflict)
 	case errors.Is(err, ErrLinkingUnavailable):
 		http.Error(w, "address linking is not available", http.StatusServiceUnavailable)
+	case errors.Is(err, store.ErrNoProposal), errors.Is(err, store.ErrNoTreasury):
+		http.Error(w, "not found", http.StatusNotFound)
+	case errors.Is(err, store.ErrProposalClosed), errors.Is(err, store.ErrProposalAlreadyOpen):
+		http.Error(w, "this proposal is no longer open", http.StatusConflict)
+	case errors.Is(err, ErrNotEnoughSignatures):
+		// 409 rather than 400: the request is fine and the state is not yet
+		// ready. Retrying it unchanged is exactly the wrong thing to do, and
+		// the page says so.
+		http.Error(w, "not enough signatures yet", http.StatusConflict)
+	case errors.Is(err, ErrSequenceMoved):
+		http.Error(w, "the treasury has transacted since this proposal was built",
+			http.StatusConflict)
+	case errors.Is(err, ErrWrongEnvelope):
+		http.Error(w, "that signature is not for this proposal", http.StatusBadRequest)
 	case errors.Is(err, ErrTreasuryUnprovable):
 		// 422 rather than 400: the request is well formed and the account is
 		// the problem, and the page has something specific to say about it.

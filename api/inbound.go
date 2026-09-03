@@ -9,6 +9,7 @@ import (
 
 	"github.com/stelfin/stelfin/api/intent"
 	"github.com/stelfin/stelfin/chat"
+	"github.com/stelfin/stelfin/ledger/store"
 )
 
 // The free-text send path: a message that is an instruction to pay someone
@@ -121,6 +122,7 @@ type Linker interface {
 	IssueConfirmLink(scope Scope, hash string, expiresAt time.Time) (string, error)
 	IssueEnrollLink(scope Scope, expiresAt time.Time) (string, error)
 	IssueLinkLink(scope Scope, hash string, expiresAt time.Time) (string, error)
+	IssueApproveLink(scope Scope, id store.ProposalID, expiresAt time.Time) (string, error)
 }
 
 // replyWithProblem turns a failure into something the user can act on.
