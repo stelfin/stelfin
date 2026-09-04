@@ -149,3 +149,56 @@ func TestTreasuriesLists(t *testing.T) {
 		t.Errorf("listing does not carry a readable date:\n%s", body)
 	}
 }
+
+// grantRole gives a member a role directly, for the commands that need more
+// than the workspace's first admin.
+func grantRole(t *testing.T, h *harness, org store.Org, userID string, role chat.Role) store.MemberID {
+	t.Helper()
+	ctx := context.Background()
+	member, err := h.store.EnsureMember(ctx, org.ID, chat.Telegram, userID, "bo")
+	if err != nil {
+		t.Fatalf("ensure member: %v", err)
+	}
+	admin, ok, err := h.store.MemberByIdentity(ctx, org.ID, chat.Telegram, "42")
+	if err != nil || !ok {
+		t.Fatalf("admin: %v (found %v)", err, ok)
+	}
+	if err := h.store.GrantRole(ctx, org.ID, member.ID, role, admin.ID); err != nil {
+		t.Fatalf("grant role: %v", err)
+	}
+	return member.ID
+}
+
+// treasuryFor links a treasury directly, skipping the SEP-10 handshake the api
+// tests already cover.
+func treasuryFor(t *testing.T, h *harness, org store.Org) store.Treasury {
+	t.Helper()
+	tr, err := h.store.LinkTreasury(context.Background(), store.LinkTreasuryParams{
+		Org: org.ID, Kind: store.TreasuryClassic,
+		Address: keypair.MustRandom().Address(), Label: "main",
+		Low: 2, Medium: 2, High: 2,
+	})
+	if err != nil {
+		t.Fatalf("link treasury: %v", err)
+	}
+	return tr
+}
+
+// orgOf and treasuryOf look up what a test just created in a space.
+func (h *harness) orgOf(t *testing.T, space string) store.Org {
+	t.Helper()
+	org, ok, err := h.store.OrgForSpace(context.Background(), chat.Telegram, space)
+	if err != nil || !ok {
+		t.Fatalf("org for %s: %v (found %v)", space, err, ok)
+	}
+	return org
+}
+
+func (h *harness) treasuryOf(t *testing.T, space string) store.Treasury {
+	t.Helper()
+	list, err := h.store.Treasuries(context.Background(), h.orgOf(t, space).ID)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("treasuries for %s: %v (%d found)", space, err, len(list))
+	}
+	return list[0]
+}

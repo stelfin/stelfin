@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"github.com/stelfin/stelfin/internal/pgtest"
 	"github.com/stelfin/stelfin/ledger"
 	"github.com/stelfin/stelfin/ledger/store"
+	"github.com/stelfin/stelfin/settlement"
 )
 
 // testPGPort is this package's own Postgres port. `go test ./...` runs packages
@@ -82,6 +84,16 @@ type fakeSender struct {
 	// for an account that cannot be proved at all.
 	treasuryErr error
 	challenges  *identity.Challenges
+
+	// db is here so the fake writes real proposal rows. The commands under test
+	// read them back through the store — one open per treasury, the listing,
+	// resolving "the open one" — and a fake that only remembered its own map
+	// would let those pass without the constraints that make them true.
+	db *store.Store
+	// executeErr is what ExecuteProposal returns, so a test can stand in for a
+	// treasury whose sequence moved.
+	executeErr error
+	executed   []store.ProposalID
 }
 
 func (f *fakeSender) HandleSend(
@@ -129,6 +141,79 @@ func (f *fakeSender) provedTreasuries() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.treasuries...)
+}
+
+var fakeProposalSeq int64
+
+// ProposePayment writes a real proposal row against a placeholder envelope. The
+// envelope is not the point here — the routing, the refusals and the messages
+// are — and the real builder is exercised in api's own tests against a fake
+// Horizon.
+func (f *fakeSender) ProposePayment(
+	ctx context.Context, scope api.Scope, p api.ProposePaymentParams,
+) (*api.ProposalView, error) {
+	f.mu.Lock()
+	fakeProposalSeq++
+	n := fakeProposalSeq
+	f.mu.Unlock()
+
+	digest := sha256.Sum256([]byte(fmt.Sprintf("pay %d", n)))
+	proposal, err := f.db.CreateProposal(ctx, store.CreateProposalParams{
+		Org: scope.Org, Treasury: p.Treasury, Kind: "payment",
+		XDR:         fmt.Sprintf("AAAAAgAAenvelope%d", n),
+		Hash:        fmt.Sprintf("%064x", n),
+		SourceSeq:   4_000_000 + n,
+		Description: fmt.Sprintf("pay\t%s\t%d", p.Destination, p.Amount),
+		Digest:      digest[:],
+		CreatedBy:   p.CreatedBy,
+		ExpiresAt:   time.Now().Add(72 * time.Hour),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return f.viewOf(ctx, scope, proposal)
+}
+
+func (f *fakeSender) LoadProposal(
+	ctx context.Context, scope api.Scope, id store.ProposalID,
+) (*api.ProposalView, error) {
+	proposal, err := f.db.Proposal(ctx, scope.Org, id)
+	if err != nil {
+		return nil, err
+	}
+	return f.viewOf(ctx, scope, proposal)
+}
+
+// viewOf reports a 2-of-2 treasury with nobody having signed, which is the
+// state every one of these commands has to be readable in.
+func (f *fakeSender) viewOf(
+	ctx context.Context, scope api.Scope, proposal store.Proposal,
+) (*api.ProposalView, error) {
+	treasury, err := f.db.Treasury(ctx, scope.Org, proposal.Treasury)
+	if err != nil {
+		return nil, err
+	}
+	return &api.ProposalView{
+		Proposal: proposal,
+		Treasury: treasury,
+		Need:     2,
+		Have:     0,
+		Missing:  []string{"GSIGNER-ONE", "GSIGNER-TWO"},
+	}, nil
+}
+
+func (f *fakeSender) ExecuteProposal(
+	ctx context.Context, scope api.Scope, id store.ProposalID, _ store.IdentityID,
+) (*settlement.Result, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.executeErr != nil {
+		return nil, f.executeErr
+	}
+	f.executed = append(f.executed, id)
+	_ = ctx
+	_ = scope
+	return &settlement.Result{Hash: fmt.Sprintf("%064x", int64(id)), Ledger: 42}, nil
 }
 
 // Challenges reports whether linking is available at all. A fake with none
@@ -195,7 +280,7 @@ func newHarness(t *testing.T, admin bool) *harness {
 	if err != nil {
 		t.Fatalf("challenges: %v", err)
 	}
-	sender := &fakeSender{challenges: challenges}
+	sender := &fakeSender{challenges: challenges, db: db}
 	svc, err := New(Config{
 		Store: db, Sender: sender, Admins: fakeAdmins{admin: admin}, Network: "testnet",
 	})
