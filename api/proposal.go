@@ -319,7 +319,7 @@ func (s *Service) Approve(
 // signatures is the authorisation; who presses the button afterwards is not,
 // and requiring a particular person to be online would make this deployment a
 // liveness dependency for somebody else's money.
-func (s *Service) Execute(
+func (s *Service) ExecuteProposal(
 	ctx context.Context, scope Scope, id store.ProposalID, by store.IdentityID,
 ) (*settlement.Result, error) {
 	if err := scope.check(); err != nil {

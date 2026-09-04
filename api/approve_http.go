@@ -67,7 +67,7 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.svc.Execute(r.Context(), scope, id, 0)
+	result, err := s.svc.ExecuteProposal(r.Context(), scope, id, 0)
 	if err != nil {
 		s.writeError(w, err)
 		return

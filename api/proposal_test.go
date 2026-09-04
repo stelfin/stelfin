@@ -287,7 +287,7 @@ func TestExecuteRefusesBeforeTheThreshold(t *testing.T) {
 		signEnvelope(t, view.Proposal.XDR, f.treasury), f.identity); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
-	if _, err := f.svc.Execute(ctx, f.scope, view.Proposal.ID, f.identity); !errors.Is(
+	if _, err := f.svc.ExecuteProposal(ctx, f.scope, view.Proposal.ID, f.identity); !errors.Is(
 		err, ErrNotEnoughSignatures,
 	) {
 		t.Fatalf("executed at one of two: %v", err)
@@ -312,7 +312,7 @@ func TestExecuteCatchesAMovedSequence(t *testing.T) {
 	// Somebody else spent from the treasury in the meantime.
 	f.horizon.fakeHorizon.sequence = 7
 
-	_, err := f.svc.Execute(ctx, f.scope, view.Proposal.ID, f.identity)
+	_, err := f.svc.ExecuteProposal(ctx, f.scope, view.Proposal.ID, f.identity)
 	if !errors.Is(err, ErrSequenceMoved) {
 		t.Fatalf("error = %v, want ErrSequenceMoved", err)
 	}
@@ -346,7 +346,7 @@ func TestExecuteSubmitsAndResolves(t *testing.T) {
 		t.Fatalf("Approve: %v", err)
 	}
 
-	result, err := f.svc.Execute(ctx, f.scope, view.Proposal.ID, f.identity)
+	result, err := f.svc.ExecuteProposal(ctx, f.scope, view.Proposal.ID, f.identity)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestExecuteSubmitsAndResolves(t *testing.T) {
 	}
 
 	// Executed once. A second attempt is not a second payment.
-	if _, err := f.svc.Execute(ctx, f.scope, view.Proposal.ID, f.identity); !errors.Is(
+	if _, err := f.svc.ExecuteProposal(ctx, f.scope, view.Proposal.ID, f.identity); !errors.Is(
 		err, store.ErrProposalClosed,
 	) {
 		t.Fatalf("second execution: %v", err)
@@ -387,7 +387,7 @@ func TestProposalReadsAreScopedToTheirOrgAtTheService(t *testing.T) {
 	) {
 		t.Errorf("Approve across orgs: %v", err)
 	}
-	if _, err := f.svc.Execute(ctx, other.scope, view.Proposal.ID, other.identity); !errors.Is(
+	if _, err := f.svc.ExecuteProposal(ctx, other.scope, view.Proposal.ID, other.identity); !errors.Is(
 		err, store.ErrNoProposal,
 	) {
 		t.Errorf("Execute across orgs: %v", err)
