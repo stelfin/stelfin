@@ -29,6 +29,7 @@ import (
 	"github.com/stelfin/stelfin/chat"
 	"github.com/stelfin/stelfin/identity"
 	"github.com/stelfin/stelfin/ledger/store"
+	"github.com/stelfin/stelfin/settlement"
 )
 
 // Admins answers whether someone administers the space a message arrived in.
@@ -43,6 +44,9 @@ type Sender interface {
 	HandleSend(ctx context.Context, scope api.Scope, m chat.Inbound, out api.Replier, links api.Linker) error
 	PrepareLink(ctx context.Context, scope api.Scope, identity store.IdentityID, address string) (*api.LinkChallenge, error)
 	PrepareTreasuryLink(ctx context.Context, scope api.Scope, identity store.IdentityID, address string) (*api.LinkChallenge, error)
+	ProposePayment(ctx context.Context, scope api.Scope, p api.ProposePaymentParams) (*api.ProposalView, error)
+	LoadProposal(ctx context.Context, scope api.Scope, id store.ProposalID) (*api.ProposalView, error)
+	ExecuteProposal(ctx context.Context, scope api.Scope, id store.ProposalID, by store.IdentityID) (*settlement.Result, error)
 	Challenges() *identity.Challenges
 }
 

@@ -59,6 +59,7 @@ func (s *Service) registerCommands() {
 
 	cmds = append(cmds, s.linkCommands()...)
 	cmds = append(cmds, s.treasuryCommands()...)
+	cmds = append(cmds, s.proposalCommands()...)
 
 	s.commands = make(map[string]*command, len(cmds))
 	s.catalog = make([]chat.Command, 0, len(cmds))
