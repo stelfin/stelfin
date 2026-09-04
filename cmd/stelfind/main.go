@@ -199,6 +199,10 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	approveTokens, err := api.NewApproveTokens(cfg.ConfirmTokenSecret)
+	if err != nil {
+		return err
+	}
 
 	router, err := core.New(core.Config{
 		Store:   db,
@@ -234,6 +238,7 @@ func run(log *slog.Logger) error {
 		SignProvision: func(tx *txnbuild.Transaction) (*txnbuild.Transaction, error) {
 			return tx.Sign(cfg.NetworkPassphrase, treasury)
 		},
+		Approvals:         approveTokens,
 		NetworkPassphrase: cfg.NetworkPassphrase,
 		Assets:            web.Handler(),
 		Logger:            log,
