@@ -66,6 +66,13 @@ type Config struct {
 	// with no web-auth key simply cannot link addresses, and says so, rather
 	// than refusing to start.
 	Challenges *identity.Challenges
+	// SponsorAddress is the operator account that pays reserves, and the only
+	// place a reclaimed account's balance is ever swept to.
+	//
+	// Held here rather than passed per call because it is the destination of an
+	// AccountMerge — the one field in that operation that must not vary with
+	// what a caller happened to hand in.
+	SponsorAddress string
 }
 
 // Service prepares payments for approval.

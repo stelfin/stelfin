@@ -6,6 +6,22 @@ import (
 	"fmt"
 
 	"github.com/stellar/go-stellar-sdk/txnbuild"
+
+	"github.com/stelfin/stelfin/internal/money"
+)
+
+// What the network locks up, in stroops.
+//
+// Protocol constants rather than configuration: the network decides them, and a
+// deployment that could set them wrongly would report a reclaim releasing money
+// it does not release. They are network parameters and can change by protocol
+// vote, which is exactly why they are named here rather than spelled 5000000 in
+// three places.
+const (
+	// BaseReserve is one reserve unit: 0.5 XLM. A trustline costs one.
+	BaseReserve = money.Stroops(5_000_000)
+	// AccountReserve is what an empty account locks: two base reserves.
+	AccountReserve = 2 * BaseReserve
 )
 
 // Provisioning creates a usable Stellar account for a user who holds no XLM
