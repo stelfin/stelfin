@@ -123,6 +123,7 @@ type Linker interface {
 	IssueEnrollLink(scope Scope, expiresAt time.Time) (string, error)
 	IssueLinkLink(scope Scope, hash string, expiresAt time.Time) (string, error)
 	IssueApproveLink(scope Scope, id store.ProposalID, expiresAt time.Time) (string, error)
+	IssueReclaimLink(scope Scope, hash string, expiresAt time.Time) (string, error)
 }
 
 // replyWithProblem turns a failure into something the user can act on.

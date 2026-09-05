@@ -138,6 +138,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/enroll/submit", s.handleEnrollSubmit)
 	mux.HandleFunc("GET /v1/link", s.handleLink)
 	mux.HandleFunc("POST /v1/link/submit", s.handleLinkSubmit)
+	mux.HandleFunc("GET /v1/reclaim", s.handleReclaim)
+	mux.HandleFunc("POST /v1/reclaim/submit", s.handleReclaimSubmit)
 	mux.HandleFunc("GET /v1/proposal", s.handleProposal)
 	mux.HandleFunc("POST /v1/proposal/approve", s.handleApprove)
 	mux.HandleFunc("POST /v1/proposal/execute", s.handleExecute)
@@ -156,6 +158,7 @@ func (s *Server) Routes() http.Handler {
 		mux.Handle("GET /enroll", s.cfg.Assets)
 		mux.Handle("GET /link", s.cfg.Assets)
 		mux.Handle("GET /approve", s.cfg.Assets)
+		mux.Handle("GET /reclaim", s.cfg.Assets)
 		mux.Handle("GET /static/", s.cfg.Assets)
 	}
 	return mux
@@ -556,6 +559,11 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 		http.Error(w, "that address already belongs to another member", http.StatusConflict)
 	case errors.Is(err, ErrLinkingUnavailable):
 		http.Error(w, "address linking is not available", http.StatusServiceUnavailable)
+	case errors.Is(err, store.ErrNoReclaim), errors.Is(err, ErrNothingToReclaim):
+		http.Error(w, "not found", http.StatusNotFound)
+	case errors.Is(err, ErrAccountNotEmpty), errors.Is(err, ErrCannotReclaim):
+		http.Error(w, "this account cannot be handed back as it stands",
+			http.StatusUnprocessableEntity)
 	case errors.Is(err, store.ErrNoProposal), errors.Is(err, store.ErrNoTreasury):
 		http.Error(w, "not found", http.StatusNotFound)
 	case errors.Is(err, store.ErrProposalClosed), errors.Is(err, store.ErrProposalAlreadyOpen):
