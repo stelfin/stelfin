@@ -25,6 +25,9 @@ type signerHorizon struct {
 	fakeHorizon
 	signers    []horizon.Signer
 	thresholds horizon.AccountThresholds
+	balances   []horizon.Balance
+	data       map[string]string
+	sponsoring uint32
 	submitted  []*txnbuild.Transaction
 }
 
@@ -52,10 +55,13 @@ func (h *signerHorizon) AccountDetail(req horizonclient.AccountRequest) (horizon
 		seq = 1
 	}
 	return horizon.Account{
-		AccountID:  req.AccountID,
-		Sequence:   seq,
-		Signers:    h.signers,
-		Thresholds: h.thresholds,
+		AccountID:     req.AccountID,
+		Sequence:      seq,
+		Signers:       h.signers,
+		Thresholds:    h.thresholds,
+		Balances:      h.balances,
+		Data:          h.data,
+		NumSponsoring: h.sponsoring,
 	}, nil
 }
 
