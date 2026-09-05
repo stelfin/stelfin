@@ -18,6 +18,7 @@ import (
 	"github.com/stelfin/stelfin/api"
 	"github.com/stelfin/stelfin/chat"
 	"github.com/stelfin/stelfin/identity"
+	"github.com/stelfin/stelfin/internal/money"
 	"github.com/stelfin/stelfin/internal/pgtest"
 	"github.com/stelfin/stelfin/ledger"
 	"github.com/stelfin/stelfin/ledger/store"
@@ -94,6 +95,8 @@ type fakeSender struct {
 	// treasury whose sequence moved.
 	executeErr error
 	executed   []store.ProposalID
+	reclaimErr error
+	reclaimed  []string
 }
 
 func (f *fakeSender) HandleSend(
@@ -216,6 +219,26 @@ func (f *fakeSender) ExecuteProposal(
 	return &settlement.Result{Hash: fmt.Sprintf("%064x", int64(id)), Ledger: 42}, nil
 }
 
+// PrepareReclaim stands in for the hand-back builder. reclaimErr is how a test
+// says the account still holds something, or was never provisioned.
+func (f *fakeSender) PrepareReclaim(
+	_ context.Context, _ api.Scope, address string,
+) (*api.Reclaim, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.reclaimErr != nil {
+		return nil, f.reclaimErr
+	}
+	f.reclaimed = append(f.reclaimed, address)
+	return &api.Reclaim{
+		Address:     address,
+		Destination: "GSPONSOR",
+		Releasing:   money.MustParse("1.5"),
+		XDR:         "AAAAAgAAAAA=",
+		Hash:        fmt.Sprintf("%064x", len(f.reclaimed)),
+	}, nil
+}
+
 // Challenges reports whether linking is available at all. A fake with none
 // configured is how a deployment without a web-auth key behaves.
 func (f *fakeSender) Challenges() *identity.Challenges { return f.challenges }
@@ -255,6 +278,10 @@ func (stubLinker) IssueEnrollLink(scope api.Scope, _ time.Time) (string, error) 
 
 func (stubLinker) IssueLinkLink(_ api.Scope, hash string, _ time.Time) (string, error) {
 	return "https://stelfin.example/link#" + hash, nil
+}
+
+func (stubLinker) IssueReclaimLink(_ api.Scope, hash string, _ time.Time) (string, error) {
+	return "https://stelfin.example/reclaim#" + hash, nil
 }
 
 func (stubLinker) IssueApproveLink(_ api.Scope, id store.ProposalID, _ time.Time) (string, error) {
