@@ -47,6 +47,7 @@ type Sender interface {
 	ProposePayment(ctx context.Context, scope api.Scope, p api.ProposePaymentParams) (*api.ProposalView, error)
 	LoadProposal(ctx context.Context, scope api.Scope, id store.ProposalID) (*api.ProposalView, error)
 	ExecuteProposal(ctx context.Context, scope api.Scope, id store.ProposalID, by store.IdentityID) (*settlement.Result, error)
+	PrepareReclaim(ctx context.Context, scope api.Scope, address string) (*api.Reclaim, error)
 	Challenges() *identity.Challenges
 }
 
