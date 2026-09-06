@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Hand a provisioned account back.
+
+  The most consequential page here, and styled to say so. An AccountMerge sends
+  the account's entire XLM balance to one destination and deletes the account.
+  There is no undo, no support desk, and no way to recover the address
+  afterwards.
+
+  So this page does three things the others do not need to. It derives the whole
+  description from the XDR and compares canonical bytes with the server's, like
+  the approval page. It enforces the shape itself — trustline removals then
+  exactly one merge, and nothing else — because the rule that matters lives in
+  the browser, not in what the server claims. And it asks the person to type the
+  account's last six characters before the button works, so signing this cannot
+  be one tap away from signing anything else.
+
+  Referrer-Policy keeps the fragment-borne token out of any outbound request.
+-->
+<meta name="referrer" content="no-referrer">
+<title>Hand back your wallet · stelfin</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #16181d; --muted: #5c6370;
+    --line: #e3e6ea; --accent: #14713d; --accent-bg: #f0f7f2;
+    --danger: #a4291f; --danger-bg: #fdf2f1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --fg: #f0f2f5; --muted: #9aa3af;
+      --line: #2a2e36; --accent: #4ec27f; --accent-bg: #17251c;
+      --danger: #ff8b80; --danger-bg: #2a1b1a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; justify-content: center; padding: 24px 16px 48px;
+  }
+  main { width: 100%; max-width: 28rem; }
+  h1 { font-size: 1.05rem; font-weight: 600; margin: 0 0 0.6rem; text-wrap: balance; }
+  h2 { font-size: 0.9rem; font-weight: 600; margin: 1.5rem 0 0.5rem; }
+  p.lede { color: var(--muted); margin: 0 0 1.25rem; font-size: 0.92rem; }
+  dl { border-top: 1px solid var(--line); margin: 0 0 1rem; padding-top: 0.75rem; }
+  .row { display: flex; justify-content: space-between; gap: 1rem; padding: 0.35rem 0; font-size: 0.9rem; }
+  .row dt { color: var(--muted); margin: 0; flex: none; }
+  .row dd { margin: 0; text-align: right; word-break: break-all; font-variant-numeric: tabular-nums; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; }
+  .op { border: 1px solid var(--line); border-radius: 10px; padding: 0.6rem 0.85rem; margin-bottom: 0.6rem; }
+  .op h3 { font-size: 0.85rem; font-weight: 600; margin: 0 0 0.35rem; }
+  .op .idx { color: var(--muted); font-weight: 400; }
+  /* The consequence, stated once, in the colour of the thing it describes.
+     Not an error — the page is working correctly — so it is bordered rather
+     than filled, and it never moves or blinks. */
+  .consequence {
+    border: 1px solid var(--danger); color: var(--danger);
+    border-radius: 10px; padding: 0.85rem 1rem; margin: 0 0 1.25rem; font-size: 0.9rem;
+  }
+  .consequence strong { display: block; margin-bottom: 0.25rem; }
+  button {
+    width: 100%; padding: 0.85rem 1rem; font: inherit; font-weight: 600;
+    color: #fff; background: var(--danger); border: 0; border-radius: 10px; cursor: pointer;
+    transition: filter 180ms ease, transform 120ms ease;
+  }
+  button:hover:not([disabled]) { filter: brightness(1.08); }
+  button:active:not([disabled]) { transform: translateY(1px); }
+  button[disabled] { opacity: 0.45; cursor: not-allowed; }
+  button.secondary {
+    color: var(--fg); background: transparent; border: 1px solid var(--line);
+  }
+  button.spaced { margin-top: 0.75rem; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input[type="text"], textarea {
+    width: 100%; padding: 0.7rem; font: inherit; color: var(--fg); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 10px;
+  }
+  input[type="text"] {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: 0.12em; text-transform: uppercase;
+  }
+  textarea {
+    min-height: 6.5rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.78rem; resize: vertical;
+  }
+  .note { font-size: 0.85rem; color: var(--muted); margin-top: 0.85rem; }
+  .note.center { text-align: center; }
+  .alert {
+    background: var(--danger-bg); border: 1px solid var(--danger); color: var(--danger);
+    border-radius: 10px; padding: 0.85rem 1rem; margin-bottom: 1.25rem; font-size: 0.9rem;
+  }
+  .alert strong { display: block; margin-bottom: 0.25rem; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div id="alert" class="alert" hidden></div>
+
+  <section id="reclaim" hidden>
+    <h1>Hand back this wallet</h1>
+    <p class="lede">
+      Everything below your browser read from the envelope itself, not from what
+      stelfin said about it.
+    </p>
+
+    <div class="consequence">
+      <strong>This deletes the account.</strong>
+      Its remaining XLM goes to the destination shown and the address stops
+      existing. Anything sent to it afterwards is lost. There is no undo.
+    </div>
+
+    <dl>
+      <div class="row"><dt>Account</dt><dd><code id="address"></code></dd></div>
+      <div class="row"><dt>Balance goes to</dt><dd><code id="destination"></code></dd></div>
+      <div class="row"><dt>Network</dt><dd id="network"></dd></div>
+    </dl>
+
+    <h2>What this does</h2>
+    <div id="operations"></div>
+
+    <h2>Confirm</h2>
+    <p class="note" style="margin-top: 0;">
+      Type the last six characters of the account —
+      <code id="tail"></code> — to enable signing.
+    </p>
+    <input id="confirm" type="text" maxlength="6" autocomplete="off"
+           aria-label="Last six characters of the account">
+
+    <section id="device" hidden>
+      <button id="sign" type="button" class="spaced" disabled>Sign and hand it back</button>
+      <p class="note center">Uses the key stelfin created on this device.</p>
+    </section>
+
+    <h2>Or sign in your own wallet</h2>
+    <p class="note" style="margin-top: 0;">
+      Copy the envelope, sign it, and paste it back.
+    </p>
+    <textarea id="envelope" readonly aria-label="Envelope to sign"></textarea>
+    <h2>Signed envelope</h2>
+    <textarea id="signed" placeholder="Paste the signed XDR here" aria-label="Signed envelope"></textarea>
+    <button id="submit" type="button" class="secondary spaced" disabled>Submit signature</button>
+  </section>
+
+  <section id="done" hidden>
+    <h1>Handed back</h1>
+    <p class="lede" id="doneLede">You can close this page and go back to your chat.</p>
+  </section>
+</main>
+
+<script src="/static/stellar-sdk.min.js"></script>
+<script src="/static/describe.js"></script>
+<script src="/static/policy.js"></script>
+<script src="/static/reclaim.js"></script>
+</body>
+</html>

@@ -65,7 +65,7 @@ func Handler() http.Handler {
 		h.Set("Cache-Control", "no-store")
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
 
-		// /confirm, /enroll, /link and /approve are pages; /static/ is a prefix over the same
+		// /confirm, /enroll, /link, /approve and /reclaim are pages; /static/ is a prefix over the same
 		// root Static() already sits at, so it must be stripped rather than
 		// passed straight through — otherwise a request for /static/confirm.js
 		// resolves against static/static/confirm.js inside the embedded FS,
@@ -83,6 +83,9 @@ func Handler() http.Handler {
 		case r.URL.Path == "/approve" || r.URL.Path == "/approve/":
 			r = r.Clone(r.Context())
 			r.URL.Path = "/approve.html"
+		case r.URL.Path == "/reclaim" || r.URL.Path == "/reclaim/":
+			r = r.Clone(r.Context())
+			r.URL.Path = "/reclaim.html"
 		case strings.HasPrefix(r.URL.Path, "/static/"):
 			r = r.Clone(r.Context())
 			r.URL.Path = strings.TrimPrefix(r.URL.Path, "/static")

@@ -178,6 +178,8 @@ func run(log *slog.Logger) error {
 			AssetCode:  cfg.AssetCode,
 			AssetID:    int16(assetID),
 			Challenges: challenges,
+
+			SponsorAddress: treasury.Address(),
 		})
 	if err != nil {
 		return err
