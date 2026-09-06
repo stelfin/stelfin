@@ -27,8 +27,8 @@ test: ## Unit and integration tests
 	$(GO) test ./...
 
 .PHONY: test-js
-test-js: ## Check the browser's transaction renderer against the Go corpus
-	@cd web/static && $(NODE) --test describe.test.js
+test-js: ## Check the browser's renderer against the Go corpus, and its shape rules
+	@cd web/static && $(NODE) --test describe.test.js policy.test.js
 
 .PHONY: test-race
 test-race: ## Tests under the race detector
