@@ -406,11 +406,21 @@ func describeOp(index int, op txnbuild.Operation, txSource string) (*OpDescripti
 			}
 		}
 
+	case *txnbuild.InvokeHostFunction:
+		d.Type = "invoke_contract"
+		d.setSource(o.SourceAccount, txSource)
+		fields, summary, err := describeInvoke(o)
+		if err != nil {
+			return nil, fmt.Errorf("operation %d: %w", index, err)
+		}
+		d.Fields = fields
+		d.Summary = summary
+
 	default:
-		// The refusal that carries the whole guarantee. Soroban operations land
-		// here too, until the renderer that can decode a contract call honestly
-		// exists — showing "invoke host function" and nothing else would be a
-		// description in name only.
+		// The refusal that carries the whole guarantee. An operation this
+		// cannot render exactly is refused rather than summarised, because a
+		// description that skipped what it did not understand would let an
+		// operation ride along unmentioned — which is the whole attack.
 		return nil, fmt.Errorf("%w: operation %d is a %T", ErrIndescribable, index, op)
 	}
 
