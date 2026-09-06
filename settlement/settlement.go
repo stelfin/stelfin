@@ -46,6 +46,7 @@ type Config struct {
 // Client is a handle on a Stellar network.
 type Client struct {
 	horizon HorizonAPI
+	soroban SorobanAPI
 	network string
 	baseFee int64
 }
@@ -108,6 +109,14 @@ type Result struct {
 	// AlreadyKnown reports that the transaction was found on chain rather than
 	// accepted by this submission — a retry of something that already landed.
 	AlreadyKnown bool
+	// Failed reports a transaction that was included and did not succeed.
+	//
+	// Only Soroban produces this. A contract call that traps is written into a
+	// ledger: it consumed the fee and the sequence number, and it changed
+	// nothing else. Neither a success nor a non-event, and collapsing it into
+	// either is wrong in a different way — "success" credits money that never
+	// moved, "error" invites a retry against a sequence that has moved on.
+	Failed bool
 }
 
 // ErrNotFound reports that a transaction is not on the ledger.
