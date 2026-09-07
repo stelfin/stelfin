@@ -17,11 +17,11 @@
 // would let an operation ride along unmentioned, which is the whole attack.
 (function (root, factory) {
   if (typeof module === "object" && module.exports) {
-    module.exports = factory(require("./stellar-sdk.min.js"));
+    module.exports = factory(require("./stellar-sdk.min.js"), require("./scval.js"));
   } else {
-    root.StelfinDescribe = factory(root.StellarSdk);
+    root.StelfinDescribe = factory(root.StellarSdk, root.StelfinScval);
   }
-})(typeof self !== "undefined" ? self : this, function (StellarSdk) {
+})(typeof self !== "undefined" ? self : this, function (StellarSdk, StelfinScval) {
   "use strict";
 
   // Must match settlement/canonical.go. A change to either without the other is
@@ -199,6 +199,73 @@
     }
     const price = op.price();
     return price.n() + "/" + price.d();
+  }
+
+  // describeInvoke mirrors settlement/describe_invoke.go.
+  //
+  // Read from the raw XDR rather than from the SDK's parsed operation. The
+  // parsed form hands back convenience objects whose shape has changed between
+  // SDK releases; the XDR is the thing being signed and does not move.
+  function describeInvoke(rawOp) {
+    const ihf = rawOp.body().invokeHostFunctionOp();
+    const fn = ihf.hostFunction();
+    if (fn.switch().name !== "hostFunctionTypeInvokeContract") {
+      // Uploading WASM and creating contracts are deployment acts, not
+      // treasury operations. Refused rather than half-rendered.
+      throw new Indescribable(
+        "a host function of type " + fn.switch().name + " cannot be shown"
+      );
+    }
+
+    const call = fn.invokeContract();
+    const contract = StelfinScval.addressString(call.contractAddress());
+    const name = call.functionName().toString();
+    const args = call.args();
+
+    const fields = [
+      { label: "contract", kind: "address", value: contract },
+      { label: "function", kind: "text", value: name },
+      // Its own field so a renderer cannot show three arguments out of four
+      // and have the description still look complete.
+      { label: "arguments", kind: "number", value: String(args.length) },
+    ];
+    args.forEach((arg, i) => {
+      fields.push({ label: "arg " + i, kind: "raw", value: StelfinScval.render(arg) });
+    });
+
+    // Who else is being asked to authorise. Left out, a call that moves a
+    // third party's tokens would look like a call that moves nothing.
+    const auth = ihf.auth();
+    fields.push({ label: "authorizations", kind: "number", value: String(auth.length) });
+    auth.forEach((entry, i) => {
+      fields.push({
+        label: "authorized by " + i,
+        kind: "address",
+        value: authorizerString(entry),
+      });
+    });
+
+    return {
+      fields,
+      summary:
+        "Call " + name + " on contract " + contract + " with " + args.length + " argument(s)",
+    };
+  }
+
+  function authorizerString(entry) {
+    const credentials = entry.credentials();
+    switch (credentials.switch().name) {
+      case "sorobanCredentialsSourceAccount":
+        // The transaction's own source authorises it, which the envelope
+        // already says. Named explicitly so the count and the list agree.
+        return "the transaction's source account";
+      case "sorobanCredentialsAddress":
+        return StelfinScval.addressString(credentials.address().address());
+      default:
+        throw new Indescribable(
+          "a credential of type " + credentials.switch().name + " cannot be shown"
+        );
+    }
   }
 
   function describeOp(index, op, txSource, rawOp) {
@@ -380,10 +447,17 @@
         break;
       }
 
+      case "invokeHostFunction": {
+        out.type = "invoke_contract";
+        const { fields, summary } = describeInvoke(rawOp);
+        out.fields = fields;
+        out.summary = summary;
+        break;
+      }
+
       default:
-        // Everything Soroban lands here, along with any operation neither side
-        // renders. Refusing is the safe direction: an operation nobody can read
-        // is one nobody gets to sign.
+        // Any operation neither side renders. Refusing is the safe direction:
+        // an operation nobody can read is one nobody gets to sign.
         throw new Indescribable("operation " + index + " is a " + op.type);
     }
 
