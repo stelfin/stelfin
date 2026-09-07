@@ -34,6 +34,13 @@ type Config struct {
 	NetworkPassphrase string
 	// HorizonURL is the Horizon instance to use.
 	HorizonURL string
+	// SorobanRPCURL is the Soroban RPC endpoint.
+	//
+	// Optional. Without it a deployment serves everything else and refuses
+	// contract calls with a message that says why, which is the honest state
+	// for one that has not been pointed at an RPC — rather than failing to
+	// start over a capability nobody has asked for yet.
+	SorobanRPCURL string
 
 	// TreasurySeed is the treasury's secret seed. See the warning on Load.
 	TreasurySeed string
@@ -116,14 +123,18 @@ func Load() (*Config, error) {
 	}
 
 	c := &Config{
-		HTTPAddr:     opt("STELFIN_HTTP_ADDR", ":8080"),
-		BaseURL:      req("STELFIN_BASE_URL"),
-		DatabaseURL:  req("STELFIN_DATABASE_URL"),
-		HorizonURL:   opt("STELFIN_HORIZON_URL", "https://horizon-testnet.stellar.org"),
-		TreasurySeed: req("STELFIN_TREASURY_SEED"),
-		WebAuthSeed:  strings.TrimSpace(os.Getenv("STELFIN_WEBAUTH_SEED")),
-		AssetCode:    opt("STELFIN_ASSET_CODE", "USDC"),
-		AssetIssuer:  req("STELFIN_ASSET_ISSUER"),
+		HTTPAddr:    opt("STELFIN_HTTP_ADDR", ":8080"),
+		BaseURL:     req("STELFIN_BASE_URL"),
+		DatabaseURL: req("STELFIN_DATABASE_URL"),
+		HorizonURL:  opt("STELFIN_HORIZON_URL", "https://horizon-testnet.stellar.org"),
+		// No default. A default would point a mainnet deployment at whatever
+		// endpoint happened to be written here, and an RPC decides what a
+		// contract call is simulated against.
+		SorobanRPCURL: strings.TrimSpace(os.Getenv("STELFIN_SOROBAN_RPC_URL")),
+		TreasurySeed:  req("STELFIN_TREASURY_SEED"),
+		WebAuthSeed:   strings.TrimSpace(os.Getenv("STELFIN_WEBAUTH_SEED")),
+		AssetCode:     opt("STELFIN_ASSET_CODE", "USDC"),
+		AssetIssuer:   req("STELFIN_ASSET_ISSUER"),
 
 		TelegramBotToken:      strings.TrimSpace(os.Getenv("STELFIN_TELEGRAM_BOT_TOKEN")),
 		TelegramWebhookSecret: strings.TrimSpace(os.Getenv("STELFIN_TELEGRAM_WEBHOOK_SECRET")),
@@ -247,6 +258,9 @@ func (c *Config) HasDiscord() bool { return c.DiscordPublicKey != "" }
 // HasWebAuth reports whether SEP-10 linking is configured.
 func (c *Config) HasWebAuth() bool { return c.WebAuthSeed != "" }
 
+// HasSoroban reports whether contract calls are available on this deployment.
+func (c *Config) HasSoroban() bool { return c.SorobanRPCURL != "" }
+
 // IsMainnet reports whether this configuration points at the public network.
 func (c *Config) IsMainnet() bool {
 	return c.NetworkPassphrase == network.PublicNetworkPassphrase
@@ -265,6 +279,7 @@ func (c *Config) Redacted() map[string]any {
 		"base_url":       c.BaseURL,
 		"network":        network,
 		"horizon_url":    c.HorizonURL,
+		"soroban_rpc":    c.HasSoroban(),
 		"asset":          c.AssetCode + ":" + c.AssetIssuer,
 		"telegram":       c.HasTelegram(),
 		"discord":        c.HasDiscord(),

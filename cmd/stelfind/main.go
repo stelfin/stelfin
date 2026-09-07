@@ -108,6 +108,16 @@ func run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// Optional, and a deployment without it serves everything else and refuses
+	// contract calls with a message that says why. Failing to start over a
+	// capability nobody has asked for yet would be worse.
+	if cfg.HasSoroban() {
+		settle, err = settle.DialSoroban(cfg.SorobanRPCURL, nil)
+		if err != nil {
+			return fmt.Errorf("dial soroban rpc: %w", err)
+		}
+		log.Info("soroban rpc configured", "url", cfg.SorobanRPCURL)
+	}
 
 	// A deployment with no transports configured is legitimate — the signing
 	// pages are still served and /webhook/{channel} answers 404 for everything.
