@@ -1,0 +1,6 @@
+{
+  "name": "invoke_contract_with_auth",
+  "xdr": "AAAAAgAAAACKiOPddAnxlf1S2y08ul1yymcJvx2UEhvzdIgBtA9vXAAAJxAAAAAAAAAAKgAAAAEAAAAAZVPxAAAAAABlU/G0AAAAAAAAAAEAAAAAAAAAGAAAAAAAAAABNj6qOGeEH7rQ9O2Ix3nk/mblaiRw3JjA7JwHPQXHsQMAAAAEYnVybgAAAAEAAAADAAAAAQAAAAIAAAABAAAAAAAAAACBOXcOqH0XX1ajVGbDTH7My42KkbTuN6Jd9g9bj8mzlAAAAAAAAAAHAAAD6AAAAAEAAAAAAAAAATY+qjhnhB+60PTtiMd55P5m5WokcNyYwOycBz0Fx7EDAAAABGJ1cm4AAAAAAAAAAAAAAAAAAAAAAAAAATY+qjhnhB+60PTtiMd55P5m5WokcNyYwOycBz0Fx7EDAAAABGJ1cm4AAAAAAAAAAAAAAAAAAAAA",
+  "network": "Test SDF Network ; September 2015",
+  "canonical": "stelfin-tx-description-1\nkind\ttx\nnetwork\tTest SDF Network ; September 2015\nsource\tGCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR\nsequence\t42\nfee\t10000\nmin_time\t1700000000\nmax_time\t1700000180\nmemo\tnone\t\noperations\t1\nop\t0\tinvoke_contract\tGCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR\nfield\t0\tcontract\taddress\tCA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE\nfield\t0\tfunction\ttext\tburn\nfield\t0\targuments\tnumber\t1\nfield\t0\targ 0\traw\tu32:1\nfield\t0\tauthorizations\tnumber\t2\nfield\t0\tauthorized by 0\taddress\tGCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U\nfield\t0\tauthorized by 1\taddress\tthe transaction's source account\nhash\tec20c4eb08c7479c124019bda903b8c1c466f25b4386e59cc8ca8f7e5a965173\n"
+}

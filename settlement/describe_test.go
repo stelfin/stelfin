@@ -158,6 +158,55 @@ func goldenCases(t *testing.T) map[string]*txnbuild.Transaction {
 		}),
 
 		"bump_sequence": buildGolden(t, nil, &txnbuild.BumpSequence{BumpTo: 9_000_000}),
+
+		// The contract call, with one argument of every shape that can be got
+		// wrong. The wide integers are the reason this case exists: a token
+		// balance is an i128, JavaScript's Number holds 53 bits of it, and a
+		// renderer that rounded would agree with the Go side on every small
+		// number and disagree on exactly the ones that matter.
+		"invoke_contract": buildGolden(t, nil, goldenInvoke(t, nil,
+			scSymbol("transfer"),
+			scAddress(t, goldenDest),
+			scI128FromString(t, "-170141183460469231731687303715884105728"),
+			scU64(18_446_744_073_709_551_615),
+			scString("a,b[c]{d}=e"),
+			scBytes([]byte{0x00, 0xff, 0x10}),
+			scBool(true),
+			scVoid(),
+			scVec(scU32(1), scU32(2)),
+			scMap(scSymbol("k"), scI32(-7)),
+		)),
+
+		// The wide integers at their limits, and a nested structure.
+		//
+		// These are the values a lossy renderer gets wrong and only these:
+		// every small number agrees, so a corpus of small numbers proves
+		// nothing about the ones a token balance actually uses.
+		"invoke_contract_wide_values": buildGolden(t, nil, goldenInvoke(t, nil,
+			scSymbol("edges"),
+			scI128FromString(t, "170141183460469231731687303715884105727"),
+			scU128FromString(t, "340282366920938463463374607431768211455"),
+			scI256FromString(t,
+				"-57896044618658097711785492504343953926634992332820282019728792003956564819968"),
+			scU256FromString(t,
+				"115792089237316195423570985008687907853269984665640564039457584007913129639935"),
+			scI64(-9223372036854775808),
+			scTimepoint(1_700_000_000),
+			scDuration(86_400),
+			// A vec holding a map holding a vec: if either side flattens or
+			// reorders a nesting level, the bytes diverge here and nowhere else.
+			scVec(scMap(scSymbol("inner"), scVec(scI32(-1), scU32(1))), scVoid()),
+		)),
+
+		// A call somebody else is being asked to authorise. Left out of the
+		// description, this would look like a call that moves nothing.
+		"invoke_contract_with_auth": buildGolden(t, nil, goldenInvoke(t,
+			[]xdr.SorobanAuthorizationEntry{
+				goldenAuthFor(t, goldenDest),
+				goldenAuthBySource(t),
+			},
+			scSymbol("burn"), scU32(1),
+		)),
 	}
 }
 
