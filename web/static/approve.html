@@ -141,6 +141,9 @@
 </main>
 
 <script src="/static/stellar-sdk.min.js"></script>
+<!-- scval.js first: describe.js reads the global it defines, and a
+     contract call would otherwise fail to render rather than refuse. -->
+<script src="/static/scval.js"></script>
 <script src="/static/describe.js"></script>
 <script src="/static/approve.js"></script>
 </body>
