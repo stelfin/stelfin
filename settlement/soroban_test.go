@@ -68,8 +68,9 @@ func (f *fakeRPC) GetTransaction(
 
 func sorobanClient(t *testing.T, rpc SorobanAPI) *Client {
 	t.Helper()
-	c := testClient(&fakeHorizon{})
-	return c.WithSoroban(rpc)
+	// accountFake rather than fakeHorizon: PrepareCall loads the source account
+	// to build against, and everything else here must not submit.
+	return testClient(&accountFake{}).WithSoroban(rpc)
 }
 
 // contractCall builds a minimal InvokeHostFunction envelope. The function it

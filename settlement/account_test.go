@@ -20,9 +20,16 @@ type accountFake struct {
 	calls   int
 }
 
-func (a *accountFake) AccountDetail(horizonclient.AccountRequest) (horizon.Account, error) {
+func (a *accountFake) AccountDetail(req horizonclient.AccountRequest) (horizon.Account, error) {
 	a.calls++
-	return a.account, a.err
+	out := a.account
+	// Echo the account that was asked for when a test has not pinned one. A
+	// builder handed an account with no id produces an envelope with no source,
+	// which fails for a reason that has nothing to do with what is under test.
+	if out.AccountID == "" {
+		out.AccountID = req.AccountID
+	}
+	return out, a.err
 }
 
 func (a *accountFake) SubmitTransactionWithOptions(
