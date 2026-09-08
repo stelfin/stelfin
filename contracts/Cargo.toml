@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["dao-treasury"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/ezedike-evan/stelfin"
+
+[workspace.dependencies]
+# Pinned exactly. A treasury contract's WASM hash is committed to this repo and
+# checked against the chain, so a patch bump that changes a single byte of
+# generated code turns that check red for a reason nobody would recognise.
+soroban-sdk = "=27.0.6"
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true

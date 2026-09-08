@@ -31,3 +31,8 @@ go.work.sum
 
 # Working design record — kept local for now, not part of the repo yet.
 /DESIGN.md
+
+# Rust build output. Also in .dockerignore, because the Dockerfile does
+# COPY . . and a target directory is hundreds of megabytes of nothing the
+# image needs.
+/contracts/target/
