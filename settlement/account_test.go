@@ -18,6 +18,11 @@ type accountFake struct {
 	account horizon.Account
 	err     error
 	calls   int
+
+	// detail answers TransactionDetail, for the paths that fall back to
+	// Horizon when the RPC's history no longer reaches.
+	detail    horizon.Transaction
+	detailErr error
 }
 
 func (a *accountFake) AccountDetail(req horizonclient.AccountRequest) (horizon.Account, error) {
@@ -45,7 +50,13 @@ func (a *accountFake) SubmitFeeBumpTransactionWithOptions(
 }
 
 func (a *accountFake) TransactionDetail(string) (horizon.Transaction, error) {
-	return horizon.Transaction{}, errors.New("this test must not look up a transaction")
+	if a.detailErr != nil {
+		return horizon.Transaction{}, a.detailErr
+	}
+	if a.detail.Hash == "" {
+		return horizon.Transaction{}, errors.New("this test must not look up a transaction")
+	}
+	return a.detail, nil
 }
 
 func TestSignerSetOfSeparatesTheMasterKey(t *testing.T) {

@@ -305,12 +305,29 @@ func (c *Client) awaitSoroban(
 
 		case protocol.TransactionStatusNotFound:
 			// The history no longer covers when this was sent, so this RPC's
-			// "not found" is about its own retention. Horizon is the authority
-			// from here, and saying so is the only honest answer.
+			// "not found" is about its own retention rather than about the
+			// transaction. Horizon keeps full history, so ask it — this is the
+			// one place the two data sources are not interchangeable, and
+			// concluding "did not happen" from the RPC alone is how a landed
+			// transaction gets submitted a second time.
 			if sentAtLedger > 0 && resp.OldestLedger > sentAtLedger {
-				return Result{}, fmt.Errorf(
-					"%w: sent at ledger %d, and its history now starts at %d (hash %s)",
-					ErrRetentionGap, sentAtLedger, resp.OldestLedger, hash)
+				found, lookupErr := c.LookupTransaction(ctx, hash)
+				switch {
+				case lookupErr == nil:
+					found.AlreadyKnown = true
+					return found, nil
+				case errors.Is(lookupErr, ErrNotFound):
+					// Both sources agree it is not there, and Horizon's history
+					// is complete. Now it is a definite answer.
+					return Result{}, fmt.Errorf("%w: %s", ErrNotFound, hash)
+				default:
+					// Neither can say. The hash is the handle for resolving
+					// this later; a retry now could pay twice.
+					return Result{}, fmt.Errorf(
+						"%w: sent at ledger %d, its history now starts at %d, and Horizon "+
+							"could not be reached either (hash %s): %w",
+						ErrRetentionGap, sentAtLedger, resp.OldestLedger, hash, lookupErr)
+				}
 			}
 			// Past its own time bounds and still not included, so it never can
 			// be. Definite, and the only NOT_FOUND that is.

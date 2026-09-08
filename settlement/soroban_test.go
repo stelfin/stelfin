@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/stellar/go-stellar-sdk/keypair"
+	"github.com/stellar/go-stellar-sdk/protocols/horizon"
 	protocol "github.com/stellar/go-stellar-sdk/protocols/rpc"
 	"github.com/stellar/go-stellar-sdk/protocols/stellarcore"
 	"github.com/stellar/go-stellar-sdk/txnbuild"
@@ -381,18 +382,54 @@ func TestNotFoundIsThreeDifferentAnswers(t *testing.T) {
 		}
 	})
 
-	t.Run("outside the retained history it cannot say", func(t *testing.T) {
-		// Sent at ledger 4000, and the RPC's history now starts at 4500. Its
-		// "not found" is about its own retention, and concluding "did not
-		// happen" here is how a transaction that landed gets sent twice.
-		rpc := &fakeRPC{
-			send: protocol.SendTransactionResponse{
-				Status: stellarcore.TXStatusPending, LatestLedger: 4000,
-			},
-			gets: []protocol.GetTransactionResponse{notFound(1_699_000_000, 4500)},
+	// Sent at ledger 4000, and the RPC's history now starts at 4500. Its "not
+	// found" is about its own retention rather than about the transaction, so
+	// Horizon — which keeps full history — is the authority from here.
+	pastRetention := &fakeRPC{
+		send: protocol.SendTransactionResponse{
+			Status: stellarcore.TXStatusPending, LatestLedger: 4000,
+		},
+		gets: []protocol.GetTransactionResponse{notFound(1_699_000_000, 4500)},
+	}
+
+	t.Run("outside the retained history, Horizon answers", func(t *testing.T) {
+		h := &accountFake{detail: horizon.Transaction{
+			Hash: "found-by-horizon", Ledger: 4100,
+			LedgerCloseTime: time.Unix(1_698_000_000, 0),
+		}}
+		c := testClient(h).WithSoroban(pastRetention)
+
+		got, err := c.SubmitSoroban(context.Background(), contractCall(t))
+		if err != nil {
+			t.Fatalf("SubmitSoroban: %v", err)
 		}
-		_, err := sorobanClient(t, rpc).SubmitSoroban(context.Background(), contractCall(t))
-		if !errors.Is(err, ErrRetentionGap) {
+		if got.Ledger != 4100 || !got.AlreadyKnown {
+			t.Fatalf("result = %+v; a transaction the RPC had forgotten was lost", got)
+		}
+	})
+
+	t.Run("outside the retained history and not on Horizon either", func(t *testing.T) {
+		// Both sources agree, and Horizon's history is complete, so now it is
+		// a definite answer.
+		h := &accountFake{detailErr: notFoundErr()}
+		c := testClient(h).WithSoroban(pastRetention)
+
+		if _, err := c.SubmitSoroban(context.Background(), contractCall(t)); !errors.Is(
+			err, ErrNotFound,
+		) {
+			t.Fatalf("error = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("outside the retained history and Horizon is down", func(t *testing.T) {
+		// Nobody can say. A retry now could pay twice, so this refuses to
+		// conclude and hands back the hash.
+		h := &accountFake{detailErr: errors.New("connection reset")}
+		c := testClient(h).WithSoroban(pastRetention)
+
+		if _, err := c.SubmitSoroban(context.Background(), contractCall(t)); !errors.Is(
+			err, ErrRetentionGap,
+		) {
 			t.Fatalf("error = %v, want ErrRetentionGap", err)
 		}
 	})
