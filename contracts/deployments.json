@@ -1,0 +1,36 @@
+{
+  "comment": [
+    "What is actually on chain, and the proof that it is.",
+    "",
+    "Each entry pairs a WASM hash with the transaction that uploaded it. The",
+    "hash is the sha256 of the built artefact, which is also the id the network",
+    "stores it under — so a build that produces a different hash is a different",
+    "contract, and contracts/registry_integration_test.go cannot pass unless the",
+    "upload named here really happened.",
+    "",
+    "One upload per network. A contract instance per DAO lives in Postgres, not",
+    "here: this file is about the code, not about who is running it."
+  ],
+  "contracts": {
+    "dao_treasury": {
+      "package": "dao-treasury",
+      "networks": {
+        "testnet": {
+          "wasm_hash": "3e9ffbfbd7f3c71d0821f8f15c0a1b1206ba4ae738eeb82800292b9598a93c78",
+          "upload_tx": "9b59999c5131807db77944c8a8baf12d9199d6268dd768acf908947978ab0b70",
+          "uploaded_at": "2026-09-09"
+        }
+      }
+    },
+    "connector_registry": {
+      "package": "connector-registry",
+      "networks": {
+        "testnet": {
+          "wasm_hash": "903898770dba6b113fb7f60c3f81cc430d3492613ba876993829be952b10d25e",
+          "upload_tx": "66eaf4fd5ea8e721ed734373b39a174fad96db8854df9d3963ecae905835d501",
+          "uploaded_at": "2026-09-09"
+        }
+      }
+    }
+  }
+}
