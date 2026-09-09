@@ -12,3 +12,4 @@ DESIGN.md
 .env.*
 !.env.example
 contracts/target/
+contracts/*/test_snapshots/
