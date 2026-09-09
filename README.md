@@ -36,6 +36,7 @@ looks the way it does, what tradeoffs were accepted on purpose — is in
 - [Tech stack](#tech-stack)
 - [Getting started](#getting-started)
 - [Environment variables](#environment-variables)
+- [Contracts](#contracts)
 - [Project layout](#project-layout)
 - [Documentation](#documentation)
 - [Contributing](#contributing)
@@ -121,6 +122,50 @@ descriptions; the essentials:
 | `STELFIN_CONFIRM_TOKEN_SECRET`   | Yes      | Signs confirmation links. `openssl rand -hex 32`.                                       |
 | `ANTHROPIC_API_KEY`              | No       | Omit to let the Anthropic SDK resolve credentials itself.                               |
 
+## Contracts
+
+Two Soroban contracts, in `contracts/`, written in Rust.
+
+**`dao_treasury`** holds a DAO's policy and its proposals in one state machine:
+members with voting weight, quorum and approval measured separately, a voting
+period, a timelock, a rolling auto-spend allowance that starts at zero, and a
+recipient allowlist that starts empty. `execute` takes no authorisation — once a
+proposal has passed and its timelock has run, anyone may carry it out, because a
+contract whose funds need a specific person online is a contract with a hostage.
+
+**`connector_registry`** records what a DAO has allowed each connector to do.
+It stores no credential, no token and no endpoint URL: everything in a contract
+is public, so the endpoint is committed to as a salted hash. It pins the
+connector's declared tool surface, which is the check a capability list cannot
+make — a server granted "read a spreadsheet" that later answers with a tool
+transferring funds passes every capability check and fails this one.
+
+### What is on chain
+
+Uploaded to **testnet**. One WASM upload per network; a contract instance per
+DAO is created on demand and recorded in Postgres, not here.
+
+| Contract             | WASM hash                                                          | Upload                                                                                                              |
+| -------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `dao_treasury`       | `3e9ffbfbd7f3c71d0821f8f15c0a1b1206ba4ae738eeb82800292b9598a93c78` | [tx](https://stellar.expert/explorer/testnet/tx/9b59999c5131807db77944c8a8baf12d9199d6268dd768acf908947978ab0b70) |
+| `connector_registry` | `903898770dba6b113fb7f60c3f81cc430d3492613ba876993829be952b10d25e` | [tx](https://stellar.expert/explorer/testnet/tx/66eaf4fd5ea8e721ed734373b39a174fad96db8854df9d3963ecae905835d501) |
+
+Those hashes are not taken on trust. `contracts/deployments.json` is embedded in
+the binary, one test rebuilds both contracts and checks the hashes match this
+source, and `go test -tags=integration ./contracts/` reads the contract-code
+entry back off the network and hashes what it returns. The last of those cannot
+pass unless the upload really happened.
+
+```bash
+make test-contracts    # the Rust suites, including the negative-auth tests
+make build-contracts   # the release WASM the committed hashes come from
+make test-deploy       # prove those hashes are on testnet (needs network)
+```
+
+Mainnet is deliberately absent. A contract exists on testnet long before it
+exists on mainnet, and `contracts.Lookup` reports that as an ordinary state
+rather than an error.
+
 ## Project layout
 
 | Path                | What it is                                                  |
@@ -139,6 +184,8 @@ descriptions; the essentials:
 | `internal/telegram` | The Telegram Bot API transport.                             |
 | `internal/discord`  | The Discord interactions transport.                         |
 | `internal/config`   | Environment loading and validation.                         |
+| `contracts/`        | The Soroban contracts, in Rust, and what is on chain.       |
+| `signer/`           | The seam between stelfin and anything holding a key.        |
 | `web/`              | Confirmation and enrollment pages served to the user.       |
 | `marketing/`        | The public site, a separate Next.js module.                 |
 | `cmd/stelfind`      | Server entrypoint — wires everything above together.        |

@@ -8,8 +8,13 @@
 
 GO       ?= go
 NODE     ?= node
+CARGO    ?= cargo
 FUZZTIME ?= 30s
 
+# The Rust contracts are deliberately not in `check`. They need a toolchain the
+# Go work does not, and a first build takes ten minutes — putting them here
+# would make the ordinary loop unusable for anyone touching Go. Run
+# `make test-contracts` when the contracts change; CI runs both.
 .PHONY: check
 check: fmt vet test test-js ## Format, vet and test everything
 
@@ -29,6 +34,18 @@ test: ## Unit and integration tests
 .PHONY: test-js
 test-js: ## Check the browser's renderer against the Go corpus, and its shape rules
 	@cd web/static && $(NODE) --test describe.test.js policy.test.js pages.test.js
+
+.PHONY: test-contracts
+test-contracts: ## The Rust contracts, including the negative-auth suite
+	$(CARGO) test --manifest-path contracts/Cargo.toml
+
+.PHONY: build-contracts
+build-contracts: ## Build the release WASM the committed hashes are taken from
+	@cd contracts && stellar contract build
+
+.PHONY: test-deploy
+test-deploy: ## Prove the committed WASM hashes are on testnet (needs network)
+	$(GO) test -tags=integration ./contracts/ -run OnChain -v
 
 .PHONY: test-race
 test-race: ## Tests under the race detector
