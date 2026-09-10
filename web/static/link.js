@@ -2,6 +2,16 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
+
+  // A disabled button whose label changed to "Sending…" says "working" to
+  // anyone looking at it and nothing at all to a screen reader. aria-busy is
+  // the part that is actually announced. Only for work in flight: a button
+  // held closed by a gate is not busy, it is simply not available yet.
+  const busy = (el, on) => {
+    el.disabled = on;
+    el.setAttribute("aria-busy", String(on));
+  };
+
   const KEY = "stelfin.key";
 
   const MEMBER = "link_member";
@@ -19,8 +29,14 @@
     box.appendChild(strong);
     box.appendChild(document.createTextNode(detail));
     box.classList.toggle("progress", Boolean(keepGoing));
+    // Severity decides the role. A partially-signed envelope is progress,
+    // and announcing it assertively would teach signers to tune out the
+    // assertive announcement, which is the same reason this page does not
+    // colour it red. Focus moves only on a real refusal.
+    box.setAttribute("role", keepGoing ? "status" : "alert");
     box.hidden = false;
     if (!keepGoing) {
+      box.focus();
       $("pending").hidden = true;
       $("done").hidden = true;
     }
@@ -235,7 +251,7 @@
     if (key && key.publicKey() === data.address) {
       $("device").hidden = false;
       $("sign").addEventListener("click", async () => {
-        $("sign").disabled = true;
+        busy($("sign"), true);
         try {
           const signed = new StellarSdk.TransactionBuilder.fromXDR(
             data.xdr,
@@ -264,10 +280,10 @@
         fail("That is not this challenge.", err.message);
         return;
       }
-      $("submit").disabled = true;
+      busy($("submit"), true);
       const done = await submit(pasted, purpose);
       // Still short of the threshold: the same box takes the next signature.
-      if (!done) $("submit").disabled = false;
+      if (!done) busy($("submit"), false);
     });
   })();
 })();

@@ -3,6 +3,16 @@
 
   const $ = (id) => document.getElementById(id);
 
+  // A disabled button whose label changed to "Sending…" says "working" to
+  // anyone looking at it and nothing at all to a screen reader. aria-busy is
+  // the part that is actually announced. Only for work in flight: a button
+  // held closed by a gate is not busy, it is simply not available yet.
+  const busy = (el, on) => {
+    el.disabled = on;
+    el.setAttribute("aria-busy", String(on));
+  };
+
+
   function notice(title, detail, keepGoing) {
     const box = $("alert");
     box.innerHTML = "";
@@ -13,8 +23,14 @@
     // memo and must never be interpreted as markup.
     box.appendChild(document.createTextNode(detail));
     box.classList.toggle("progress", Boolean(keepGoing));
+    // Severity decides the role. A partially-signed envelope is progress,
+    // and announcing it assertively would teach signers to tune out the
+    // assertive announcement, which is the same reason this page does not
+    // colour it red. Focus moves only on a real refusal.
+    box.setAttribute("role", keepGoing ? "status" : "alert");
     box.hidden = false;
     if (!keepGoing) {
+      box.focus();
       $("proposal").hidden = true;
       $("done").hidden = true;
     }
@@ -267,14 +283,14 @@
         notice("Nothing to submit.", "Paste the signed envelope first.", true);
         return;
       }
-      $("submit").disabled = true;
+      busy($("submit"), true);
       const ok = await refresh(pasted);
       if (ok) $("signed_xdr").value = "";
-      $("submit").disabled = false;
+      busy($("submit"), false);
     });
 
     $("execute").addEventListener("click", async () => {
-      $("execute").disabled = true;
+      busy($("execute"), true);
       try {
         const res = await api("POST", "/v1/proposal/execute");
         $("doneHeading").textContent = "Submitted to the network";

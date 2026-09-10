@@ -29,14 +29,22 @@
 <style>
 
   :root {
+    /* The type scale. Six steps, each visibly different from its neighbours.
+       What was here before was nine sizes, five of which sat inside a 2px band
+       (0.78, 0.82, 0.85, 0.9, 0.92rem) and were therefore not a hierarchy at
+       all, just noise, followed by a single 2.1x leap to the amount. The leap
+       is right: on a page whose job is to show one figure, that figure should
+       dominate. The mush underneath it was not. */
+    --t-mono: 0.8125rem; --t-sm: 0.875rem; --t-md: 1rem;
+    --t-lg: 1.125rem; --t-xl: 1.5rem; --t-2xl: 2.5rem;
     --bg: #ffffff; --fg: #16181d; --muted: #5c6370;
-    --line: #e3e6ea; --accent: #14713d; --accent-bg: #f0f7f2;
+    --line: #e3e6ea; --accent: #14713d; --on-accent: #ffffff; --on-danger: #ffffff; --accent-bg: #f0f7f2;
     --danger: #a4291f; --danger-bg: #fdf2f1;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #14161a; --fg: #f0f2f5; --muted: #9aa3af;
-      --line: #2a2e36; --accent: #4ec27f; --accent-bg: #17251c;
+      --line: #2a2e36; --accent: #4ec27f; --on-accent: #08130c; --on-danger: #2a0f0c; --accent-bg: #17251c;
       --danger: #ff8b80; --danger-bg: #2a1b1a;
     }
   }
@@ -47,28 +55,36 @@
     display: flex; justify-content: center; padding: 24px 16px 48px;
   }
   main { width: 100%; max-width: 26rem; }
-  h1 { font-size: 1.05rem; font-weight: 600; margin: 0 0 0.6rem; text-wrap: balance; }
-  p.lede { color: var(--muted); margin: 0 0 1.5rem; font-size: 0.92rem; }
+  h1 { font-size: var(--t-lg); font-weight: 600; margin: 0 0 0.6rem; text-wrap: balance; }
+  p.lede { color: var(--muted); margin: 0 0 1.5rem; font-size: var(--t-md); }
   dl { border-top: 1px solid var(--line); margin: 0 0 1.5rem; padding-top: 0.75rem; }
-  .row { display: flex; justify-content: space-between; gap: 1rem; padding: 0.4rem 0; font-size: 0.9rem; }
+  .row { display: flex; justify-content: space-between; gap: 1rem; padding: 0.4rem 0; font-size: var(--t-sm); }
   .row dt { color: var(--muted); margin: 0; flex: none; }
   .row dd { margin: 0; text-align: right; word-break: break-all; font-variant-numeric: tabular-nums; }
-  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--t-mono); }
   button {
     width: 100%; padding: 0.85rem 1rem; font: inherit; font-weight: 600;
-    color: #fff; background: var(--accent); border: 0; border-radius: 10px; cursor: pointer;
+    color: var(--on-accent); background: var(--accent); border: 0; border-radius: 10px; cursor: pointer;
     transition: filter 180ms ease, transform 120ms ease;
   }
   button:hover:not([disabled]) { filter: brightness(1.08); }
   button:active:not([disabled]) { transform: translateY(1px); }
-  button[disabled] { opacity: 0.5; cursor: not-allowed; }
+  button[disabled] { opacity: 0.6; cursor: not-allowed; }
   button.spaced { margin-top: 0.75rem; }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .note { font-size: 0.85rem; color: var(--muted); margin-top: 0.85rem; text-align: center; }
-  .note.left { text-align: left; margin-top: 0; }
+  /* The refusal box takes focus so a screen reader announces it, which
+     also gives it a ring. The ring should be its own colour: an accent-
+     green outline around a red warning reads as a control to press. */
+  .alert:focus-visible { outline-color: var(--danger); }
+  .note { font-size: var(--t-sm); color: var(--muted); margin-top: 0.85rem; }
+  .note.center { text-align: center; }
+  .note.flush { margin-top: 0; }
+  /* A label is inline by default, which would set it beside the field
+     rather than above it. Above is where a label belongs. */
+  label.note { display: block; margin-bottom: 0.35rem; }
   .alert {
     background: var(--danger-bg); border: 1px solid var(--danger); color: var(--danger);
-    border-radius: 10px; padding: 0.85rem 1rem; margin-bottom: 1.25rem; font-size: 0.9rem;
+    border-radius: 10px; padding: 0.85rem 1rem; margin-bottom: 1.25rem; font-size: var(--t-sm);
   }
   .alert strong { display: block; margin-bottom: 0.25rem; }
   /* A partially signed envelope is progress, not a failure. It gets the accent
@@ -78,14 +94,25 @@
     background: var(--accent-bg); border-color: var(--accent); color: var(--fg);
   }
   .alert.progress strong { color: var(--accent); }
+  /* A 56-character Stellar address in a space-between row has nowhere to go
+     on a narrow screen. Stacking the label above the value gives it the full
+     width instead of squeezing both. */
+  @media (max-width: 26rem) {
+    .row { flex-direction: column; gap: 0.15rem; }
+    .row dd { text-align: left; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    button { transition: none; }
+    button:active:not([disabled]) { transform: none; }
+  }
   [hidden] { display: none !important; }
   textarea {
     width: 100%; min-height: 6.5rem; padding: 0.7rem; font: inherit;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--t-mono);
     color: var(--fg); background: var(--bg);
     border: 1px solid var(--line); border-radius: 10px; resize: vertical;
   }
-  h2 { font-size: 0.9rem; font-weight: 600; margin: 1.5rem 0 0.5rem; }
+  h2 { font-size: var(--t-md); font-weight: 600; margin: 1.5rem 0 0.5rem; }
   input[type="text"] {
     width: 100%; padding: 0.7rem; font: inherit; color: var(--fg);
     background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
@@ -95,7 +122,7 @@
 </head>
 <body>
 <main>
-  <div id="alert" class="alert" hidden></div>
+  <div id="alert" class="alert" tabindex="-1" hidden></div>
 
   <section id="pending" hidden>
     <h1 id="heading">Prove this address</h1>
@@ -104,35 +131,38 @@
       it can never be submitted — signing it cannot move anything.
     </p>
     <dl>
-      <div class="row"><dt>Address</dt><dd><code id="address"></code></dd></div>
-      <div class="row"><dt>Sequence</dt><dd><code id="sequence"></code></dd></div>
-      <div class="row"><dt>Network</dt><dd><code id="network"></code></dd></div>
+      <div class="row"><dt>Address</dt><dd><code id="address" translate="no"></code></dd></div>
+      <div class="row"><dt>Sequence</dt><dd><code id="sequence" translate="no"></code></dd></div>
+      <div class="row"><dt>Network</dt><dd><code id="network" translate="no"></code></dd></div>
     </dl>
 
     <section id="labelBox" hidden>
       <h2>Name this treasury</h2>
-      <p class="note left">
+      <p class="note flush" id="labelNote">
         Optional, and cosmetic — how stelfin will refer to this account in your
         chat. A workspace with an ops wallet and a grants wallet needs to tell
         them apart.
       </p>
-      <input id="label" type="text" maxlength="60" placeholder="Main treasury"
-             aria-label="Treasury name">
+      <label class="note flush" for="label">Treasury name</label>
+      <input id="label" type="text" maxlength="60" autocomplete="off" placeholder="Main treasury"
+             aria-describedby="labelNote">
     </section>
 
     <section id="device" hidden>
       <button id="sign" type="button">Sign with this device</button>
-      <p class="note">Uses the key stelfin created on this device.</p>
+      <p class="note center">Uses the key stelfin created on this device.</p>
     </section>
 
     <h2 id="pasteHeading">Or sign in your own wallet</h2>
-    <p class="note left" id="pasteNote">
+    <p class="note flush" id="pasteNote">
       Copy the challenge below, sign it in your wallet, and paste the signed
       result back.
     </p>
-    <textarea id="challenge" readonly aria-label="Challenge to sign"></textarea>
+    <textarea id="challenge" translate="no" spellcheck="false" readonly aria-label="Challenge to sign"
+              aria-describedby="pasteNote"></textarea>
     <h2>Signed challenge</h2>
-    <textarea id="signed" placeholder="Paste the signed XDR here" aria-label="Signed challenge"></textarea>
+    <textarea id="signed" translate="no" spellcheck="false" placeholder="Paste the signed XDR here…" aria-label="Signed challenge"
+              aria-describedby="pasteNote"></textarea>
     <button id="submit" type="button" class="secondary spaced">Submit signature</button>
   </section>
 

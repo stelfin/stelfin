@@ -25,14 +25,22 @@
 <title>Hand back your wallet · stelfin</title>
 <style>
   :root {
+    /* The type scale. Six steps, each visibly different from its neighbours.
+       What was here before was nine sizes, five of which sat inside a 2px band
+       (0.78, 0.82, 0.85, 0.9, 0.92rem) and were therefore not a hierarchy at
+       all, just noise, followed by a single 2.1x leap to the amount. The leap
+       is right: on a page whose job is to show one figure, that figure should
+       dominate. The mush underneath it was not. */
+    --t-mono: 0.8125rem; --t-sm: 0.875rem; --t-md: 1rem;
+    --t-lg: 1.125rem; --t-xl: 1.5rem; --t-2xl: 2.5rem;
     --bg: #ffffff; --fg: #16181d; --muted: #5c6370;
-    --line: #e3e6ea; --accent: #14713d; --accent-bg: #f0f7f2;
+    --line: #e3e6ea; --accent: #14713d; --on-accent: #ffffff; --on-danger: #ffffff; --accent-bg: #f0f7f2;
     --danger: #a4291f; --danger-bg: #fdf2f1;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #14161a; --fg: #f0f2f5; --muted: #9aa3af;
-      --line: #2a2e36; --accent: #4ec27f; --accent-bg: #17251c;
+      --line: #2a2e36; --accent: #4ec27f; --on-accent: #08130c; --on-danger: #2a0f0c; --accent-bg: #17251c;
       --danger: #ff8b80; --danger-bg: #2a1b1a;
     }
   }
@@ -43,38 +51,42 @@
     display: flex; justify-content: center; padding: 24px 16px 48px;
   }
   main { width: 100%; max-width: 28rem; }
-  h1 { font-size: 1.05rem; font-weight: 600; margin: 0 0 0.6rem; text-wrap: balance; }
-  h2 { font-size: 0.9rem; font-weight: 600; margin: 1.5rem 0 0.5rem; }
-  p.lede { color: var(--muted); margin: 0 0 1.25rem; font-size: 0.92rem; }
+  h1 { font-size: var(--t-lg); font-weight: 600; margin: 0 0 0.6rem; text-wrap: balance; }
+  h2 { font-size: var(--t-md); font-weight: 600; margin: 1.5rem 0 0.5rem; }
+  p.lede { color: var(--muted); margin: 0 0 1.25rem; font-size: var(--t-md); }
   dl { border-top: 1px solid var(--line); margin: 0 0 1rem; padding-top: 0.75rem; }
-  .row { display: flex; justify-content: space-between; gap: 1rem; padding: 0.35rem 0; font-size: 0.9rem; }
+  .row { display: flex; justify-content: space-between; gap: 1rem; padding: 0.35rem 0; font-size: var(--t-sm); }
   .row dt { color: var(--muted); margin: 0; flex: none; }
   .row dd { margin: 0; text-align: right; word-break: break-all; font-variant-numeric: tabular-nums; }
-  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--t-mono); }
   .op { border: 1px solid var(--line); border-radius: 10px; padding: 0.6rem 0.85rem; margin-bottom: 0.6rem; }
-  .op h3 { font-size: 0.85rem; font-weight: 600; margin: 0 0 0.35rem; }
+  .op h3 { font-size: var(--t-sm); font-weight: 600; margin: 0 0 0.35rem; }
   .op .idx { color: var(--muted); font-weight: 400; }
   /* The consequence, stated once, in the colour of the thing it describes.
      Not an error — the page is working correctly — so it is bordered rather
      than filled, and it never moves or blinks. */
   .consequence {
     border: 1px solid var(--danger); color: var(--danger);
-    border-radius: 10px; padding: 0.85rem 1rem; margin: 0 0 1.25rem; font-size: 0.9rem;
+    border-radius: 10px; padding: 0.85rem 1rem; margin: 0 0 1.25rem; font-size: var(--t-sm);
   }
   .consequence strong { display: block; margin-bottom: 0.25rem; }
   button {
     width: 100%; padding: 0.85rem 1rem; font: inherit; font-weight: 600;
-    color: #fff; background: var(--danger); border: 0; border-radius: 10px; cursor: pointer;
+    color: var(--on-danger); background: var(--danger); border: 0; border-radius: 10px; cursor: pointer;
     transition: filter 180ms ease, transform 120ms ease;
   }
   button:hover:not([disabled]) { filter: brightness(1.08); }
   button:active:not([disabled]) { transform: translateY(1px); }
-  button[disabled] { opacity: 0.45; cursor: not-allowed; }
+  button[disabled] { opacity: 0.6; cursor: not-allowed; }
   button.secondary {
     color: var(--fg); background: transparent; border: 1px solid var(--line);
   }
   button.spaced { margin-top: 0.75rem; }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  /* The refusal box takes focus so a screen reader announces it, which
+     also gives it a ring. The ring should be its own colour: an accent-
+     green outline around a red warning reads as a control to press. */
+  .alert:focus-visible { outline-color: var(--danger); }
   input[type="text"], textarea {
     width: 100%; padding: 0.7rem; font: inherit; color: var(--fg); background: var(--bg);
     border: 1px solid var(--line); border-radius: 10px;
@@ -85,21 +97,35 @@
   }
   textarea {
     min-height: 6.5rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.78rem; resize: vertical;
+    font-size: var(--t-mono); resize: vertical;
   }
-  .note { font-size: 0.85rem; color: var(--muted); margin-top: 0.85rem; }
+  .note { font-size: var(--t-sm); color: var(--muted); margin-top: 0.85rem; }
   .note.center { text-align: center; }
+  /* A label is inline by default, which would set it beside the field
+     rather than above it. Above is where a label belongs. */
+  label.note { display: block; margin-bottom: 0.35rem; }
   .alert {
     background: var(--danger-bg); border: 1px solid var(--danger); color: var(--danger);
-    border-radius: 10px; padding: 0.85rem 1rem; margin-bottom: 1.25rem; font-size: 0.9rem;
+    border-radius: 10px; padding: 0.85rem 1rem; margin-bottom: 1.25rem; font-size: var(--t-sm);
   }
   .alert strong { display: block; margin-bottom: 0.25rem; }
+  /* A 56-character Stellar address in a space-between row has nowhere to go
+     on a narrow screen. Stacking the label above the value gives it the full
+     width instead of squeezing both. */
+  @media (max-width: 26rem) {
+    .row { flex-direction: column; gap: 0.15rem; }
+    .row dd { text-align: left; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    button { transition: none; }
+    button:active:not([disabled]) { transform: none; }
+  }
   [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <main>
-  <div id="alert" class="alert" hidden></div>
+  <div id="alert" class="alert" tabindex="-1" hidden></div>
 
   <section id="reclaim" hidden>
     <h1>Hand back this wallet</h1>
@@ -115,8 +141,8 @@
     </div>
 
     <dl>
-      <div class="row"><dt>Account</dt><dd><code id="address"></code></dd></div>
-      <div class="row"><dt>Balance goes to</dt><dd><code id="destination"></code></dd></div>
+      <div class="row"><dt>Account</dt><dd><code id="address" translate="no"></code></dd></div>
+      <div class="row"><dt>Balance goes to</dt><dd><code id="destination" translate="no"></code></dd></div>
       <div class="row"><dt>Network</dt><dd id="network"></dd></div>
     </dl>
 
@@ -124,12 +150,13 @@
     <div id="operations"></div>
 
     <h2>Confirm</h2>
-    <p class="note" style="margin-top: 0;">
+    <p class="note" style="margin-top: 0;" id="tailNote">
       Type the last six characters of the account —
-      <code id="tail"></code> — to enable signing.
+      <code id="tail" translate="no"></code> — to enable signing.
     </p>
+    <label class="note" for="confirm">Last six characters</label>
     <input id="confirm" type="text" maxlength="6" autocomplete="off"
-           aria-label="Last six characters of the account">
+           aria-describedby="tailNote">
 
     <section id="device" hidden>
       <button id="sign" type="button" class="spaced" disabled>Sign and hand it back</button>
@@ -137,12 +164,14 @@
     </section>
 
     <h2>Or sign in your own wallet</h2>
-    <p class="note" style="margin-top: 0;">
+    <p class="note" style="margin-top: 0;" id="envelopeNote">
       Copy the envelope, sign it, and paste it back.
     </p>
-    <textarea id="envelope" readonly aria-label="Envelope to sign"></textarea>
+    <textarea id="envelope" translate="no" spellcheck="false" readonly aria-label="Envelope to sign"
+              aria-describedby="envelopeNote"></textarea>
     <h2>Signed envelope</h2>
-    <textarea id="signed" placeholder="Paste the signed XDR here" aria-label="Signed envelope"></textarea>
+    <textarea id="signed" translate="no" spellcheck="false" placeholder="Paste the signed XDR here…" aria-label="Signed envelope"
+              aria-describedby="envelopeNote"></textarea>
     <button id="submit" type="button" class="secondary spaced" disabled>Submit signature</button>
   </section>
 

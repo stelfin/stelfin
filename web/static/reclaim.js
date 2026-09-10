@@ -2,6 +2,16 @@
   "use strict";
 
   const $ = (id) => document.getElementById(id);
+
+  // A disabled button whose label changed to "Sending…" says "working" to
+  // anyone looking at it and nothing at all to a screen reader. aria-busy is
+  // the part that is actually announced. Only for work in flight: a button
+  // held closed by a gate is not busy, it is simply not available yet.
+  const busy = (el, on) => {
+    el.disabled = on;
+    el.setAttribute("aria-busy", String(on));
+  };
+
   const KEY = "stelfin.key";
 
   function fail(title, detail) {
@@ -11,7 +21,12 @@
     strong.textContent = title;
     box.appendChild(strong);
     box.appendChild(document.createTextNode(detail));
+    // Announced, and focused. This box is the most important thing on the
+    // page and nothing was telling a screen reader it had appeared, so a
+    // refusal was silent to anyone not looking at it.
+    box.setAttribute("role", "alert");
     box.hidden = false;
+    box.focus();
     $("reclaim").hidden = true;
     $("done").hidden = true;
   }
@@ -175,7 +190,7 @@
     $("reclaim").hidden = false;
 
     $("sign").addEventListener("click", async () => {
-      $("sign").disabled = true;
+      busy($("sign"), true);
       try {
         const tx = new StellarSdk.TransactionBuilder.fromXDR(
           data.xdr,
@@ -203,7 +218,7 @@
         fail("That is not this envelope.", err.message);
         return;
       }
-      $("submit").disabled = true;
+      busy($("submit"), true);
       await submit(pasted);
     });
   })();
