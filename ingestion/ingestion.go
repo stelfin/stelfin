@@ -21,18 +21,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/stellar/go-stellar-sdk/clients/horizonclient"
-	"github.com/stellar/go-stellar-sdk/protocols/horizon/operations"
-
 	"github.com/stelfin/stelfin/internal/money"
 	"github.com/stelfin/stelfin/ledger"
 	"github.com/stelfin/stelfin/ledger/store"
 )
-
-// PaymentsAPI is the slice of Horizon this package needs.
-type PaymentsAPI interface {
-	Payments(horizonclient.OperationRequest) (operations.OperationsPage, error)
-}
 
 // Tuning defaults. Horizon rate-limits aggressively on the public instance, so
 // the backoff ceiling is deliberately generous.
@@ -52,24 +44,24 @@ const (
 
 // Config describes an ingester.
 type Config struct {
-	// Stream names the cursor row, so several ingesters can track different
-	// Horizon queries without colliding.
-	Stream string
-
-	// PageSize is the Horizon page size. Zero means DefaultPageSize.
+	// PageSize is how many records to ask a source for at a time. Zero means
+	// DefaultPageSize.
 	PageSize uint
 
 	// PollInterval is the pause after catching up. Zero means DefaultPollInterval.
 	PollInterval time.Duration
 }
 
-// Ingester reads payments from Horizon and posts them to the ledger.
+// Ingester applies records from any source to the ledger.
+//
+// It holds no source of its own. Which chains and which endpoints a deployment
+// watches is a wiring decision, and one ingester serving several sources keeps
+// the idempotency and the cursor discipline in a single place instead of once
+// per stream.
 type Ingester struct {
-	horizon PaymentsAPI
-	store   *store.Store
-	pool    *pgxpool.Pool
+	store *store.Store
+	pool  *pgxpool.Pool
 
-	stream       string
 	pageSize     uint
 	pollInterval time.Duration
 
@@ -83,11 +75,9 @@ type Ingester struct {
 }
 
 // New returns an Ingester.
-func New(
-	ctx context.Context, h PaymentsAPI, s *store.Store, pool *pgxpool.Pool, cfg Config,
-) (*Ingester, error) {
-	if cfg.Stream == "" {
-		return nil, errors.New("ingestion: stream name is required")
+func New(s *store.Store, pool *pgxpool.Pool, cfg Config) (*Ingester, error) {
+	if s == nil || pool == nil {
+		return nil, errors.New("ingestion: a store and a pool are required")
 	}
 
 	pageSize := cfg.PageSize
@@ -100,8 +90,8 @@ func New(
 	}
 
 	return &Ingester{
-		horizon: h, store: s, pool: pool,
-		stream: cfg.Stream, pageSize: pageSize, pollInterval: poll,
+		store: s, pool: pool,
+		pageSize: pageSize, pollInterval: poll,
 		external: make(map[ledger.OrgID]ledger.AccountID),
 	}, nil
 }
@@ -140,10 +130,10 @@ func (i *Ingester) externalFor(ctx context.Context, org ledger.OrgID) (ledger.Ac
 // rate limit bites. Backing off and retrying is correct because the cursor is
 // durable, so nothing is lost by waiting. Returning on the first error would
 // stop ingestion permanently on a blip.
-func (i *Ingester) Run(ctx context.Context) error {
+func (i *Ingester) Run(ctx context.Context, src Source) error {
 	backoff := minBackoff
 	for {
-		n, err := i.Once(ctx)
+		n, err := i.Once(ctx, src)
 		switch {
 		case ctx.Err() != nil:
 			return ctx.Err()
@@ -168,34 +158,29 @@ func (i *Ingester) Run(ctx context.Context) error {
 
 // Once processes at most one page and returns how many records it consumed,
 // including records it deliberately skipped.
-func (i *Ingester) Once(ctx context.Context) (int, error) {
-	cursor, err := i.loadCursor(ctx)
+func (i *Ingester) Once(ctx context.Context, src Source) (int, error) {
+	stream := src.Name()
+	cursor, err := i.loadCursor(ctx, stream)
 	if err != nil {
 		return 0, err
 	}
 
-	page, err := i.horizon.Payments(horizonclient.OperationRequest{
-		Cursor: cursor,
-		Order:  horizonclient.OrderAsc,
-		Limit:  i.pageSize,
-		// Failed transactions moved no money. Including them would post
-		// entries for value that never changed hands.
-		IncludeFailed: false,
-	})
+	records, err := src.Fetch(ctx, cursor, i.pageSize)
 	if err != nil {
-		return 0, fmt.Errorf("ingestion: fetch payments after %q: %w", cursor, err)
+		return 0, err
 	}
 
 	consumed := 0
-	for _, record := range page.Embedded.Records {
-		token := record.PagingToken()
-		if err := i.ingestOne(ctx, record); err != nil {
+	for _, record := range records {
+		if err := i.apply(ctx, record); err != nil {
 			// Stop at the failure rather than skipping past it. The cursor is
 			// still on the last good record, so the retry resumes here.
 			return consumed, err
 		}
-		// Advance only after the ledger write has committed.
-		if err := i.saveCursor(ctx, token); err != nil {
+		// Advance only after the ledger write has committed. The reverse order
+		// is at-most-once and silently loses payments, which is the one failure
+		// a payments system cannot absorb.
+		if err := i.saveCursor(ctx, stream, record.Cursor); err != nil {
 			return consumed, err
 		}
 		consumed++
@@ -203,23 +188,33 @@ func (i *Ingester) Once(ctx context.Context) (int, error) {
 	return consumed, nil
 }
 
-// ingestOne posts a single operation. Anything that is not a payment we track
-// is a no-op, but its cursor still advances — otherwise a single unrecognised
-// record would wedge the stream forever.
-func (i *Ingester) ingestOne(ctx context.Context, record operations.Operation) error {
-	payment, ok := record.(operations.Payment)
-	if !ok {
-		return nil
+// apply posts one record.
+//
+// A record naming nothing this deployment tracks is a no-op whose cursor still
+// advances — otherwise one unrecognised record wedges the stream forever, and
+// the stream carries every other tenant's money too.
+func (i *Ingester) apply(ctx context.Context, record Record) error {
+	for n, movement := range record.Movements {
+		if err := i.applyMovement(ctx, record, n, movement); err != nil {
+			return err
+		}
 	}
-	if !payment.TransactionSuccessful {
-		return nil
+	if record.Closed != "" {
+		if err := i.applyClose(ctx, record.Closed); err != nil {
+			return err
+		}
 	}
+	return nil
+}
 
-	from, fromTracked, err := i.store.TrackedAddress(ctx, payment.From)
+func (i *Ingester) applyMovement(
+	ctx context.Context, record Record, n int, movement Movement,
+) error {
+	from, fromTracked, err := i.store.TrackedAddress(ctx, movement.From)
 	if err != nil {
 		return err
 	}
-	to, toTracked, err := i.store.TrackedAddress(ctx, payment.To)
+	to, toTracked, err := i.store.TrackedAddress(ctx, movement.To)
 	if err != nil {
 		return err
 	}
@@ -227,45 +222,62 @@ func (i *Ingester) ingestOne(ctx context.Context, record operations.Operation) e
 		return nil
 	}
 
-	amount, err := money.Parse(payment.Amount)
-	if err != nil {
-		return fmt.Errorf("ingestion: operation %s has unparseable amount %q: %w",
-			payment.ID, payment.Amount, err)
-	}
-	if amount.Sign() <= 0 {
-		return fmt.Errorf("ingestion: operation %s has non-positive amount %s", payment.ID, amount)
+	if movement.Amount.Sign() <= 0 {
+		return fmt.Errorf("ingestion: record %s has non-positive amount %s",
+			record.ID, movement.Amount)
 	}
 
-	asset, err := i.resolveAsset(ctx, payment.Asset.Type, payment.Asset.Code, payment.Asset.Issuer)
+	asset, err := i.resolveAsset(ctx,
+		movement.AssetType, movement.AssetCode, movement.AssetIssuer)
 	if err != nil {
 		return err
 	}
 
-	entries, err := i.entriesFor(ctx, fromTracked, toTracked, from, to, asset, amount)
+	entries, err := i.entriesFor(ctx, fromTracked, toTracked, from, to, asset, movement.Amount)
 	if err != nil {
 		return err
+	}
+
+	// The movement index is part of the key, because one record can carry more
+	// than one movement and they must not collide. Without it a second leg
+	// would look like a duplicate of the first and be dropped.
+	key := record.ID
+	if len(record.Movements) > 1 {
+		key = fmt.Sprintf("%s:%d", record.ID, n)
 	}
 
 	for _, e := range entries {
 		_, err = i.store.Post(ctx, ledger.PostRequest{
 			Org: e.org,
-			// Derived from the Horizon operation id, so replaying a page cannot
-			// post the same payment twice. Unique per org, which is what lets
-			// one operation be recorded in both tenants' books when a payment
-			// crosses between them.
-			IdempotencyKey: "horizon:op:" + payment.ID,
+			// Derived from the chain's own identifier, so replaying a page
+			// cannot post the same movement twice. Unique per org, which is
+			// what lets one operation be recorded in both tenants' books when
+			// value crosses between them.
+			IdempotencyKey: key,
 			Kind:           e.kind,
-			ExternalRef:    payment.TransactionHash,
-			// The chain's close time, not ours. It is the authoritative "when",
-			// and it is stable across replays so the fingerprint matches.
-			OccurredAt: payment.LedgerCloseTime,
-			Postings:   e.postings,
+			ExternalRef:    record.TxHash,
+			OccurredAt:     record.OccurredAt,
+			Postings:       e.postings,
 		})
 		if err != nil {
-			return fmt.Errorf("ingestion: post operation %s for org %d: %w", payment.ID, e.org, err)
+			return fmt.Errorf("ingestion: post record %s for org %d: %w", record.ID, e.org, err)
 		}
 	}
 	return nil
+}
+
+// applyClose forgets an address that no longer exists on chain.
+//
+// A member who merges their provisioned account themselves, outside stelfin,
+// leaves this deployment believing in an account the network has deleted — and
+// still holding a reserve grant against it. The chain is the authority on
+// whether an account exists, so this follows it.
+func (i *Ingester) applyClose(ctx context.Context, address string) error {
+	tracked, ok, err := i.store.TrackedAddress(ctx, address)
+	if err != nil || !ok {
+		return err
+	}
+	return i.store.ReleaseAddress(ctx, tracked.Org, address)
 }
 
 // entry is one org's record of an operation.
@@ -345,10 +357,10 @@ func (i *Ingester) resolveAsset(ctx context.Context, assetType, code, issuer str
 	return i.store.Ledger().EnsureAsset(ctx, code, issuer)
 }
 
-func (i *Ingester) loadCursor(ctx context.Context) (string, error) {
+func (i *Ingester) loadCursor(ctx context.Context, stream string) (string, error) {
 	var cursor string
 	err := i.pool.QueryRow(ctx,
-		`SELECT cursor FROM ingestion_cursors WHERE stream = $1`, i.stream,
+		`SELECT cursor FROM ingestion_cursors WHERE stream = $1`, stream,
 	).Scan(&cursor)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// No cursor yet. An empty cursor asks Horizon to start from the
@@ -356,20 +368,20 @@ func (i *Ingester) loadCursor(ctx context.Context) (string, error) {
 		return "", nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("ingestion: load cursor for %q: %w", i.stream, err)
+		return "", fmt.Errorf("ingestion: load cursor for %q: %w", stream, err)
 	}
 	return cursor, nil
 }
 
-func (i *Ingester) saveCursor(ctx context.Context, cursor string) error {
+func (i *Ingester) saveCursor(ctx context.Context, stream, cursor string) error {
 	_, err := i.pool.Exec(ctx, `
 		INSERT INTO ingestion_cursors (stream, cursor, updated_at)
 		VALUES ($1, $2, now())
 		ON CONFLICT (stream) DO UPDATE SET cursor = EXCLUDED.cursor, updated_at = now()`,
-		i.stream, cursor,
+		stream, cursor,
 	)
 	if err != nil {
-		return fmt.Errorf("ingestion: save cursor for %q: %w", i.stream, err)
+		return fmt.Errorf("ingestion: save cursor for %q: %w", stream, err)
 	}
 	return nil
 }

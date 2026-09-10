@@ -52,7 +52,7 @@ type fakeHorizon struct {
 	requested []string
 }
 
-func (f *fakeHorizon) Payments(req horizonclient.OperationRequest) (operations.OperationsPage, error) {
+func (f *fakeHorizon) Operations(req horizonclient.OperationRequest) (operations.OperationsPage, error) {
 	f.requested = append(f.requested, req.Cursor)
 	if f.err != nil {
 		return operations.OperationsPage{}, f.err
@@ -83,6 +83,7 @@ func payment(id, from, to, amount string) operations.Payment {
 
 type fixture struct {
 	ing      *Ingester
+	src      Source
 	store    *store.Store
 	horizon  *fakeHorizon
 	org      ledger.OrgID
@@ -123,14 +124,16 @@ func newFixture(t *testing.T, pages map[string]operations.OperationsPage) *fixtu
 	must(t, err, "ensure external")
 
 	h := &fakeHorizon{pages: pages}
-	// Stream is per-test so each gets an independent cursor.
-	ing, err := New(ctx, h, db, testPool, Config{Stream: t.Name(), PageSize: 200})
+	ing, err := New(db, testPool, Config{PageSize: 200})
 	must(t, err, "new ingester")
+	// The source is named per test so each gets an independent cursor.
+	src, err := NewOperationsSource(h, t.Name())
+	must(t, err, "new source")
 
 	addr := keypair.MustRandom().Address()
 	must(t, ing.Track(ctx, org.ID, addr, member, store.RoleMember), "track member address")
 
-	return &fixture{ing: ing, store: db, horizon: h, org: org.ID, usdc: usdc,
+	return &fixture{ing: ing, src: src, store: db, horizon: h, org: org.ID, usdc: usdc,
 		member: member, userAddr: addr, external: external}
 }
 
@@ -148,7 +151,7 @@ func TestIngestDeposit(t *testing.T) {
 		"": page(payment("op1", stranger, f.userAddr, "100.0000000")),
 	}
 
-	n, err := f.ing.Once(context.Background())
+	n, err := f.ing.Once(context.Background(), f.src)
 	must(t, err, "ingest")
 	if n != 1 {
 		t.Fatalf("consumed %d records, want 1", n)
@@ -172,9 +175,9 @@ func TestIngestWithdrawal(t *testing.T) {
 		"w-in": page(payment("w-out", f.userAddr, stranger, "20.0000000")),
 	}
 
-	_, err := f.ing.Once(context.Background())
+	_, err := f.ing.Once(context.Background(), f.src)
 	must(t, err, "ingest deposit")
-	_, err = f.ing.Once(context.Background())
+	_, err = f.ing.Once(context.Background(), f.src)
 	must(t, err, "ingest withdrawal")
 
 	if got, want := f.balance(t), money.MustParse("30"); got != want {
@@ -202,12 +205,12 @@ func TestIngestInternalSend(t *testing.T) {
 	extBefore, err := f.store.Balance(ctx, f.org, f.external, f.usdc)
 	must(t, err, "external before")
 
-	_, err = f.ing.Once(ctx)
+	_, err = f.ing.Once(ctx, f.src)
 	must(t, err, "ingest deposit")
 	extAfterDeposit, err := f.store.Balance(ctx, f.org, f.external, f.usdc)
 	must(t, err, "external after deposit")
 
-	_, err = f.ing.Once(ctx)
+	_, err = f.ing.Once(ctx, f.src)
 	must(t, err, "ingest internal send")
 
 	if got, want := f.balance(t), money.MustParse("50"); got != want {
@@ -240,7 +243,7 @@ func TestIngestSkipsUntrackedButAdvances(t *testing.T) {
 		"": page(payment("stranger-op", a, b, "1000.0000000")),
 	}
 
-	n, err := f.ing.Once(context.Background())
+	n, err := f.ing.Once(context.Background(), f.src)
 	must(t, err, "ingest")
 	if n != 1 {
 		t.Fatalf("consumed %d records, want 1", n)
@@ -260,7 +263,7 @@ func TestIngestSkipsFailedTransaction(t *testing.T) {
 	failed.TransactionSuccessful = false
 	f.horizon.pages = map[string]operations.OperationsPage{"": page(failed)}
 
-	_, err := f.ing.Once(context.Background())
+	_, err := f.ing.Once(context.Background(), f.src)
 	must(t, err, "ingest")
 	if got := f.balance(t); !got.IsZero() {
 		t.Errorf("balance = %s, want 0: a failed transaction moved no money", got)
@@ -279,7 +282,7 @@ func TestReplayDoesNotDoublePost(t *testing.T) {
 		"dup-op": {},
 	}
 
-	_, err := f.ing.Once(ctx)
+	_, err := f.ing.Once(ctx, f.src)
 	must(t, err, "first ingest")
 
 	// Rewind the cursor by hand: exactly what a crash between the post and the
@@ -287,7 +290,7 @@ func TestReplayDoesNotDoublePost(t *testing.T) {
 	_, err = testPool.Exec(ctx, `UPDATE ingestion_cursors SET cursor = '' WHERE stream = $1`, t.Name())
 	must(t, err, "rewind cursor")
 
-	_, err = f.ing.Once(ctx)
+	_, err = f.ing.Once(ctx, f.src)
 	must(t, err, "replayed ingest")
 
 	if got, want := f.balance(t), money.MustParse("100"); got != want {
@@ -309,7 +312,7 @@ func TestCursorAdvancesAcrossPages(t *testing.T) {
 
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		if _, err := f.ing.Once(ctx); err != nil {
+		if _, err := f.ing.Once(ctx, f.src); err != nil {
 			t.Fatalf("ingest round %d: %v", i, err)
 		}
 	}
@@ -348,7 +351,7 @@ func TestCursorHoldsAtAFailedRecord(t *testing.T) {
 		),
 	}
 
-	_, err := f.ing.Once(ctx)
+	_, err := f.ing.Once(ctx, f.src)
 	if err == nil {
 		t.Fatal("expected an error: the overdrawing record cannot post")
 	}
@@ -367,7 +370,7 @@ func TestIngestNativeAsset(t *testing.T) {
 	native.Asset = base.Asset{Type: "native"}
 	f.horizon.pages = map[string]operations.OperationsPage{"": page(native)}
 
-	must(t, mustErr(f.ing.Once(context.Background())), "ingest native")
+	must(t, mustErr(f.ing.Once(context.Background(), f.src)), "ingest native")
 
 	xlm, err := f.store.Ledger().EnsureAsset(context.Background(), "XLM", "")
 	must(t, err, "resolve XLM")
@@ -382,7 +385,7 @@ func TestFetchErrorIsReported(t *testing.T) {
 	f := newFixture(t, nil)
 	f.horizon.err = errors.New("horizon unavailable")
 
-	if _, err := f.ing.Once(context.Background()); err == nil {
+	if _, err := f.ing.Once(context.Background(), f.src); err == nil {
 		t.Fatal("expected the fetch error to surface")
 	}
 }
@@ -430,13 +433,13 @@ func TestPaymentBetweenTenantsIsRecordedTwice(t *testing.T) {
 	f.horizon.pages = map[string]operations.OperationsPage{
 		"": page(payment("cross-seed", keypair.MustRandom().Address(), f.userAddr, "100.0000000")),
 	}
-	_, err = f.ing.Once(ctx)
+	_, err = f.ing.Once(ctx, f.src)
 	must(t, err, "seed")
 
 	f.horizon.pages = map[string]operations.OperationsPage{
 		"cross-seed": page(payment("cross-1", f.userAddr, otherAddr, "40.0000000")),
 	}
-	_, err = f.ing.Once(ctx)
+	_, err = f.ing.Once(ctx, f.src)
 	must(t, err, "ingest a payment between tenants")
 
 	if got, want := f.balance(t), money.MustParse("60"); got != want {
