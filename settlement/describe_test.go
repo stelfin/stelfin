@@ -159,6 +159,19 @@ func goldenCases(t *testing.T) map[string]*txnbuild.Transaction {
 
 		"bump_sequence": buildGolden(t, nil, &txnbuild.BumpSequence{BumpTo: 9_000_000}),
 
+		// A batch, so both implementations are held to the same total.
+		//
+		// The amounts are chosen so that floating point gets it wrong, which
+		// most amounts do not: three of these sum to 15000000000000003
+		// stroops, past the 2^53 where a float64 stops holding odd integers.
+		// Accumulating them as numbers gives ...0004, and accumulating them as
+		// decimals gives ...0005. Only exact integer arithmetic gives ...0003.
+		"batch_payroll": buildGolden(t, nil,
+			&txnbuild.Payment{Destination: goldenDest, Amount: "500000000.0000001", Asset: usdc()},
+			&txnbuild.Payment{Destination: goldenSigner, Amount: "500000000.0000001", Asset: usdc()},
+			&txnbuild.Payment{Destination: goldenDest, Amount: "500000000.0000001", Asset: usdc()},
+		),
+
 		// The contract call, with one argument of every shape that can be got
 		// wrong. The wide integers are the reason this case exists: a token
 		// balance is an i128, JavaScript's Number holds 53 bits of it, and a

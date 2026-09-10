@@ -108,3 +108,111 @@ test("an operation sourced by someone else is refused", () => {
     /comes from a different account/
   );
 });
+
+// ---------------------------------------------------------------------------
+// batch
+// ---------------------------------------------------------------------------
+
+const usdc = new StellarSdk.Asset("USDC", issuer.publicKey());
+
+function payTo(to, amount, asset) {
+  return StellarSdk.Operation.payment({
+    destination: to,
+    asset: asset || usdc,
+    amount: amount,
+  });
+}
+
+const source = account.publicKey();
+
+test("a batch totals its rows exactly", () => {
+  const d = build([
+    payTo(sponsor.publicKey(), "250"),
+    payTo(stranger.publicKey(), "1000.50"),
+    payTo(sponsor.publicKey(), "0.0000001"),
+  ]);
+  const got = policy.batch(d, { source });
+  // 250 + 1000.50 + 0.0000001, added in stroops. Ninety rows of seven decimal
+  // places is exactly where floating point stops being able to add.
+  assert.equal(got.total, "1250.5000001");
+  assert.equal(got.rows, 3);
+});
+
+test("a non-payment among the rows is refused", () => {
+  const d = build([
+    payTo(sponsor.publicKey(), "250"),
+    StellarSdk.Operation.changeTrust({ asset: usdc, limit: "1000" }),
+  ]);
+  assert.throws(() => policy.batch(d, { source }), /payments only/);
+});
+
+test("two assets cannot share a total", () => {
+  const d = build([
+    payTo(sponsor.publicKey(), "250"),
+    payTo(sponsor.publicKey(), "250", StellarSdk.Asset.native()),
+  ]);
+  assert.throws(() => policy.batch(d, { source }), /different asset/);
+});
+
+test("a row sent from another account is refused", () => {
+  const sneaky = StellarSdk.Operation.payment({
+    destination: sponsor.publicKey(),
+    asset: usdc,
+    amount: "250",
+    source: stranger.publicKey(),
+  });
+  const d = build([payTo(sponsor.publicKey(), "250"), sneaky]);
+  assert.throws(() => policy.batch(d, { source }), /different account/);
+});
+
+test("a batch from the wrong account is refused", () => {
+  const d = build([payTo(sponsor.publicKey(), "250")]);
+  assert.throws(
+    () => policy.batch(d, { source: stranger.publicKey() }),
+    /not sent from the account/
+  );
+});
+
+test("an empty batch is refused", () => {
+  // Reached through the description rather than a builder, since the SDK will
+  // not build a transaction with no operations.
+  assert.throws(() => policy.batch({ operations: [], source }, { source }), /no operations/);
+});
+
+test("the browser's total matches the server's", () => {
+  // The cross-language guarantee, at the number that actually gets approved.
+  // Amounts chosen so a float would visibly disagree.
+  const d = build([
+    payTo(sponsor.publicKey(), "0.1"),
+    payTo(sponsor.publicKey(), "0.2"),
+  ]);
+  assert.equal(policy.batch(d, { source }).total, "0.3000000");
+});
+
+test("the batch corpus case would catch a float implementation", () => {
+  // Guards the guard. Most amounts add up the same either way, so a corpus
+  // case chosen carelessly proves nothing about exactness — this asserts that
+  // this one still tells the two apart, and fails if somebody edits the
+  // amounts to something friendlier.
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const describe = require("./describe.js");
+
+  const file = path.join(
+    __dirname, "..", "..", "settlement", "testdata", "describe", "batch_payroll.json"
+  );
+  const c = JSON.parse(fs.readFileSync(file, "utf8"));
+  const d = describe.describeTx(c.xdr, c.network);
+
+  const exact = policy.batch(d, { source: d.source }).total;
+
+  let asNumbers = 0;
+  for (const op of d.operations) {
+    asNumbers += Number(op.fields.find((f) => f.label === "amount").value);
+  }
+  assert.notEqual(
+    asNumbers.toFixed(7),
+    exact,
+    "these amounts add up the same in floating point, so the corpus case is not testing exactness"
+  );
+});

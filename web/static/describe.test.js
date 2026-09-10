@@ -129,3 +129,24 @@ test("an offer's price survives as a rational", () => {
   const price = derived.operations[0].fields.find((f) => f.label === "price");
   assert.equal(price.value, "7/3", "the price was rendered as a decimal");
 });
+
+// The total both implementations must produce for the batch_payroll corpus
+// case.
+//
+// Written out here and again in settlement/describe_batch_test.go. Two
+// hardcoded strings rather than one shared constant on purpose: the point is
+// that two separately-written implementations agree, and sharing the constant
+// would let them agree by construction.
+const GOLDEN_BATCH_TOTAL = "1500000000.0000003";
+
+test("the browser totals a batch exactly as the server does", () => {
+  const policy = require("./policy.js");
+  const c = corpus().find((x) => x.name === "batch_payroll");
+  assert.ok(c, "the corpus has no batch case");
+
+  const d = describe.describeTx(c.xdr, c.network);
+  const got = policy.batch(d, { source: d.source });
+
+  assert.equal(got.total, GOLDEN_BATCH_TOTAL);
+  assert.equal(got.rows, 3);
+});

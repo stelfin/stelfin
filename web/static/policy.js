@@ -75,5 +75,80 @@
     }
   }
 
-  return { reclaim: reclaim, Refused: Refused };
+  // batch: payments only, one asset, one source — and a total this page
+  // computed itself.
+  //
+  // The rules mirror settlement/describe_batch.go, and they exist because a
+  // person approving ninety rows reads the number and skims the list. That is
+  // what a total is for, so the total has to be true in a stronger sense than a
+  // rendered field usually is.
+  //
+  // The total is returned rather than checked against anything the server sent.
+  // A page that displayed the server's number and verified its own quietly
+  // would show the wrong one on exactly the day the check was what broke.
+  function batch(d, expected) {
+    if (!d.operations.length) {
+      throw new Refused("it has no operations");
+    }
+    if (expected && expected.source && d.source !== expected.source) {
+      throw new Refused("it is not sent from the account this batch is for");
+    }
+
+    var asset = null;
+    var total = 0n;
+
+    for (var i = 0; i < d.operations.length; i++) {
+      var op = d.operations[i];
+      if (op.type !== "payment") {
+        // One trustline change among ninety payments is invisible to a reader
+        // checking a total, and the total says nothing about it.
+        throw new Refused("row " + (i + 1) + " is a " + op.type + ", and a batch is payments only");
+      }
+      if (op.source && op.source !== d.source) {
+        throw new Refused("row " + (i + 1) + " is sent from a different account");
+      }
+
+      var rowAsset = field(op, "asset");
+      var amount = field(op, "amount");
+      var to = field(op, "destination");
+      if (!rowAsset || !amount || !to) {
+        throw new Refused("row " + (i + 1) + " is missing a field");
+      }
+      if (asset === null) asset = rowAsset.value;
+      if (rowAsset.value !== asset) {
+        // A total is only a number when everything in it shares a unit.
+        throw new Refused("row " + (i + 1) + " sends a different asset from the rest");
+      }
+
+      var stroops = toStroops(amount.value);
+      if (stroops <= 0n) {
+        throw new Refused("row " + (i + 1) + " sends nothing");
+      }
+      total += stroops;
+    }
+
+    return { total: fromStroops(total), asset: asset, rows: d.operations.length };
+  }
+
+  // Amounts go through BigInt, never Number. Ninety rows of seven decimal
+  // places is exactly where floating point stops being able to add.
+  function toStroops(amount) {
+    var parts = String(amount).split(".");
+    if (parts.length > 2) throw new Refused("an amount has two decimal points");
+    var whole = parts[0] || "0";
+    var fraction = (parts[1] || "").padEnd(7, "0");
+    if (fraction.length > 7) throw new Refused("an amount has too many decimal places");
+    if (!/^\d+$/.test(whole) || !/^\d*$/.test(fraction)) {
+      throw new Refused("an amount is not a plain number");
+    }
+    return BigInt(whole) * 10000000n + BigInt(fraction || "0");
+  }
+
+  function fromStroops(stroops) {
+    var whole = stroops / 10000000n;
+    var fraction = (stroops % 10000000n).toString().padStart(7, "0");
+    return whole.toString() + "." + fraction;
+  }
+
+  return { reclaim: reclaim, batch: batch, Refused: Refused };
 });
