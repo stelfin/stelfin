@@ -11,6 +11,10 @@ NODE     ?= node
 CARGO    ?= cargo
 FUZZTIME ?= 30s
 
+# Pinned, not @latest. Formatting is a gate, and a gate whose rules arrive from
+# upstream mid-week fails builds for reasons no commit in this repo caused.
+GOFUMPT  ?= mvdan.cc/gofumpt@v0.12.0
+
 # The Rust contracts are deliberately not in `check`. They need a toolchain the
 # Go work does not, and a first build takes ten minutes — putting them here
 # would make the ordinary loop unusable for anyone touching Go. Run
@@ -20,7 +24,7 @@ check: fmt vet test test-js ## Format, vet and test everything
 
 .PHONY: fmt
 fmt: ## Report files that gofmt would change
-	@out="$$($(GO) run mvdan.cc/gofumpt@latest -l . 2>/dev/null || gofmt -l .)"; \
+	@out="$$($(GO) run $(GOFUMPT) -l . 2>/dev/null || gofmt -l .)"; \
 	if [ -n "$$out" ]; then echo "needs formatting:"; echo "$$out"; exit 1; fi
 
 .PHONY: vet
@@ -33,7 +37,11 @@ test: ## Unit and integration tests
 
 .PHONY: test-js
 test-js: ## Check the browser's renderer against the Go corpus, and its shape rules
-	@cd web/static && $(NODE) --test describe.test.js policy.test.js pages.test.js
+	@cd web/static && $(NODE) --test describe.test.js policy.test.js pages.test.js styles.test.js
+
+.PHONY: check-web
+check-web: ## Typecheck, lint and build the marketing site
+	@cd marketing && npx tsc --noEmit && npm run lint && npm run build
 
 .PHONY: test-contracts
 test-contracts: ## The Rust contracts, including the negative-auth suite

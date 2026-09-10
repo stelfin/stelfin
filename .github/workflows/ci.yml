@@ -1,0 +1,93 @@
+# What must be true of a commit before it is deployed.
+#
+# Three jobs rather than one, because they need different toolchains and have
+# very different costs. The Go job is the ordinary loop and finishes in a couple
+# of minutes; a cold Rust build takes ten; the marketing app needs neither.
+# Splitting them means a Go change is not waiting on a Rust toolchain to install.
+#
+# Deliberately absent: `make test-deploy`. It reads the contract code back off
+# live testnet, so a testnet reset — an event this repo does not control and
+# cannot fix — would turn main red. The honesty claim it checks is real and
+# worth checking, but on a schedule, not as a gate on every commit.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # test-js runs the browser's own renderer against the Go golden corpus,
+      # so the Node toolchain is part of the Go gate, not separate from it.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The test harness downloads and extracts a Postgres binary on first use.
+      # Without this cache every run pays for that again.
+      - name: Cache embedded Postgres
+        uses: actions/cache@v4
+        with:
+          path: ~/.embedded-postgres-go/extracted
+          key: embedded-postgres-${{ runner.os }}
+
+      - run: make check
+
+  contracts:
+    name: contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts
+
+      - run: make test-contracts
+
+  marketing:
+    name: marketing
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: marketing
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: marketing/package-lock.json
+
+      - run: npm ci
+
+      # marketing/go.mod walls this directory off from `go build ./...`, which
+      # is what keeps node_modules out of the Go build — and also what leaves
+      # the app with no gate in `make check`. This job is that gate.
+      - run: npx tsc --noEmit
+
+      - run: npm run lint
+
+      - run: npm run build
