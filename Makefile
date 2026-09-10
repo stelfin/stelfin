@@ -27,9 +27,11 @@ check: fmt vet test test-js ## Format, vet and test everything
 
 .PHONY: fmt
 fmt: ## Report files that gofumpt would change
-	@if ! out="$$($(GO) run $(GOFUMPT) -l . 2>&1)"; then \
-		echo "gofumpt could not run, so nothing was checked:"; echo "$$out"; exit 1; \
+	@err=$$(mktemp); \
+	if ! out="$$($(GO) run $(GOFUMPT) -l . 2>$$err)"; then \
+		echo "gofumpt could not run, so nothing was checked:"; cat $$err; rm -f $$err; exit 1; \
 	fi; \
+	rm -f $$err; \
 	if [ -n "$$out" ]; then echo "needs formatting:"; echo "$$out"; exit 1; fi
 
 .PHONY: vet
