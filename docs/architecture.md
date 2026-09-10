@@ -183,7 +183,7 @@ Every phase ends with `make check` green and something demonstrable.
 | 8 | The contracts, deployed and pinned |
 | 9 | Ingestion: Horizon operations, Soroban events, SAC transfers |
 | 10 | Connectors and the Sheets adapter |
-| 11 | MCP server, then MCP client |
+| 11 | MCP server (done), then MCP client (**deferred — see below**) |
 | 12 | Mainnet rails; the marketing rebuild |
 
 ## Verification
@@ -203,6 +203,37 @@ Every phase ends with `make check` green and something demonstrable.
   Telegram group, runs setup, links a wallet by signature, links a treasury,
   proposes a payment, approves it in the browser, and watches it land on
   testnet — recognised as the same member on both platforms.
+
+## Deferred
+
+### The MCP client
+
+The half of phase 11 where stelfin calls *out* to somebody else's MCP server.
+The server half — reading a workspace's own data — is built; this is not, and it
+is deliberately parked rather than half-built, because a partial version of it
+is worse than none.
+
+What it has to carry when it is written:
+
+- **An SSRF-safe dialer that pins the resolved IP.** A connector URL is
+  attacker-influenced input. Resolving a hostname and then connecting is two
+  operations, and between them the answer can change — so the address is
+  resolved once, checked against the private ranges, and the connection is made
+  to that address rather than to the name.
+- **A digest-pinned tool surface.** The same pin the on-chain registry already
+  holds: a server granted "read a spreadsheet" that later offers a transfer tool
+  must fail rather than be obeyed.
+- **Budgets and circuit breakers**, so an endpoint that is slow, hostile or
+  merely broken cannot hold a request path open or spend a workspace's rate.
+- **No agent loop.** The strongest defence here is architectural rather than
+  code: a tool result never reaches the decoder, so nothing an external server
+  says can become an instruction. That property holds today by construction, and
+  the client must be built so it stays true.
+
+### Tier P (propose) MCP tools
+
+Sequenced after the draft flow has run in anger, which it has not. The tier
+exists in the token table and nothing is registered against it.
 
 ## Not yet designed
 
