@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+/* ---------------------------------------------------------------------------
+   Layer 1 — the raw palette.
+
+   These are the brand's actual colours. They do not change between light and
+   dark; they are the pigments the semantic layer below mixes from. Components
+   should almost never reach for these directly — reach for the semantic tokens
+   instead, or the component will only be correct in one of the two modes.
+   --------------------------------------------------------------------------- */
 @theme {
   /* Surface — warm near-whites */
   --color-surface-0: #ffffff;
@@ -18,41 +26,142 @@
 
   /* Accent — the same green already used across the Go binary's confirm and
      enroll pages, so the marketing site and the product itself read as one
-     brand rather than two different colors that happen to share a name. */
+     brand rather than two different colors that happen to share a name.
+     accent-500 is a hard contract with web/static/*.html. Do not change it
+     here without changing it there. accent-300 is likewise the exact hex those
+     pages use in their own dark block, which is what keeps the two surfaces
+     one brand in dark mode rather than two greens. */
   --color-accent-50: #eaf7ef;
   --color-accent-100: #d3f0dd;
   --color-accent-300: #7dd6a0;
   --color-accent-500: #14713d;
   --color-accent-600: #105e32;
   --color-accent-700: #0c4a28;
+  --color-accent-900: #10331e;
 
-  /* Fonts */
-  --font-display: "Instrument Serif", "Times New Roman", ui-serif, serif;
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  /* Fonts.
 
-  /* Radii */
-  --radius-sm: 0.375rem;
-  --radius-md: 0.625rem;
-  --radius-lg: 1rem;
-  --radius-xl: 1.5rem;
+     Geist rather than Inter: the display face has more character at large
+     sizes, and the pair is designed together so the mono sits naturally beside
+     it. There is deliberately no serif — a treasury tool has no editorial
+     claim to make, and a serif display face here would be decoration wearing
+     the costume of taste. Emphasis inside a headline is weight or italic of
+     the same family, never a second family. */
+  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, monospace;
 
-  /* Shadows — soft, never heavy */
+  /* Radii — three tiers, and only three. Controls are tighter than the
+     surfaces that contain them; the closing slab is the one shell. Anything
+     that does not fit these is a shape that has not been decided. */
+  --radius-control: 0.625rem;
+  --radius-surface: 1rem;
+  --radius-shell: 1.75rem;
+
   --shadow-soft: 0 1px 3px rgb(0 0 0 / 0.04), 0 4px 12px rgb(0 0 0 / 0.04);
-  --shadow-card: 0 4px 12px rgb(0 0 0 / 0.06), 0 16px 40px rgb(0 0 0 / 0.08);
-  --shadow-accent: 0 8px 24px -8px rgb(20 113 61 / 0.4);
+}
+
+/* ---------------------------------------------------------------------------
+   Layer 2 — semantic tokens.
+
+   Named for the job, not the colour, so a component written once is correct in
+   both modes. The raw names live outside @theme; the @theme inline block below
+   turns them into utilities (bg-bg, text-fg, border-line, ...) that resolve at
+   use-time rather than being frozen at build-time — which is what lets the
+   media query below actually change anything.
+   --------------------------------------------------------------------------- */
+:root {
+  --bg: #fafaf9;
+  --bg-raised: #ffffff;
+  --bg-sunken: #f2f4f1;
+  --fg: #0e120f;
+  --fg-muted: #2a2f2b;
+  --fg-subtle: #66716a;
+  --line: #dde1da;
+  --line-strong: #d0d5cb;
+  --accent: #14713d;
+  --accent-hover: #105e32;
+  --on-accent: #ffffff;
+
+  /* The deliberately-inverted slab: the footer, and the one section that flips.
+     A separate token rather than raw ink-900, because in dark mode ink-900 IS
+     the page background, and a footer painted the same colour as the page stops
+     being a footer. There it goes a step darker instead of a step lighter, so
+     the inversion still reads as one. */
+  --surface-inverse: #0e120f;
+  --on-surface-inverse: #fafaf9;
+
+  /* Tinted, never pure black, and mixed from the accent so the shadow belongs
+     to the same light as everything else. */
+  --shadow-accent: 0 8px 24px -8px color-mix(in srgb, var(--accent) 40%, transparent);
+  --shadow-accent-lifted: 0 16px 44px -8px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e120f;
+    --bg-raised: #161b17;
+    --bg-sunken: #0a0d0b;
+    --fg: #f2f4f1;
+    --fg-muted: #b7c0b9;
+    --fg-subtle: #8a948d;
+    --line: #262c27;
+    --line-strong: #343b35;
+
+    /* Lighter green so it carries on a dark ground, and dark ink on top of it:
+       white on this green is 2.25:1 and fails AA outright. This pairing is
+       7.95:1. The signing pages make the same swap for the same reason. */
+    --accent: #4ec27f;
+    --accent-hover: #68cf95;
+    --on-accent: #08130c;
+
+    /* Lighter, not darker. In light mode the slab inverts downward to near
+       black; in dark mode there is no meaningful "darker" left — #0a0d0b
+       against a #0e120f page is a four-unit difference nobody can see, so the
+       inversion silently stopped happening. Going up instead keeps the beat:
+       the band still separates from the page, just from the other side. */
+    --surface-inverse: #1a201c;
+    --on-surface-inverse: #f2f4f1;
+  }
+}
+
+/* Inside an inverted slab the page-level tokens are wrong by definition. That
+   ground is dark whichever mode the page is in, so the light-mode accent lands
+   dark-green-on-near-black at roughly 2:1 and the headline's accent word stops
+   being readable. Redeclaring the accent trio on the slab itself means every
+   `text-accent` beneath it resolves correctly without any component knowing it
+   is inside an inversion. */
+.on-inverse {
+  --accent: #4ec27f;
+  --accent-hover: #68cf95;
+  --on-accent: #08130c;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-raised: var(--bg-raised);
+  --color-bg-sunken: var(--bg-sunken);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-on-accent: var(--on-accent);
+  --color-surface-inverse: var(--surface-inverse);
+  --color-on-surface-inverse: var(--on-surface-inverse);
 }
 
 html {
   scroll-behavior: auto; /* Lenis owns scrolling now */
   font-family: var(--font-sans);
   position: relative;
+  color-scheme: light dark;
 }
 
 body {
-  background: var(--color-surface-50);
-  color: var(--color-ink-900);
-  font-feature-settings: "ss01", "cv11";
+  background: var(--bg);
+  color: var(--fg);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -60,26 +169,25 @@ body {
 h1, h2, h3 {
   letter-spacing: -0.02em;
   line-height: 1.05;
+  /* Prevents a heading widowing its last word onto a line of its own. */
+  text-wrap: balance;
+}
+
+/* The header is sticky, so an anchor jump lands the section heading underneath
+   it. Lenis compensates on click, but a pasted /#security URL never goes
+   through Lenis's handler and arrives with the heading tucked behind the nav. */
+[id] {
+  scroll-margin-top: 6rem;
+}
+
+/* Removes the 300ms double-tap-zoom delay on touch without disabling zoom. */
+a, button, [role="button"] {
+  touch-action: manipulation;
 }
 
 ::selection {
-  background: var(--color-accent-500);
-  color: white;
-}
-
-@keyframes typing-dots {
-  0%, 60%, 100% { transform: translateY(0); opacity: 0.3; }
-  30% { transform: translateY(-3px); opacity: 1; }
-}
-
-@keyframes drift-slow {
-  0%, 100% { transform: translate(0, 0); }
-  33% { transform: translate(8px, -6px); }
-  66% { transform: translate(-6px, 8px); }
-}
-
-.animate-drift-slow {
-  animation: drift-slow 12s ease-in-out infinite;
+  background: var(--accent);
+  color: var(--on-accent);
 }
 
 /* Security pillar #1: a key sliding down and turning into the lock, then a
@@ -130,36 +238,35 @@ h1, h2, h3 {
 .animate-scan-sweep { animation: scan-sweep 3.6s ease-in-out infinite; }
 
 /* Faint grain — breaks up flat gradients so the hero doesn't look like a
-   solid-color render. Kept extremely subtle (3.5% opacity). */
+   solid-color render. Kept extremely subtle. Lighter in dark mode, where the
+   same opacity over a dark ground reads as dirt rather than texture. */
 .bg-grain {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   opacity: 0.035;
   mix-blend-mode: multiply;
 }
 
-/* WhatsApp-style chat wallpaper — a faint repeating dot pattern rather than
-   a bitmap asset, so the phone mockup needs no external image. */
-.bg-chat {
-  background-color: #e9edea;
-  background-image: radial-gradient(rgba(14, 18, 15, 0.05) 1px, transparent 1px);
-  background-size: 16px 16px;
+@media (prefers-color-scheme: dark) {
+  .bg-grain {
+    opacity: 0.05;
+    mix-blend-mode: screen;
+  }
 }
 
 ::-webkit-scrollbar { width: 0; height: 0; }
-
-/* Custom cursor hides the native one on devices that have a real pointer. */
-.has-custom-cursor {
-  cursor: none;
-}
-.has-custom-cursor a,
-.has-custom-cursor button {
-  cursor: none;
-}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  /* The travelling dots on the world map are SMIL (<animateMotion>), which the
+     rule above cannot reach — SMIL is not a CSS animation and has no media
+     query hook of its own. Hiding the group is the only way to honour the
+     preference, and the map still reads correctly without them. */
+  .arc-dots {
+    display: none;
   }
 }

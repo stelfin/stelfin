@@ -1,36 +1,99 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# stelfin marketing site
 
-## Getting Started
+The public landing page at [stelfin.vercel.app](https://stelfin.vercel.app). A
+separate Next.js app from the Go service in the repository root, deployed
+separately, sharing nothing at runtime.
 
-First, run the development server:
+The one thing the two surfaces do share is the brand green, `#14713d`. It is
+declared here in `app/globals.css` and again in every page under
+`web/static/*.html`, which the Go binary serves. Changing it in one place and
+not the other splits the product into two brands that happen to have the same
+name.
+
+## Running it
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev        # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Checks, all three of which CI runs:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npx tsc --noEmit
+npm run lint
+npm run build
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Note that `make check` at the repository root does **not** cover this
+directory. `marketing/go.mod` exists solely to wall the app off from
+`go build ./...` so that `node_modules` is never walked, and the side effect is
+that the Go gate says nothing about the site. The `marketing` job in
+`.github/workflows/ci.yml` is what actually gates it.
 
-## Learn More
+## Layout
 
-To learn more about Next.js, take a look at the following resources:
+```
+app/
+  layout.tsx           fonts, metadata, the motion and smooth-scroll providers
+  page.tsx             the single route; composes the sections in order
+  globals.css          the whole design system, in two layers (see below)
+  icon.svg             the brand mark, source of favicon.ico and apple-icon.png
+  opengraph-image.tsx  the share card, generated at build time
+components/
+  sections/            one file per section of the page
+  layout/              navbar, footer
+  ui/                  brand mark, CTA button, CTA icon, the world map
+  interactive/         mask reveal, scroll reveal, smooth scroll
+lib/
+  data/                copy that more than one component needs
+  animation/           shared motion variants and easing
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## The design system
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+`app/globals.css` has two layers, and the distinction matters:
 
-## Deploy on Vercel
+**Layer 1, `@theme`** is the raw palette: `surface-*`, `ink-*`, `accent-*`.
+These are pigments. They do not change between light and dark.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+**Layer 2** is the semantic tokens: `bg`, `fg`, `line`, `accent`, `on-accent`
+and friends. They are named for the job rather than the colour, they flip under
+`prefers-color-scheme: dark`, and they are what components should use. A
+component written against `ink-900` is only correct in one of the two modes.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Two exceptions are deliberate:
+
+- `components/ui/brand-mark.tsx` uses `accent-500` directly. A logo holds its
+  brand colour in every context; that is what makes it a logo.
+- Sections that invert (the Security band, the footer) carry the `.on-inverse`
+  class, which redeclares the accent trio for their subtree. Their ground is
+  dark whichever mode the page is in, so the page-level accent would be wrong
+  inside them.
+
+There is no `tailwind.config` file. Tailwind v4 is configured from CSS, and
+`@theme inline` is what makes the semantic tokens resolve at use-time rather
+than being frozen at build time.
+
+## Motion
+
+`framer-motion` for reveals and scroll-linked values, `lenis` for smooth
+scrolling. No GSAP: mixing the two in one tree makes them fight over frames.
+
+Everything honours `prefers-reduced-motion` through `MotionConfig
+reducedMotion="user"` in the layout plus the global block in `globals.css`. The
+one thing neither reaches is the travelling dots on the world map, which are
+SMIL `<animateMotion>` and have no CSS hook at all; they carry an `.arc-dots`
+class that the reduced-motion block hides outright.
+
+## The call to action
+
+There is deliberately no "Add to Telegram" button. The bot is not reachable
+yet, and a dead call to action spends the one moment a visitor was willing to
+act. Switching it on is two edits, and they must happen together:
+
+1. `PRIMARY_CTA` in `lib/data/site.ts`
+2. the `get-started` answer in `lib/data/faqs.ts`, which currently says nothing
+   is live yet
+
+Both carry comments saying so.

@@ -12,17 +12,17 @@ export function FaqSection() {
   const [openId, setOpenId] = useState<string>(FAQS[0]?.id ?? "");
 
   return (
-    <section id="faq" className="bg-surface-50 py-16 lg:py-28">
+    <section id="faq" className="bg-bg py-16 lg:py-28">
       <div className="mx-auto max-w-5xl px-6">
         <div className="text-center">
           <Reveal>
-            <span className="font-mono text-xs uppercase tracking-[0.2em] text-ink-400">FAQ</span>
+            <span className="font-mono text-xs uppercase tracking-[0.2em] text-fg-subtle">FAQ</span>
           </Reveal>
           <MaskReveal
             as="h2"
             text="Questions, answered honestly."
             accent="honestly."
-            className="mt-5 justify-center font-display text-[32px] font-medium leading-[1.04] tracking-[-0.02em] text-ink-900 md:text-[48px]"
+            className="mt-5 justify-center text-[32px] font-medium leading-[1.04] tracking-[-0.02em] text-fg md:text-[48px]"
           />
         </div>
 
@@ -41,23 +41,22 @@ export function FaqSection() {
 function FaqCard({ faq, open, onToggle }: { faq: FaqItem; open: boolean; onToggle: () => void }) {
   return (
     <div
-      className={`h-full rounded-2xl border bg-white p-6 transition-colors duration-300 ${
-        open ? "border-accent-500/40" : "border-ink-200/70 hover:border-ink-300"
+      className={`h-full rounded-surface border bg-bg-raised p-6 transition-colors duration-300 ${
+        open ? "border-accent/40" : "border-line hover:border-line-strong"
       }`}
     >
       <button
         type="button"
-        data-cursor="grow"
         aria-expanded={open}
         aria-controls={`faq-panel-${faq.id}`}
         onClick={onToggle}
         className="flex w-full cursor-pointer items-start justify-between gap-4 text-left"
       >
-        <h3 className="text-base font-medium tracking-tight text-ink-900 sm:text-lg">{faq.question}</h3>
+        <h3 className="text-base font-medium tracking-tight text-fg sm:text-lg">{faq.question}</h3>
         <span
           aria-hidden="true"
-          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-ink-700 transition-[transform,background-color,border-color,color] duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
-            open ? "rotate-45 border-accent-500 bg-accent-500 text-white" : "border-ink-200"
+          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-fg-muted transition-[transform,background-color,border-color,color] duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+            open ? "rotate-45 border-accent bg-accent text-on-accent" : "border-line"
           }`}
         >
           <svg viewBox="0 0 16 16" className="h-3.5 w-3.5">
@@ -76,7 +75,7 @@ function FaqCard({ faq, open, onToggle }: { faq: FaqItem; open: boolean; onToggl
             transition={{ duration: 0.35, ease: EASE }}
             className="overflow-hidden"
           >
-            <p className="pt-4 text-[15px] leading-relaxed text-ink-500">{faq.answer}</p>
+            <p className="pt-4 text-[15px] leading-relaxed text-fg-subtle">{faq.answer}</p>
           </motion.div>
         )}
       </AnimatePresence>

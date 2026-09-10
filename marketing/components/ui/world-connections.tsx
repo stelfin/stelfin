@@ -110,16 +110,22 @@ export function WorldConnections() {
       preserveAspectRatio="xMidYMid slice"
       aria-hidden="true"
     >
+      {/* fill-fg, not fill-ink-900: ink-900 dots on a dark background are the
+          background, and the whole map disappears in dark mode. */}
       {DOTS.map((d, i) => (
-        <circle key={i} cx={d.x} cy={d.y} r={1.7} className="fill-ink-900/[0.22]" />
+        <circle key={i} cx={d.x} cy={d.y} r={1.7} className="fill-fg/[0.22]" />
       ))}
 
       {ARCS.map(({ from, to, duration, delay }, i) => {
         const path = arcPath(from, to);
         return (
           <g key={i}>
-            <path d={path} fill="none" stroke="currentColor" strokeWidth={1} className="text-accent-500/30" />
-            <circle r={2.6} className="fill-accent-500">
+            <path d={path} fill="none" stroke="currentColor" strokeWidth={1} className="text-accent/30" />
+            {/* The travelling dot is SMIL, which no CSS media query can pause.
+                The .arc-dots class is the handle globals.css uses to hide these
+                entirely under prefers-reduced-motion — the arcs themselves stay,
+                so the map still says what it is saying, just without movement. */}
+            <circle r={2.6} className="arc-dots fill-accent">
               <animateMotion dur={duration} begin={delay} repeatCount="indefinite" path={path} />
             </circle>
           </g>
@@ -127,7 +133,7 @@ export function WorldConnections() {
       })}
 
       {Object.values(CITIES).map((c, i) => (
-        <circle key={i} cx={c.x} cy={c.y} r={2.8} className="fill-accent-500/80" />
+        <circle key={i} cx={c.x} cy={c.y} r={2.8} className="fill-accent/80" />
       ))}
     </svg>
   );

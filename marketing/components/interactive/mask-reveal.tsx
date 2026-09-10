@@ -85,7 +85,7 @@ export function MaskReveal({
         <span key={i} className="inline-block overflow-hidden pb-[0.12em]">
           <motion.span
             variants={maskWord}
-            className={cn("inline-block", item.accent && "text-accent-500")}
+            className={cn("inline-block", item.accent && "text-accent")}
           >
             {item.w}
           </motion.span>
