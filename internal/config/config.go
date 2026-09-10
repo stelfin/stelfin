@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,14 @@ type Config struct {
 	// for one that has not been pointed at an RPC — rather than failing to
 	// start over a capability nobody has asked for yet.
 	SorobanRPCURL string
+	// SorobanStartLedger is where event ingestion begins when it has no cursor.
+	//
+	// No default, and deliberately so. An RPC keeps a bounded window of events,
+	// so "start at the beginning" is not a thing it can serve — and adopting
+	// whatever it still holds would silently skip everything before that.
+	// Choosing the ledger is how an operator says which history they accept
+	// having missed.
+	SorobanStartLedger uint32
 
 	// TreasurySeed is the treasury's secret seed. See the warning on Load.
 	TreasurySeed string
@@ -121,6 +130,21 @@ func Load() (*Config, error) {
 		}
 		return fallback
 	}
+	// A ledger sequence that will not parse is a misconfiguration, not a
+	// reason to fall back: silently starting from zero would skip history the
+	// operator meant to include.
+	optLedger := func(key string) uint32 {
+		v := strings.TrimSpace(os.Getenv(key))
+		if v == "" {
+			return 0
+		}
+		n, err := strconv.ParseUint(v, 10, 32)
+		if err != nil {
+			missing = append(missing, key+" (must be a ledger sequence)")
+			return 0
+		}
+		return uint32(n)
+	}
 
 	c := &Config{
 		HTTPAddr:    opt("STELFIN_HTTP_ADDR", ":8080"),
@@ -130,11 +154,12 @@ func Load() (*Config, error) {
 		// No default. A default would point a mainnet deployment at whatever
 		// endpoint happened to be written here, and an RPC decides what a
 		// contract call is simulated against.
-		SorobanRPCURL: strings.TrimSpace(os.Getenv("STELFIN_SOROBAN_RPC_URL")),
-		TreasurySeed:  req("STELFIN_TREASURY_SEED"),
-		WebAuthSeed:   strings.TrimSpace(os.Getenv("STELFIN_WEBAUTH_SEED")),
-		AssetCode:     opt("STELFIN_ASSET_CODE", "USDC"),
-		AssetIssuer:   req("STELFIN_ASSET_ISSUER"),
+		SorobanRPCURL:      strings.TrimSpace(os.Getenv("STELFIN_SOROBAN_RPC_URL")),
+		SorobanStartLedger: optLedger("STELFIN_SOROBAN_START_LEDGER"),
+		TreasurySeed:       req("STELFIN_TREASURY_SEED"),
+		WebAuthSeed:        strings.TrimSpace(os.Getenv("STELFIN_WEBAUTH_SEED")),
+		AssetCode:          opt("STELFIN_ASSET_CODE", "USDC"),
+		AssetIssuer:        req("STELFIN_ASSET_ISSUER"),
 
 		TelegramBotToken:      strings.TrimSpace(os.Getenv("STELFIN_TELEGRAM_BOT_TOKEN")),
 		TelegramWebhookSecret: strings.TrimSpace(os.Getenv("STELFIN_TELEGRAM_WEBHOOK_SECRET")),

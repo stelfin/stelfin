@@ -18,6 +18,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stellar/go-stellar-sdk/clients/horizonclient"
+	"github.com/stellar/go-stellar-sdk/clients/rpcclient"
 	"github.com/stellar/go-stellar-sdk/keypair"
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 
@@ -281,6 +282,22 @@ func run(log *slog.Logger) error {
 	// unreachable must not stop the others recording, and one falling behind
 	// should not hold the rest back.
 	sources := []ingestion.Source{classic}
+	// Contract-held treasuries move money through token events, not Horizon
+	// operations, so a deployment with no RPC configured simply cannot see
+	// them. Said out loud at startup rather than left as a silent zero
+	// balance for whoever runs one.
+	if cfg.HasSoroban() {
+		transfers, err := ingestion.NewTransferSource(
+			rpcclient.NewClient(cfg.SorobanRPCURL, &http.Client{Timeout: 30 * time.Second}),
+			"transfers", cfg.SorobanStartLedger)
+		if err != nil {
+			return err
+		}
+		sources = append(sources, transfers)
+	} else {
+		log.Warn("no Soroban RPC configured; a contract-held treasury's balance " +
+			"cannot be seen and will read as zero")
+	}
 	ingestDone := make(chan struct{})
 	var ingesting sync.WaitGroup
 	for _, src := range sources {
