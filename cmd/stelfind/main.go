@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -259,21 +260,41 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
-	ingester, err := ingestion.New(ctx,
-		&horizonclient.Client{HorizonURL: cfg.HorizonURL},
-		db, pool, ingestion.Config{Stream: "payments"})
+	ingester, err := ingestion.New(db, pool, ingestion.Config{})
+	if err != nil {
+		return err
+	}
+	// Named "operations" rather than "payments", and the rename matters: the
+	// cursor row is per stream, so a deployment upgrading from the payments
+	// endpoint starts this one from the beginning of history rather than
+	// resuming mid-stream against another endpoint's paging tokens.
+	classic, err := ingestion.NewOperationsSource(
+		&horizonclient.Client{HorizonURL: cfg.HorizonURL}, "operations")
 	if err != nil {
 		return err
 	}
 
-	// Ingestion runs alongside the server. It owns a durable cursor, so a
-	// restart resumes rather than replaying or skipping.
+	// Ingestion runs alongside the server. Each source owns a durable cursor,
+	// so a restart resumes rather than replaying or skipping.
+	//
+	// One goroutine per source, independent on purpose: a source being
+	// unreachable must not stop the others recording, and one falling behind
+	// should not hold the rest back.
+	sources := []ingestion.Source{classic}
 	ingestDone := make(chan struct{})
+	var ingesting sync.WaitGroup
+	for _, src := range sources {
+		ingesting.Add(1)
+		go func(src ingestion.Source) {
+			defer ingesting.Done()
+			if err := ingester.Run(ctx, src); err != nil && !errors.Is(err, context.Canceled) {
+				log.Error("ingestion stopped", "source", src.Name(), "error", err)
+			}
+		}(src)
+	}
 	go func() {
-		defer close(ingestDone)
-		if err := ingester.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			log.Error("ingestion stopped", "error", err)
-		}
+		ingesting.Wait()
+		close(ingestDone)
 	}()
 
 	httpServer := &http.Server{
