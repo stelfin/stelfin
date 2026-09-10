@@ -2,15 +2,19 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/stellar/go-stellar-sdk/strkey"
 
 	"github.com/stelfin/stelfin/connector"
 	"github.com/stelfin/stelfin/internal/money"
+	"github.com/stelfin/stelfin/ledger/store"
+	"github.com/stelfin/stelfin/settlement"
 )
 
 // Turning what a connector proposed into payments.
@@ -249,4 +253,111 @@ func clipCell(s string) string {
 		return s
 	}
 	return string(runes[:limit]) + "…"
+}
+
+// ProposeBatch puts a resolved batch to the treasury's signers.
+//
+// A batch is a proposal, not a second kind of approval. That is a deliberate
+// reuse: a payroll run is exactly the case where a DAO wants several people to
+// look before money moves, and building it a separate confirmation path would
+// mean two screens applying different rules to the same envelope — with the
+// weaker one reachable.
+func (s *Service) ProposeBatch(
+	ctx context.Context, scope Scope, p ProposeBatchParams,
+) (*ProposalView, error) {
+	if err := scope.check(); err != nil {
+		return nil, err
+	}
+
+	batch, err := s.ResolveBatch(ctx, scope, p.Draft)
+	if err != nil {
+		return nil, err
+	}
+
+	org, err := s.store.Org(ctx, scope.Org)
+	if err != nil {
+		return nil, err
+	}
+	treasury, err := s.store.Treasury(ctx, scope.Org, p.Treasury)
+	if err != nil {
+		return nil, err
+	}
+	if treasury.Kind != store.TreasuryClassic {
+		return nil, fmt.Errorf("api: %s is a contract account; its authorisation is not signatures",
+			treasury.Address)
+	}
+
+	lines := make([]settlement.PayrollLine, 0, len(batch.Rows))
+	for _, row := range batch.Rows {
+		lines = append(lines, settlement.PayrollLine{
+			To: row.Destination, Asset: s.cfg.Asset, Amount: row.Amount,
+		})
+	}
+	ops, err := settlement.Payroll(treasury.Address, lines)
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := s.settle.Build(ctx, settlement.BuildRequest{
+		Source:     treasury.Address,
+		Operations: ops,
+		Memo:       memoOf(p.Memo),
+		Timeout:    org.ProposalTTL,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Described by the strict renderer before it is stored. A batch this
+	// deployment cannot show as a batch must not reach a screen that will
+	// summarise it as one — and the total is the whole thing a person reads.
+	described, err := s.settle.DescribeBatch(tx)
+	if err != nil {
+		return nil, err
+	}
+	if described.Total != batch.Total {
+		// The envelope and the resolved rows disagree about how much is being
+		// spent. Unreachable through the code above, which is exactly why it is
+		// checked: the two numbers come from different places and only one of
+		// them is what the network will do.
+		return nil, fmt.Errorf(
+			"%w: the envelope totals %s and the rows total %s",
+			ErrBatchUnreadable, described.Total, batch.Total)
+	}
+
+	canonical := described.Description.Canonical()
+	digest := sha256.Sum256([]byte(canonical))
+	hash, err := tx.HashHex(s.settle.Network())
+	if err != nil {
+		return nil, fmt.Errorf("api: hash batch: %w", err)
+	}
+	envelope, err := tx.Base64()
+	if err != nil {
+		return nil, fmt.Errorf("api: encode batch: %w", err)
+	}
+
+	proposal, err := s.store.CreateProposal(ctx, store.CreateProposalParams{
+		Org:         scope.Org,
+		Treasury:    treasury.ID,
+		Kind:        "payroll",
+		XDR:         envelope,
+		Hash:        hash,
+		SourceSeq:   tx.SequenceNumber(),
+		Description: canonical,
+		Digest:      digest[:],
+		CreatedBy:   p.CreatedBy,
+		ExpiresAt:   time.Unix(tx.Timebounds().MaxTime, 0).UTC(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.viewOf(ctx, scope, proposal, treasury, tx, described.Description)
+}
+
+// ProposeBatchParams describes a batch to put to the signers.
+type ProposeBatchParams struct {
+	Treasury  store.TreasuryID
+	Draft     connector.Draft
+	Memo      string
+	CreatedBy store.MemberID
 }

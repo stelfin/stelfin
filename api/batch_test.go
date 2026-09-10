@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stellar/go-stellar-sdk/keypair"
+	"github.com/stellar/go-stellar-sdk/txnbuild"
 
 	"github.com/stelfin/stelfin/connector"
 	"github.com/stelfin/stelfin/internal/money"
@@ -260,5 +261,95 @@ func TestABatchIsScopedToItsOrg(t *testing.T) {
 	})
 	if !errors.Is(err, ErrBatchUnreadable) {
 		t.Fatalf("another org's recipient resolved: %v", err)
+	}
+}
+
+// proposalBatchFixture is a batch fixture with a linked treasury to propose
+// against.
+func newProposalBatchFixture(t *testing.T, name string) (*proposalFixture, string) {
+	t.Helper()
+	f := newProposalFixture(t, name)
+
+	ada := keypair.MustRandom().Address()
+	if _, err := testPool.Exec(context.Background(), `
+		INSERT INTO beneficiaries (org_id, owner_ref, label, address)
+		VALUES ($1, $2, $3, $4)`,
+		int64(f.scope.Org), f.scope.OwnerRef, "Ada", ada); err != nil {
+		t.Fatalf("save beneficiary: %v", err)
+	}
+	return f, ada
+}
+
+// TestABatchBecomesAProposal: a payroll run is exactly the case where a DAO
+// wants several people to look before money moves, so it goes through the same
+// approval as everything else rather than a second, weaker screen.
+func TestABatchBecomesAProposal(t *testing.T) {
+	f, ada := newProposalBatchFixture(t, "batch proposal")
+	bo := keypair.MustRandom().Address()
+
+	view, err := f.svc.ProposeBatch(context.Background(), f.scope, ProposeBatchParams{
+		Treasury: f.treasuryRow.ID,
+		Draft: connector.Draft{Rows: []connector.DraftRow{
+			draftRow(2, "250", "Ada", ""),
+			draftRow(3, "100.25", bo, ""),
+		}},
+		CreatedBy: f.member,
+	})
+	if err != nil {
+		t.Fatalf("propose batch: %v", err)
+	}
+
+	if view.Proposal.Kind != "payroll" {
+		t.Errorf("kind = %q", view.Proposal.Kind)
+	}
+	// It needs the same signing weight as any other proposal.
+	if view.Need != 2 {
+		t.Errorf("need = %d", view.Need)
+	}
+
+	// The envelope pays exactly the resolved rows, and nothing else.
+	parsed, err := txnbuild.TransactionFromXDR(view.Proposal.XDR)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	tx, _ := parsed.Transaction()
+	ops := tx.Operations()
+	if len(ops) != 2 {
+		t.Fatalf("%d operations", len(ops))
+	}
+
+	described, err := f.svc.settle.DescribeBatch(tx)
+	if err != nil {
+		t.Fatalf("describe batch: %v", err)
+	}
+	if described.Total != money.MustParse("250")+money.MustParse("100.25") {
+		t.Fatalf("the envelope totals %s", described.Total)
+	}
+	if described.Payments[0].Destination != ada {
+		t.Errorf("the first payment goes to %s", described.Payments[0].Destination)
+	}
+}
+
+// TestABadBatchNeverBecomesAProposal: the rows are resolved before anything is
+// built, so a sheet somebody is midway through editing leaves no envelope
+// behind for anyone to approve.
+func TestABadBatchNeverBecomesAProposal(t *testing.T) {
+	f, _ := newProposalBatchFixture(t, "batch proposal bad")
+	ctx := context.Background()
+
+	_, err := f.svc.ProposeBatch(ctx, f.scope, ProposeBatchParams{
+		Treasury: f.treasuryRow.ID,
+		Draft: connector.Draft{Rows: []connector.DraftRow{
+			draftRow(2, "250", "Ada", ""),
+			draftRow(3, "five hundred", "Ada", ""),
+		}},
+		CreatedBy: f.member,
+	})
+	if !errors.Is(err, ErrBatchUnreadable) {
+		t.Fatalf("error = %v, want ErrBatchUnreadable", err)
+	}
+
+	if _, open, err := f.store.OpenProposal(ctx, f.scope.Org, f.treasuryRow.ID); err != nil || open {
+		t.Fatalf("a proposal was opened anyway: %v, %v", open, err)
 	}
 }
