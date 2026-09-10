@@ -172,14 +172,12 @@ type EnrollResult struct {
 // same reasoning as the fee-bump signer for sends: signing material stays out
 // of the request path until the moment it is actually needed.
 //
-// Known gap: unlike a send, there is no independent path that later
-// reconciles a provisioning transaction that lands on chain but whose
-// finalisation step (below) never runs — ingestion only watches Payment
-// operations, and CreateAccount/ChangeTrust are not payments. A crash between
-// a successful settle.Submit and finalizeEnrollment would leave a live,
-// funded account that stelfin's own tables do not know about. Accepted for
-// now the same way DESIGN.md accepts other narrow crash windows; worth a
-// reconciliation job before this carries real users.
+// A crash between a successful settle.Submit and the finalisation below used
+// to leave a live, funded account stelfin's own tables did not know about,
+// because ingestion watched only Payment operations and CreateAccount is not
+// one. It now reads Horizon's operations endpoint, so the account appears in
+// the ledger from the chain even when this path does not finish — see
+// ingestion/horizon.go.
 func (s *Service) SubmitEnrollment(
 	ctx context.Context, scope Scope, signedXDR, treasuryAddress string,
 	sign func(*txnbuild.Transaction) (*txnbuild.Transaction, error),

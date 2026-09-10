@@ -183,8 +183,8 @@ Every phase ends with `make check` green and something demonstrable.
 | 8 | The contracts, deployed and pinned |
 | 9 | Ingestion: Horizon operations, Soroban events, SAC transfers |
 | 10 | Connectors and the Sheets adapter |
-| 11 | MCP server (done), then MCP client (**deferred — see below**) |
-| 12 | Mainnet rails; the marketing rebuild |
+| 11 | MCP server (done); MCP client and tier P deferred — see *What is left* |
+| 12 | Mainnet rails; the marketing rebuild — not started |
 
 ## Verification
 
@@ -204,36 +204,125 @@ Every phase ends with `make check` green and something demonstrable.
   proposes a payment, approves it in the browser, and watches it land on
   testnet — recognised as the same member on both platforms.
 
-## Deferred
+## What is left
 
-### The MCP client
+Phases 0 to 10 are built and phase 11 is half built. This is everything that is
+not, written down so it survives the session it was decided in. Nothing here is
+blocked on a decision unless it says so.
 
-The half of phase 11 where stelfin calls *out* to somebody else's MCP server.
-The server half — reading a workspace's own data — is built; this is not, and it
-is deliberately parked rather than half-built, because a partial version of it
-is worse than none.
+### Phase 11 — the MCP client
 
-What it has to carry when it is written:
+The half where stelfin calls *out* to somebody else's MCP server. The server
+half is built; this is deliberately parked rather than half-built, because a
+partial version of it is worse than none.
+
+What it has to carry:
 
 - **An SSRF-safe dialer that pins the resolved IP.** A connector URL is
-  attacker-influenced input. Resolving a hostname and then connecting is two
+  attacker-influenced input. Resolving a hostname and then connecting are two
   operations, and between them the answer can change — so the address is
-  resolved once, checked against the private ranges, and the connection is made
-  to that address rather than to the name.
-- **A digest-pinned tool surface.** The same pin the on-chain registry already
-  holds: a server granted "read a spreadsheet" that later offers a transfer tool
-  must fail rather than be obeyed.
+  resolved once, checked against the private and link-local ranges, and the
+  connection made to that address rather than to the name.
+- **A digest-pinned tool surface**, the same pin `connector.Guard` and the
+  on-chain registry already apply: a server granted "read a spreadsheet" that
+  later offers a transfer tool must fail rather than be obeyed.
 - **Budgets and circuit breakers**, so an endpoint that is slow, hostile or
   merely broken cannot hold a request path open or spend a workspace's rate.
 - **No agent loop.** The strongest defence here is architectural rather than
   code: a tool result never reaches the decoder, so nothing an external server
-  says can become an instruction. That property holds today by construction, and
-  the client must be built so it stays true.
+  says can become an instruction. That holds today by construction, and the
+  client must be built so it stays true.
 
-### Tier P (propose) MCP tools
+### Phase 11 — tier P tools
 
-Sequenced after the draft flow has run in anger, which it has not. The tier
-exists in the token table and nothing is registered against it.
+MCP tools that draft a payment for a human to approve. Sequenced after the draft
+flow has run in anger, which it has not. The tier exists in `mcp_tokens` and
+nothing is registered against it, so a propose-tier token currently reaches
+exactly what a read-tier one does.
+
+### Phase 12 — mainnet rails
+
+None of this is built. It is what has to exist before real money, and it is
+listed roughly in the order it is worth doing.
+
+- **Network-binding startup check.** Partially present: `EnsurePlatformOrg`
+  refuses to come up against a different network than the books were written
+  for. What is missing is the same check for every org and for the configured
+  Horizon and RPC endpoints, so a mainnet passphrase pointed at a testnet
+  Horizon fails at startup rather than at the first payment.
+- **Spend ceilings**, per org and deployment-wide, above the on-chain policy —
+  a second limit that stelfin enforces even where the contract does not,
+  because a classic M-of-N treasury has no contract to enforce anything.
+- **Destination pre-flight.** Check the destination exists and can hold the
+  asset *before* asking anyone to sign. On Stellar a payment to an account with
+  no trustline fails, and finding that out after collecting three signatures
+  wastes the one resource a DAO has.
+- **Kill switches.** `orgs.status = 'suspended'` is enforced in
+  `core/router.go`, but nothing can set it — there is no command and no
+  operator path. A deployment-wide `STELFIN_READONLY` does not exist at all.
+- **Third-party contract allowlist**, with the WASM hash captured at
+  registration and re-checked before every call. Soroban contracts are
+  upgradeable: code audited on Tuesday can be different on Wednesday at the
+  same address with no signal. Generic third-party invocation ships *after*
+  this, never alongside it.
+
+### Phase 12 — the marketing site
+
+`marketing/` still sells a WhatsApp USDC wallet. It needs Add-to-Discord and
+Open-in-Telegram calls to action and copy about DAO treasuries.
+
+Per the repository owner's standing instruction, invoke the
+`redesign-existing-projects` skill before touching it rather than restyling from
+default instincts.
+
+### Phase 12 — the generic webhook connector
+
+Read tier only, and last on purpose. It is the most general connector shape and
+therefore the one with the least that can be said about what it will return.
+
+### Carried over from phase 10
+
+- **A `drafts` table.** `ProposeBatch` currently goes read → resolve → propose
+  in one call. That works, but a sheet that fails to resolve cannot be reviewed
+  before committing to it, and a draft cannot be handed between people.
+- **The Google service-account token exchange.** `connector/sheets` takes a
+  `Tokens` interface and nothing implements it: the RS256 JWT assertion and the
+  token endpoint call are not written. The seam is there and offline-testable;
+  the credential path is not.
+
+### Smaller gaps, each stated where it lives
+
+- `connector`'s rate limiter is in-process, so two instances of stelfin each
+  allow the full rate. Making it shared costs a round trip to Postgres on the
+  hot path of every connector call.
+- `settlement.Assemble` refuses `ExtendFootprintTtl` and `RestoreFootprint`
+  rather than assembling them. Neither is reachable from chat yet.
+- Restoring archived Soroban state is surfaced (`ErrArchivedState`) and never
+  done automatically, because restoring costs money and changes what the
+  transaction does.
+
+### Not code, and not mine to do
+
+- **The Render database needs dropping, not migrating.** The migration set was
+  replaced during the rebuild, so goose against the existing `goose_db_version`
+  table does nothing. There are ten migrations it has never seen.
+- **`DESIGN.md` is gitignored** (`.gitignore`) while `README.md` links to it.
+  Either track it or drop the link.
+- **`main` is far ahead of an unpushed `origin/main`** that predates the whole
+  rebuild. That gap is what an accidental reset came out of once already.
+
+### Roadmap — decided against, for now
+
+These were settled as roadmap items when the rebuild was scoped, not as
+oversights:
+
+- Bot-provisioned DAO treasuries (provisioning one from chat).
+- Opt-in custodial mode.
+- An AI-model connector.
+- A trading and DEX connector.
+- Per-org Google OAuth, rather than one service account.
+- A KMS signer. The `signer` seam exists and takes a signing function, so this
+  is configuration rather than redesign.
 
 ## Not yet designed
 

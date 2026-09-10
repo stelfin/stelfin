@@ -195,7 +195,7 @@ rather than an error.
 | Document                                     | What it covers                                                                                                    |
 | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | [DESIGN.md](DESIGN.md)                       | Full design record: custody decision, auth model, intent-verification scheme, accepted tradeoffs, open questions. |
-| [docs/architecture.md](docs/architecture.md) | Architecture plan and how this project relates to its two predecessors.                                           |
+| [docs/architecture.md](docs/architecture.md) | The seams, the data model, the build sequence — and everything still left to do. |
 
 ## Contributing
 
