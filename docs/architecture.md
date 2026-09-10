@@ -305,11 +305,23 @@ therefore the one with the least that can be said about what it will return.
 
 - **The Render database needs dropping, not migrating.** The migration set was
   replaced during the rebuild, so goose against the existing `goose_db_version`
-  table does nothing. There are ten migrations it has never seen.
+  table does nothing. There are nine migrations it has never seen.
+
+  Order matters, and the wrong order is not obvious. `ledger.Migrate` runs
+  unconditionally at boot, so the service must be suspended before the schema
+  is dropped: a free-tier instance restarts on any request after fifteen idle
+  minutes, and a stale binary waking into an empty database re-applies its own
+  old migration set and puts the version table back.
 - **`DESIGN.md` is gitignored** (`.gitignore`) while `README.md` links to it.
   Either track it or drop the link.
-- **`main` is far ahead of an unpushed `origin/main`** that predates the whole
-  rebuild. That gap is what an accidental reset came out of once already.
+- **The deployed service is far behind `main`.** The push happened; the deploy
+  did not follow it. `/confirm` answers while `/approve`, `/link`, `/reclaim`
+  and the `/v1` routes added from phase 5 onward return 404, which is the
+  signature of a build from before the rebuild. `autoDeploy` is now declared in
+  `render.yaml` so the drift cannot recur silently.
+- **No chat transport is registered on the deployment.** `POST /webhook/{any}`
+  returns 404 because the Telegram and Discord variables were never filled in,
+  not because anything is broken. Until one is set the bot cannot be reached.
 
 ### Roadmap — decided against, for now
 
