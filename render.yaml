@@ -30,6 +30,12 @@ services:
     dockerfilePath: ./Dockerfile
     plan: free # ingestion will not keep running while the service sleeps — see note above
     healthCheckPath: /health
+
+    # Declared here rather than left to a dashboard toggle, because a service
+    # that silently stops tracking main is indistinguishable from one that is
+    # merely idle — which is how this deployment came to serve a build from
+    # before the rebuild for weeks.
+    autoDeploy: true
     envVars:
       # Render injects PORT for the container to listen on; STELFIN_HTTP_ADDR
       # must match it since the app does not read PORT itself.
@@ -54,6 +60,22 @@ services:
         value: testnet
       - key: STELFIN_HORIZON_URL
         value: https://horizon-testnet.stellar.org
+
+      # Soroban. Without these the service starts fine but cannot see a
+      # contract-held treasury at all: HasSoroban() is false, so the RPC is
+      # never dialled, token-transfer ingestion never starts, and every
+      # contract call returns ErrNoSoroban. Neither value is a secret.
+      #
+      # The start ledger is where transfer ingestion begins when it has no
+      # cursor yet. An RPC keeps only a bounded window of events, so zero is
+      # not "from the beginning" — it means the oldest the endpoint still
+      # holds. Naming a ledger is how you say which history you accept having
+      # missed; get a current one from getLatestLedger.
+      - key: STELFIN_SOROBAN_RPC_URL
+        value: https://soroban-testnet.stellar.org
+      - key: STELFIN_SOROBAN_START_LEDGER
+        sync: false
+
       - key: STELFIN_ASSET_CODE
         value: USDC
       - key: STELFIN_ASSET_ISSUER
