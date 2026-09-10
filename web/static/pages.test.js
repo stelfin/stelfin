@@ -22,7 +22,7 @@ const NEEDS = {
   "describe.js": ["stellar-sdk.min.js", "scval.js"],
   "scval.js": ["stellar-sdk.min.js"],
   "policy.js": [],
-  "approve.js": ["stellar-sdk.min.js", "describe.js"],
+  "approve.js": ["stellar-sdk.min.js", "describe.js", "policy.js"],
   "reclaim.js": ["stellar-sdk.min.js", "describe.js", "policy.js"],
   "confirm.js": ["stellar-sdk.min.js"],
   "enroll.js": ["stellar-sdk.min.js"],

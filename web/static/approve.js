@@ -98,6 +98,50 @@
     return d;
   }
 
+  // A batch is shown as one number and a list, because that is how it is read.
+  //
+  // The total is computed here from the operations. The server sends one too;
+  // this page does not use it. A page that displayed the server's figure and
+  // verified its own quietly would show the wrong number on exactly the day the
+  // check was the part that broke.
+  function renderBatch(d, data) {
+    const box = $("batch");
+    if (d.operations.length < 2) {
+      box.hidden = true;
+      return;
+    }
+
+    let summary;
+    try {
+      summary = StelfinPolicy.batch(d, { source: d.source });
+    } catch (err) {
+      // Not a batch by this page's rules — a mixed-asset envelope, or one with
+      // something other than payments in it. Shown row by row instead, with no
+      // total, because a total that does not describe everything present is
+      // worse than none.
+      $("batchNote").textContent =
+        "No total is shown: " + err.message + ". Read every row below.";
+      $("batchTotal").textContent = "—";
+      $("batchRows").textContent = String(d.operations.length);
+      box.hidden = false;
+      return;
+    }
+
+    $("batchTotal").textContent = summary.total + " " + assetCode(summary.asset);
+    $("batchRows").textContent = String(summary.rows);
+    $("batchNote").textContent =
+      "Your browser added this up from the " + summary.rows +
+      " payments below. It is not a figure stelfin sent.";
+    box.hidden = false;
+    void data;
+  }
+
+  function assetCode(asset) {
+    if (!asset || asset === "native") return "XLM";
+    const at = asset.indexOf(":");
+    return at === -1 ? asset : asset.slice(0, at);
+  }
+
   function renderPeople(id, addresses, emptyText) {
     const list = $(id);
     list.innerHTML = "";
@@ -187,6 +231,7 @@
     $("memo").textContent = d.memo_type === "none" ? "none" : d.memo_type + ": " + d.memo;
     $("sequence").textContent = d.sequence;
 
+    renderBatch(d, data);
     renderOperations(d);
     renderPeople("signed", data.signed, "Nobody yet.");
     renderPeople("missing", data.missing, "Nobody — it has every signature.");

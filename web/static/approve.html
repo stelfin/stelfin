@@ -83,6 +83,18 @@
     color: var(--fg); background: var(--bg);
     border: 1px solid var(--line); border-radius: 10px; resize: vertical;
   }
+  /* The number a person actually reads. Given the room to be read at a
+     glance, because a total set in the same size as everything else is a
+     total somebody skims past. */
+  .total {
+    border: 1px solid var(--accent); background: var(--accent-bg);
+    border-radius: 10px; padding: 0.85rem 1rem; margin-bottom: 0.5rem;
+  }
+  .total-figure {
+    font-size: 1.35rem; font-weight: 600; letter-spacing: -0.01em;
+    font-variant-numeric: tabular-nums; word-break: break-all;
+  }
+  .total-rows { color: var(--muted); font-size: 0.85rem; margin-top: 0.1rem; }
   ul.people { list-style: none; padding: 0; margin: 0.25rem 0 0; font-size: 0.85rem; }
   ul.people li { padding: 0.15rem 0; word-break: break-all; }
   ul.people li code { color: var(--muted); }
@@ -101,6 +113,15 @@
       <div class="row"><dt>Signatures</dt><dd id="weight"></dd></div>
       <div class="row"><dt>Expires</dt><dd id="expires"></dd></div>
     </dl>
+
+    <section id="batch" hidden>
+      <h2>Total</h2>
+      <div class="total">
+        <div class="total-figure" id="batchTotal"></div>
+        <div class="total-rows">across <span id="batchRows"></span> payments</div>
+      </div>
+      <p class="note" id="batchNote"></p>
+    </section>
 
     <h2>What this does</h2>
     <div id="operations"></div>
@@ -145,6 +166,7 @@
      contract call would otherwise fail to render rather than refuse. -->
 <script src="/static/scval.js"></script>
 <script src="/static/describe.js"></script>
+<script src="/static/policy.js"></script>
 <script src="/static/approve.js"></script>
 </body>
 </html>
