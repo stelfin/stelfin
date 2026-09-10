@@ -50,6 +50,18 @@ jobs:
           path: ~/.embedded-postgres-go/extracted
           key: embedded-postgres-${{ runner.os }}
 
+      # Seven packages start their own Postgres and `go test ./...` runs
+      # packages in parallel, but they all extract into the same BinariesPath
+      # and nothing serialises that. On a machine where the extraction already
+      # exists it does not matter, which is every machine that has run the
+      # tests before and no machine that has not. Racing produced a half
+      # extraction here: an initdb with no postgres beside it.
+      #
+      # TestMain starts the database before any test runs, so an empty -run
+      # filter extracts once, serially, and costs nothing else.
+      - name: Extract Postgres once, before the parallel suite
+        run: go test -count=1 -run '^$' ./ledger/
+
       - run: make check
 
   contracts:
