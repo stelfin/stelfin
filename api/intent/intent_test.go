@@ -371,7 +371,8 @@ func FuzzVerifyNeverPanics(f *testing.F) {
 	f.Add("send 5000 to brother", "send", 0, 1, "5000", 1, 2)
 	f.Add("", "", 0, 0, "", 0, 0)
 	f.Fuzz(func(t *testing.T, msg, actionText string, aStart, aEnd int,
-		amountText string, mStart, mEnd int) {
+		amountText string, mStart, mEnd int,
+	) {
 		conv := conversation(msg)
 		g, err := Verify(conv, Decoded{
 			Action:          Field{Text: actionText, Span: Span{Turn: 0, Start: aStart, End: aEnd}},

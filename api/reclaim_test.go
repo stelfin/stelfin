@@ -129,7 +129,8 @@ func TestPrepareReclaimRemovesEmptyTrustlines(t *testing.T) {
 	f := newReclaimFixture(t, "reclaim trustline")
 	f.horizon.balances = []horizon.Balance{
 		{Balance: "0.0000000", Asset: base.Asset{
-			Type: "credit_alphanum4", Code: "USDC", Issuer: testIssuer}},
+			Type: "credit_alphanum4", Code: "USDC", Issuer: testIssuer,
+		}},
 		{Balance: "0.0000000", Asset: base.Asset{Type: "native"}},
 	}
 
@@ -170,7 +171,8 @@ func TestPrepareReclaimRefusesToDestroyABalance(t *testing.T) {
 	f := newReclaimFixture(t, "reclaim not empty")
 	f.horizon.balances = []horizon.Balance{
 		{Balance: "42.5000000", Asset: base.Asset{
-			Type: "credit_alphanum4", Code: "USDC", Issuer: testIssuer}},
+			Type: "credit_alphanum4", Code: "USDC", Issuer: testIssuer,
+		}},
 		{Balance: "0.0000000", Asset: base.Asset{Type: "native"}},
 	}
 

@@ -510,8 +510,10 @@ func describeSetOptions(o *txnbuild.SetOptions) ([]Field, string, error) {
 	if o.Signer != nil {
 		fields = append(fields,
 			Field{Label: "signer", Kind: KindAddress, Value: o.Signer.Address},
-			Field{Label: "signer weight", Kind: KindNumber,
-				Value: strconv.FormatUint(uint64(o.Signer.Weight), 10)},
+			Field{
+				Label: "signer weight", Kind: KindNumber,
+				Value: strconv.FormatUint(uint64(o.Signer.Weight), 10),
+			},
 		)
 		if o.Signer.Weight == 0 {
 			changes = append(changes, "remove a signer")

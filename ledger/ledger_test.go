@@ -111,7 +111,8 @@ func newFixture(t *testing.T) *fixture {
 // enters the system.
 func (f *fixture) deposit(t *testing.T, key string, amount money.Stroops) TxID {
 	t.Helper()
-	id, err := f.store.Post(context.Background(), PostRequest{Org: f.org,
+	id, err := f.store.Post(context.Background(), PostRequest{
+		Org:            f.org,
 		IdempotencyKey: key,
 		Kind:           TxDeposit,
 		OccurredAt:     time.Unix(1700000000, 0),
@@ -196,7 +197,8 @@ func TestUnbalancedIsRejectedByTheDatabase(t *testing.T) {
 
 func TestUnbalancedIsRejectedByGo(t *testing.T) {
 	f := newFixture(t)
-	_, err := f.store.Post(context.Background(), PostRequest{Org: f.org,
+	_, err := f.store.Post(context.Background(), PostRequest{
+		Org:            f.org,
 		IdempotencyKey: t.Name(),
 		Kind:           TxDeposit,
 		OccurredAt:     time.Unix(1700000000, 0),
@@ -215,7 +217,8 @@ func TestUnbalancedIsRejectedByGo(t *testing.T) {
 // balance on its own.
 func TestMultiAssetBalancesPerAsset(t *testing.T) {
 	f := newFixture(t)
-	_, err := f.store.Post(context.Background(), PostRequest{Org: f.org,
+	_, err := f.store.Post(context.Background(), PostRequest{
+		Org:            f.org,
 		IdempotencyKey: t.Name(),
 		Kind:           TxSend,
 		OccurredAt:     time.Unix(1700000000, 0),
@@ -235,7 +238,8 @@ func TestMultiAssetTransactionSucceeds(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	_, err := f.store.Post(ctx, PostRequest{Org: f.org,
+	_, err := f.store.Post(ctx, PostRequest{
+		Org:            f.org,
 		IdempotencyKey: t.Name(),
 		Kind:           TxSend,
 		OccurredAt:     time.Unix(1700000000, 0),
@@ -288,7 +292,8 @@ func TestReplayWithDifferentContentIsRejected(t *testing.T) {
 
 	f.deposit(t, key, money.MustParse("100"))
 
-	_, err := f.store.Post(ctx, PostRequest{Org: f.org,
+	_, err := f.store.Post(ctx, PostRequest{
+		Org:            f.org,
 		IdempotencyKey: key,
 		Kind:           TxDeposit,
 		OccurredAt:     time.Unix(1700000000, 0),
@@ -316,7 +321,8 @@ func TestFingerprintIgnoresPostingOrder(t *testing.T) {
 	key := t.Name()
 	amount := money.MustParse("42")
 
-	first, err := f.store.Post(ctx, PostRequest{Org: f.org,
+	first, err := f.store.Post(ctx, PostRequest{
+		Org:            f.org,
 		IdempotencyKey: key, Kind: TxDeposit, OccurredAt: time.Unix(1700000000, 0),
 		Postings: []Posting{
 			{Account: f.member, Asset: f.usdc, Amount: amount},
@@ -325,7 +331,8 @@ func TestFingerprintIgnoresPostingOrder(t *testing.T) {
 	})
 	must(t, err, "first post")
 
-	second, err := f.store.Post(ctx, PostRequest{Org: f.org,
+	second, err := f.store.Post(ctx, PostRequest{
+		Org:            f.org,
 		IdempotencyKey: key, Kind: TxDeposit, OccurredAt: time.Unix(1700000000, 0),
 		Postings: []Posting{
 			{Account: f.external, Asset: f.usdc, Amount: -amount},
@@ -345,7 +352,8 @@ func TestMemberAccountCannotGoNegative(t *testing.T) {
 
 	f.deposit(t, t.Name()+"/deposit", money.MustParse("10"))
 
-	_, err := f.store.Post(ctx, PostRequest{Org: f.org,
+	_, err := f.store.Post(ctx, PostRequest{
+		Org:            f.org,
 		IdempotencyKey: t.Name() + "/overspend",
 		Kind:           TxWithdrawal,
 		OccurredAt:     time.Unix(1700000000, 0),
@@ -403,7 +411,8 @@ func TestEntriesAreAppendOnly(t *testing.T) {
 
 func TestZeroAmountPostingIsRejected(t *testing.T) {
 	f := newFixture(t)
-	_, err := f.store.Post(context.Background(), PostRequest{Org: f.org,
+	_, err := f.store.Post(context.Background(), PostRequest{
+		Org:            f.org,
 		IdempotencyKey: t.Name(),
 		Kind:           TxDeposit,
 		OccurredAt:     time.Unix(1700000000, 0),
@@ -419,7 +428,8 @@ func TestZeroAmountPostingIsRejected(t *testing.T) {
 
 func TestEmptyPostingsRejected(t *testing.T) {
 	f := newFixture(t)
-	_, err := f.store.Post(context.Background(), PostRequest{Org: f.org,
+	_, err := f.store.Post(context.Background(), PostRequest{
+		Org:            f.org,
 		IdempotencyKey: t.Name(),
 		Kind:           TxDeposit,
 		OccurredAt:     time.Unix(1700000000, 0),
@@ -451,7 +461,8 @@ func TestBalancesReconcileWithEntries(t *testing.T) {
 		}
 		signed := amount * dir
 
-		_, err := f.store.Post(ctx, PostRequest{Org: f.org,
+		_, err := f.store.Post(ctx, PostRequest{
+			Org:            f.org,
 			IdempotencyKey: fmt.Sprintf("%s/%d", t.Name(), i),
 			Kind:           TxSend,
 			OccurredAt:     time.Unix(1700000000+int64(i), 0),
@@ -505,7 +516,8 @@ func TestConcurrentPostsStayConsistent(t *testing.T) {
 		go func(w int) {
 			defer wg.Done()
 			for i := 0; i < perWorker; i++ {
-				_, err := f.store.Post(ctx, PostRequest{Org: f.org,
+				_, err := f.store.Post(ctx, PostRequest{
+					Org:            f.org,
 					IdempotencyKey: fmt.Sprintf("%s/%d/%d", t.Name(), w, i),
 					Kind:           TxDeposit,
 					OccurredAt:     time.Unix(1700000000, 0),
@@ -558,7 +570,8 @@ func TestConcurrentReplayPostsOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			id, err := f.store.Post(ctx, PostRequest{Org: f.org,
+			id, err := f.store.Post(ctx, PostRequest{
+				Org:            f.org,
 				IdempotencyKey: t.Name(),
 				Kind:           TxDeposit,
 				OccurredAt:     time.Unix(1700000000, 0),

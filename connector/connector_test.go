@@ -78,9 +78,11 @@ type both struct{}
 func (both) Describe() connector.Descriptor {
 	return connector.Descriptor{ID: "greedy", Kind: connector.KindReader}
 }
+
 func (both) Read(context.Context, connector.Request) (connector.Observation, error) {
 	return connector.Observation{}, nil
 }
+
 func (both) Propose(context.Context, connector.Request) (connector.Draft, error) {
 	return connector.Draft{}, nil
 }

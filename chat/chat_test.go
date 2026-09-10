@@ -19,8 +19,9 @@ type stub struct {
 	sent    []chat.Reply
 }
 
-func (s *stub) Channel() chat.Channel                                  { return s.channel }
-func (s *stub) Verify(r *http.Request) ([]byte, error)                 { return chat.ReadLimited(r) }
+func (s *stub) Channel() chat.Channel                  { return s.channel }
+func (s *stub) Verify(r *http.Request) ([]byte, error) { return chat.ReadLimited(r) }
+
 func (s *stub) Parse([]byte) (chat.Delivery, error)                    { return chat.Delivery{}, nil }
 func (s *stub) RegisterCommands(context.Context, []chat.Command) error { return nil }
 

@@ -116,8 +116,10 @@ func TestSignerSetOfCountsSignersItCannotUse(t *testing.T) {
 		Thresholds: horizon.AccountThresholds{MedThreshold: 2},
 		Signers: []horizon.Signer{
 			{Key: account, Weight: 1, Type: "ed25519_public_key"},
-			{Key: "XDRPF6NZRR7EEVO7ESIWUDXHAOMM2QSKIQQBJK6I2FB7YKDZES5UCLWD",
-				Weight: 5, Type: "sha256_hash"},
+			{
+				Key:    "XDRPF6NZRR7EEVO7ESIWUDXHAOMM2QSKIQQBJK6I2FB7YKDZES5UCLWD",
+				Weight: 5, Type: "sha256_hash",
+			},
 		},
 	}}
 

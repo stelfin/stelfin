@@ -13,7 +13,10 @@ FUZZTIME ?= 30s
 
 # Pinned, not @latest. Formatting is a gate, and a gate whose rules arrive from
 # upstream mid-week fails builds for reasons no commit in this repo caused.
-GOFUMPT  ?= mvdan.cc/gofumpt@v0.12.0
+#
+# v0.11.0 rather than the newest: v0.12.0 requires Go 1.26, which is ahead of
+# this module, so on a toolchain pinned to 1.25 it cannot run at all.
+GOFUMPT  ?= mvdan.cc/gofumpt@v0.11.0
 
 # The Rust contracts are deliberately not in `check`. They need a toolchain the
 # Go work does not, and a first build takes ten minutes — putting them here
@@ -23,8 +26,10 @@ GOFUMPT  ?= mvdan.cc/gofumpt@v0.12.0
 check: fmt vet test test-js ## Format, vet and test everything
 
 .PHONY: fmt
-fmt: ## Report files that gofmt would change
-	@out="$$($(GO) run $(GOFUMPT) -l . 2>/dev/null || gofmt -l .)"; \
+fmt: ## Report files that gofumpt would change
+	@if ! out="$$($(GO) run $(GOFUMPT) -l . 2>&1)"; then \
+		echo "gofumpt could not run, so nothing was checked:"; echo "$$out"; exit 1; \
+	fi; \
 	if [ -n "$$out" ]; then echo "needs formatting:"; echo "$$out"; exit 1; fi
 
 .PHONY: vet

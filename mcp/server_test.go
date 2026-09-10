@@ -190,8 +190,10 @@ func TestThereIsNoToolThatMovesMoney(t *testing.T) {
 		t.Fatal("no tools listed; this test is asserting nothing")
 	}
 
-	forbidden := []string{"sign", "submit", "execute", "approve", "send", "pay",
-		"transfer", "recipient", "beneficiary", "revoke", "delete", "create"}
+	forbidden := []string{
+		"sign", "submit", "execute", "approve", "send", "pay",
+		"transfer", "recipient", "beneficiary", "revoke", "delete", "create",
+	}
 	for _, tool := range listed.Tools {
 		for _, word := range forbidden {
 			if strings.Contains(strings.ToLower(tool.Name), word) {

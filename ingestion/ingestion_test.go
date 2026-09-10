@@ -133,8 +133,10 @@ func newFixture(t *testing.T, pages map[string]operations.OperationsPage) *fixtu
 	addr := keypair.MustRandom().Address()
 	must(t, ing.Track(ctx, org.ID, addr, member, store.RoleMember), "track member address")
 
-	return &fixture{ing: ing, src: src, store: db, horizon: h, org: org.ID, usdc: usdc,
-		member: member, userAddr: addr, external: external}
+	return &fixture{
+		ing: ing, src: src, store: db, horizon: h, org: org.ID, usdc: usdc,
+		member: member, userAddr: addr, external: external,
+	}
 }
 
 func (f *fixture) balance(t *testing.T) money.Stroops {

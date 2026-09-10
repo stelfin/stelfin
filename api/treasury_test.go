@@ -299,8 +299,10 @@ func TestUnprovableAccountsAreRefusedBeforeAnyoneSigns(t *testing.T) {
 	t.Run("no key signers", func(t *testing.T) {
 		f := newTreasuryFixture(t, "/link-treasury nokeys")
 		f.horizon.signers = []horizon.Signer{
-			{Key: "XDRPF6NZRR7EEVO7ESIWUDXHAOMM2QSKIQQBJK6I2FB7YKDZES5UCLWD",
-				Weight: 5, Type: "sha256_hash"},
+			{
+				Key:    "XDRPF6NZRR7EEVO7ESIWUDXHAOMM2QSKIQQBJK6I2FB7YKDZES5UCLWD",
+				Weight: 5, Type: "sha256_hash",
+			},
 		}
 		f.horizon.thresholds = horizon.AccountThresholds{MedThreshold: 1}
 

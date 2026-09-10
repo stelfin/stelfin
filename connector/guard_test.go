@@ -307,10 +307,14 @@ func TestTheSurfaceDigestDependsOnEverythingItPins(t *testing.T) {
 
 	// Length-prefixed, so ["read","write"] and ["readwrite"] cannot collide —
 	// the second would otherwise inherit the first's grant.
-	split := connector.Descriptor{ID: "x", Kind: connector.KindReader,
-		Capabilities: []string{"read", "write"}}
-	joined := connector.Descriptor{ID: "x", Kind: connector.KindReader,
-		Capabilities: []string{"readwrite"}}
+	split := connector.Descriptor{
+		ID: "x", Kind: connector.KindReader,
+		Capabilities: []string{"read", "write"},
+	}
+	joined := connector.Descriptor{
+		ID: "x", Kind: connector.KindReader,
+		Capabilities: []string{"readwrite"},
+	}
 	if connector.SurfaceDigest(split) == connector.SurfaceDigest(joined) {
 		t.Error("two different capability lists hash identically")
 	}
