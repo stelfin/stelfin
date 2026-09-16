@@ -1,5 +1,5 @@
-# Render Blueprint. Creates the stelfind web service and its Postgres
-# database together — see https://render.com/docs/blueprint-spec.
+# Render Blueprint. Creates the stelfind web service — see
+# https://render.com/docs/blueprint-spec.
 #
 # `sync: false` marks a value Render will prompt for in the dashboard
 # instead of reading from this file: every real secret is marked that way,
@@ -16,12 +16,14 @@
 # whenever it spins down, so payments stop being indexed while it sleeps.
 # Fine for poking at a deploy; move to a paid instance type before this is
 # something a real user relies on being up.
-
-databases:
-  - name: stelfin-db
-    databaseName: stelfin
-    user: stelfin
-    plan: free # check Render's current free-tier expiry policy before relying on this
+#
+# The database is not declared here. Render's own free Postgres plan expires
+# 30 days after creation — fine for a demo, not for anything meant to stay up
+# — so STELFIN_DATABASE_URL instead points at a Neon project (free tier, no
+# expiry, scales to zero and wakes on the next query rather than needing a
+# manual resume). Create the project at neon.tech, then paste its pooled
+# connection string — sslmode=require, which Neon's string already includes
+# — into the dashboard.
 
 services:
   - type: web
@@ -51,10 +53,10 @@ services:
       - key: STELFIN_BASE_URL
         sync: false
 
+      # Neon connection string (pooled), e.g.
+      # postgres://user:pass@ep-xxx-pooler.region.aws.neon.tech/stelfin?sslmode=require
       - key: STELFIN_DATABASE_URL
-        fromDatabase:
-          name: stelfin-db
-          property: connectionString
+        sync: false
 
       - key: STELFIN_NETWORK
         value: testnet
