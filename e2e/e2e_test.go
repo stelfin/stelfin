@@ -688,6 +688,22 @@ func TestTreasuryPaymentEndToEnd(t *testing.T) {
 		t.Fatalf("after the contract call the recipient holds %s USDC, want %s", got, want)
 	}
 
+	// ---- A proposal can be taken back. One account holds one open proposal,
+	// so a mistyped /pay would otherwise block every later one until its
+	// window ran out.
+
+	reply = chat.ask(adaID, "ada", "/pay 9 to "+recipient.Address())
+	mistaken := regexp.MustCompile(`Proposal #(\d+)`).FindStringSubmatch(reply)
+	if mistaken == nil {
+		t.Fatalf("/pay opened nothing:\n%s", reply)
+	}
+	// The refusal of a second one names the way out.
+	mustContain(t, chat.ask(adaID, "ada", "/pay 5 to "+recipient.Address()), "/cancel "+mistaken[1])
+	// Ben holds a role, and it is not his to withdraw.
+	mustContain(t, chat.ask(benID, "ben", "/cancel"), "an admin")
+	mustContain(t, chat.ask(adaID, "ada", "/cancel"), "withdrawn")
+	mustContain(t, chat.ask(adaID, "ada", "/proposals"), "cancelled")
+
 	// One more payment left open, for the browser to sign if this run is held.
 	mustContain(t, chat.ask(adaID, "ada", "/pay 5 to "+recipient.Address()), "Proposal #")
 

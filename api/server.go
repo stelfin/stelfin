@@ -776,6 +776,11 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrSequenceMoved):
 		http.Error(w, "the treasury has transacted since this proposal was built",
 			http.StatusConflict)
+	case errors.As(err, new(*RefusedError)):
+		// 422: the request was fine and the network said no. The page cannot
+		// word the reason from a status, so it sends the person back to the
+		// chat, where /execute says which code it was and what to do about it.
+		http.Error(w, "the network refused this transaction", http.StatusUnprocessableEntity)
 	case errors.Is(err, ErrWrongEnvelope):
 		http.Error(w, "that signature is not for this proposal", http.StatusBadRequest)
 	case errors.Is(err, ErrTreasuryUnprovable):

@@ -48,6 +48,7 @@ type Sender interface {
 	ProposePayment(ctx context.Context, scope api.Scope, p api.ProposePaymentParams) (*api.ProposalView, error)
 	LoadProposal(ctx context.Context, scope api.Scope, id store.ProposalID) (*api.ProposalView, error)
 	ExecuteProposal(ctx context.Context, scope api.Scope, id store.ProposalID, by store.IdentityID) (*settlement.Result, error)
+	CancelProposal(ctx context.Context, scope api.Scope, id store.ProposalID, by store.MemberID, admin bool) (store.Proposal, error)
 	PrepareReclaim(ctx context.Context, scope api.Scope, address string) (*api.Reclaim, error)
 	RegisterConnector(ctx context.Context, scope api.Scope, by store.MemberID, name, kind string) (store.Connector, error)
 	PrepareGrant(ctx context.Context, scope api.Scope, identity store.IdentityID, by store.MemberID,

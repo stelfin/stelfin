@@ -367,6 +367,13 @@ func Run(log *slog.Logger) error {
 			}
 		}(src)
 	}
+	// Beside ingestion, and stopped with it: closing proposals whose signing
+	// window has passed.
+	ingesting.Add(1)
+	go func() {
+		defer ingesting.Done()
+		sweepProposals(ctx, db.ExpireProposals, proposalSweepInterval, log)
+	}()
 	go func() {
 		ingesting.Wait()
 		close(ingestDone)

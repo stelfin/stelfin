@@ -31,6 +31,10 @@ type signerHorizon struct {
 	data       map[string]string
 	sponsoring uint32
 	submitted  []*txnbuild.Transaction
+	// refuse makes the next submission come back as Horizon refusing the
+	// transaction with these result codes: the transaction-level one first,
+	// then any per-operation ones.
+	refuse []string
 	// absent are addresses with no account on the network; bare are accounts
 	// holding XLM and no trustline. Everything else can be paid.
 	absent, bare map[string]bool
@@ -47,6 +51,22 @@ func (h *signerHorizon) SubmitTransactionWithOptions(
 	hash, err := tx.HashHex(network.TestNetworkPassphrase)
 	if err != nil {
 		return horizon.Transaction{}, err
+	}
+	if len(h.refuse) > 0 {
+		codes := map[string]interface{}{"transaction": h.refuse[0]}
+		if ops := h.refuse[1:]; len(ops) > 0 {
+			list := make([]interface{}, len(ops))
+			for i, op := range ops {
+				list[i] = op
+			}
+			codes["operations"] = list
+		}
+		h.refuse = nil
+		return horizon.Transaction{}, &horizonclient.Error{Problem: problem.P{
+			Type:   "https://stellar.org/horizon-errors/transaction_failed",
+			Status: http.StatusBadRequest,
+			Extras: map[string]interface{}{"result_codes": codes},
+		}}
 	}
 	h.submitted = append(h.submitted, tx)
 	return horizon.Transaction{

@@ -143,6 +143,149 @@ func TestPaySaysWhyASecondProposalIsRefused(t *testing.T) {
 	}
 }
 
+// TestCancelFreesTheTreasury is the lock-out, closed. One account holds one open
+// proposal, so a mistyped /pay used to block every later one until its window
+// ran out — and the refusal said "or cancel it" when nothing could.
+func TestCancelFreesTheTreasury(t *testing.T) {
+	h := newHarness(t, true)
+	proposerIn(t, h, "-420020")
+	to := keypair.MustRandom().Address()
+
+	if err := h.handle(t, payMessage("-420020", "1000", to)); err != nil {
+		t.Fatalf("pay: %v", err)
+	}
+	h.out = &fakeReplier{}
+
+	// The refusal names the way out.
+	if err := h.handle(t, payMessage("-420020", "100", to)); err != nil {
+		t.Fatalf("second pay: %v", err)
+	}
+	if body := h.out.only(t).Text; !strings.Contains(body, "/cancel ") {
+		t.Fatalf("the refusal does not say how to withdraw the open one:\n%s", body)
+	}
+
+	h.out = &fakeReplier{}
+	if err := h.handle(t, message("-420020", "cancel", "")); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if body := h.out.only(t).Text; !strings.Contains(body, "withdrawn") {
+		t.Fatalf("reply:\n%s", body)
+	}
+
+	h.out = &fakeReplier{}
+	if err := h.handle(t, payMessage("-420020", "100", to)); err != nil {
+		t.Fatalf("pay after cancelling: %v", err)
+	}
+	if body := h.out.only(t).Text; !strings.Contains(body, "/approve#") {
+		t.Fatalf("a new proposal was not opened after cancelling:\n%s", body)
+	}
+}
+
+// TestCancelIsForWhoeverMadeItOrAnAdmin: taking back your own mistake should
+// need nobody's permission, and taking back somebody else's should need
+// standing in the workspace.
+func TestCancelIsForWhoeverMadeItOrAnAdmin(t *testing.T) {
+	h := newHarness(t, true)
+	org, _ := proposerIn(t, h, "-420021")
+	grantRole(t, h, org, "77", chat.RoleProposer)
+
+	if err := h.handle(t, payMessage("-420021", "10", keypair.MustRandom().Address())); err != nil {
+		t.Fatalf("pay: %v", err)
+	}
+
+	// Another proposer: no.
+	other := message("-420021", "cancel", "")
+	other.Actor.UserID, other.Actor.Handle = "77", "bo"
+	h.out = &fakeReplier{}
+	if err := h.handle(t, other); err != nil {
+		t.Fatalf("cancel by another proposer: %v", err)
+	}
+	if body := h.out.only(t).Text; !strings.Contains(body, "an admin") || strings.Contains(body, "withdrawn") {
+		t.Fatalf("a proposer withdrew somebody else's proposal, or was not told who can:\n%s", body)
+	}
+
+	// Whoever set the workspace up is its admin, and made this one besides.
+	h.out = &fakeReplier{}
+	if err := h.handle(t, message("-420021", "cancel", "")); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if body := h.out.only(t).Text; !strings.Contains(body, "withdrawn") {
+		t.Fatalf("reply:\n%s", body)
+	}
+
+	// And once is enough.
+	h.out = &fakeReplier{}
+	if err := h.handle(t, message("-420021", "cancel", "")); err != nil {
+		t.Fatalf("cancel twice: %v", err)
+	}
+	if body := h.out.only(t).Text; !strings.Contains(body, "Nothing is open") {
+		t.Fatalf("reply to a second cancel:\n%s", body)
+	}
+}
+
+// TestExecuteSaysWhatTheNetworkObjectedTo: "it failed" leaves a room of signers
+// guessing. The reason is the only thing anybody can act on, and whether the
+// proposal is still open decides who does what next.
+func TestExecuteSaysWhatTheNetworkObjectedTo(t *testing.T) {
+	cases := map[string]struct {
+		err  *api.RefusedError
+		want []string
+		not  []string
+	}{
+		"spent, the treasury is short": {
+			err:  &api.RefusedError{Transaction: "tx_failed", Operations: []string{"op_underfunded"}, Closed: true},
+			want: []string{"does not hold enough", "is closed", "propose it again"},
+			not:  []string{"still open"},
+		},
+		"spent, no trustline": {
+			err:  &api.RefusedError{Transaction: "tx_failed", Operations: []string{"op_no_trust"}, Closed: true},
+			want: []string{"no trustline", "is closed"},
+		},
+		"not spent, the signer set changed": {
+			err:  &api.RefusedError{Transaction: "tx_bad_auth"},
+			want: []string{"signers or thresholds have changed", "still open", "/execute"},
+			not:  []string{"is closed"},
+		},
+		"not spent, no XLM for the fee": {
+			err:  &api.RefusedError{Transaction: "tx_insufficient_balance"},
+			want: []string{"transaction fee", "still open"},
+		},
+		"a code nobody has put into words": {
+			err:  &api.RefusedError{Transaction: "tx_failed", Operations: []string{"op_cross_self"}, Closed: true},
+			want: []string{"op_cross_self"},
+		},
+	}
+	space := 420030
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			space++
+			id := fmt.Sprintf("-%d", space)
+			h := newHarness(t, true)
+			proposerIn(t, h, id)
+			if err := h.handle(t, payMessage(id, "10", keypair.MustRandom().Address())); err != nil {
+				t.Fatalf("pay: %v", err)
+			}
+			h.sender.executeErr = c.err
+			h.out = &fakeReplier{}
+
+			if err := h.handle(t, message(id, "execute", "")); err != nil {
+				t.Fatalf("execute returned an error, so the member would be told nothing useful: %v", err)
+			}
+			body := h.out.only(t).Text
+			for _, want := range c.want {
+				if !strings.Contains(body, want) {
+					t.Errorf("reply does not mention %q:\n%s", want, body)
+				}
+			}
+			for _, not := range c.not {
+				if strings.Contains(body, not) {
+					t.Errorf("reply says %q, which is not true here:\n%s", not, body)
+				}
+			}
+		})
+	}
+}
+
 func TestPayNeedsATreasuryFirst(t *testing.T) {
 	h := newHarness(t, true)
 	org := setUpWorkspace(t, h, "-420003")

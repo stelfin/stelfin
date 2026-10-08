@@ -72,16 +72,25 @@ func (s *Service) pay(ctx context.Context, r *request) error {
 		// Not a queue-discipline preference. Two open envelopes from one
 		// account reserve the same sequence number, so whichever executes first
 		// silently kills the other.
-		open, _, findErr := s.store.OpenProposal(ctx, r.org.ID, treasury.ID)
+		open, found, findErr := s.store.OpenProposal(ctx, r.org.ID, treasury.ID)
 		if findErr != nil {
 			return findErr
+		}
+		if !found {
+			// The store gives one answer for two collisions, and this is the
+			// other one: nothing is open, and this exact envelope has been
+			// proposed before. Naming "proposal #0" would send somebody
+			// looking for a proposal that does not exist.
+			return r.reply(ctx,
+				"That exact proposal has already been made here and is closed now. "+
+					"Run /pay again in a moment and it will be a fresh one.")
 		}
 		return r.reply(ctx, fmt.Sprintf(
 			"%s already has proposal #%d open, and one account can only have one "+
 				"at a time — both would reserve the same sequence number, and "+
 				"whichever went first would silently kill the other.\n\n"+
-				"Finish it with /approve %d and /execute %d, or cancel it.",
-			treasuryName(treasury), open.ID, open.ID, open.ID))
+				"Finish it with /approve %d and /execute %d, or withdraw it with /cancel %d.",
+			treasuryName(treasury), open.ID, open.ID, open.ID, open.ID))
 	case err != nil:
 		return err
 	}
@@ -158,6 +167,7 @@ func (s *Service) execute(ctx context.Context, r *request) error {
 	}
 
 	result, err := s.sender.ExecuteProposal(ctx, r.scope, view.Proposal.ID, 0)
+	var refused *api.RefusedError
 	switch {
 	case errors.Is(err, api.ErrNotEnoughSignatures):
 		return r.reply(ctx, fmt.Sprintf(
@@ -176,6 +186,8 @@ func (s *Service) execute(ctx context.Context, r *request) error {
 			view.Proposal.ID))
 	case errors.Is(err, store.ErrProposalClosed):
 		return r.reply(ctx, fmt.Sprintf("Proposal #%d is already closed.", view.Proposal.ID))
+	case errors.As(err, &refused):
+		return r.reply(ctx, refusedReply(view.Proposal.ID, refused))
 	case err != nil:
 		return err
 	}
@@ -185,8 +197,117 @@ func (s *Service) execute(ctx context.Context, r *request) error {
 		view.Proposal.ID, result.Hash, result.Ledger))
 }
 
+// refusedReply says what the network objected to and what that leaves.
+//
+// The two halves matter equally. The reason, because it is the only thing
+// anybody can act on. And whether the proposal is still open, because the
+// answer decides who does what next: an open one is fixed and executed again
+// with the signatures it has, a closed one is proposed again and signed again.
+func refusedReply(id store.ProposalID, e *api.RefusedError) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "The network refused proposal #%d: %s.\n\n", id, refusalReason(e))
+	if e.Closed {
+		fmt.Fprintf(&b, "That used up the envelope, so #%d is closed — its signatures cannot be "+
+			"reused. Nothing was paid. Once the cause is dealt with, propose it again.", id)
+	} else {
+		fmt.Fprintf(&b, "Nothing was spent and #%d is still open with the signatures it has. "+
+			"Once that is put right, run /execute %d again.", id, id)
+	}
+	return b.String()
+}
+
+// refusalReason puts the network's result codes into words.
+//
+// Only the ones a treasury meets in ordinary use. Anything else is given as the
+// code itself: a code somebody can look up is worth more than a sentence that
+// guesses.
+func refusalReason(e *api.RefusedError) string {
+	for _, op := range e.Operations {
+		switch op {
+		case "op_underfunded":
+			return "the treasury does not hold enough to pay it"
+		case "op_no_destination":
+			return "the destination account does not exist on the network"
+		case "op_no_trust":
+			return "the destination has no trustline for the asset, so it cannot receive it"
+		case "op_src_no_trust":
+			return "the treasury has no trustline for the asset"
+		case "op_line_full":
+			return "the destination's trustline is full and cannot hold that much more"
+		case "op_not_authorized", "op_src_not_authorized":
+			return "the asset's issuer has not authorised one of the accounts to hold it"
+		case "op_low_reserve":
+			return "it would leave an account below the XLM reserve the network requires"
+		case "op_under_dest_min", "op_too_few_offers":
+			return "the market moved, and the swap could no longer deliver the minimum it promised"
+		case "op_success", "op_inner":
+			continue
+		default:
+			return "an operation failed with " + op
+		}
+	}
+	switch e.Transaction {
+	case "tx_bad_auth", "tx_bad_auth_extra":
+		return "the signatures on it are not what the treasury now requires — " +
+			"its signers or thresholds have changed since it was signed. " +
+			"An admin can run /link-treasury again so I have the current signer set"
+	case "tx_insufficient_balance", "tx_insufficient_fee":
+		return "the treasury cannot cover the transaction fee, which it pays itself in XLM"
+	case "tx_too_late":
+		return "its signing window had already closed"
+	case "tx_bad_seq":
+		return "something else spent from this treasury first, so its sequence number is used up"
+	case "tx_no_source_account":
+		return "the treasury account does not exist on the network"
+	}
+	return "the result code was " + e.Transaction
+}
+
+// cancel withdraws an open proposal.
+func (s *Service) cancel(ctx context.Context, r *request) error {
+	view, err := s.namedProposal(ctx, r)
+	if err != nil || view == nil {
+		return err
+	}
+
+	proposal, err := s.sender.CancelProposal(ctx, r.scope, view.Proposal.ID,
+		r.member.ID, r.role.AtLeast(chat.RoleAdmin))
+	switch {
+	case errors.Is(err, store.ErrProposalClosed):
+		return r.reply(ctx, fmt.Sprintf(
+			"Proposal #%d is already %s. There is nothing left to withdraw.",
+			proposal.ID, proposal.Status))
+	case errors.Is(err, api.ErrNotYoursToCancel):
+		return r.reply(ctx, fmt.Sprintf(
+			"Proposal #%d was made by member #%d. They can withdraw it, and so can an admin here.",
+			proposal.ID, proposal.CreatedBy))
+	case err != nil:
+		return err
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Proposal #%d is withdrawn, and %s is free for a new one.",
+		proposal.ID, treasuryName(view.Treasury))
+	if view.Have > 0 {
+		// Not a formality. A signature is over a transaction, not over a row
+		// here, and nothing this deployment does can take one back.
+		fmt.Fprintf(&b, "\n\nIt had already been signed, and those signatures stay valid on "+
+			"the network until %s or until the treasury next transacts, whichever comes first. "+
+			"I won't offer the envelope to anyone else, but a signer who kept a copy could still "+
+			"add theirs. If that matters, send any transaction from the treasury — a new proposal "+
+			"that executes will do — and this one can never land.",
+			proposal.ExpiresAt.UTC().Format("2 Jan 15:04 MST"))
+	}
+	return r.reply(ctx, b.String())
+}
+
 // proposals lists what is open and what happened recently.
 func (s *Service) proposals(ctx context.Context, r *request) error {
+	// So that nothing past its window is listed as open. The timer that does
+	// this cannot be relied on to have run since the window closed.
+	if _, err := s.store.ExpireProposals(ctx); err != nil {
+		return err
+	}
 	list, err := s.store.Proposals(ctx, r.org.ID, 10)
 	if err != nil {
 		return err
@@ -203,7 +324,7 @@ func (s *Service) proposals(ctx context.Context, r *request) error {
 			fmt.Fprintf(&b, " · expires %s", p.ExpiresAt.UTC().Format("2 Jan 15:04 MST"))
 		}
 	}
-	b.WriteString("\n\nRun /approve <number> to sign one.")
+	b.WriteString("\n\nRun /approve <number> to sign one, or /cancel <number> to withdraw one that is open.")
 	return r.reply(ctx, b.String())
 }
 
@@ -402,6 +523,18 @@ func (s *Service) proposalCommands() []*command {
 			// else's money.
 			minRole: chat.RoleObserver,
 			run:     func(ctx context.Context, s *Service, r *request) error { return s.execute(ctx, r) },
+		},
+		{
+			name:        "cancel",
+			description: "Withdraw an open proposal",
+			options: []chat.Option{
+				{Name: "id", Description: "The proposal number", Type: chat.OptString},
+			},
+			// Whoever may propose may take back what they proposed. Whether
+			// this particular proposal is theirs to take back is checked
+			// against the proposal itself, not against a role.
+			minRole: chat.RoleProposer,
+			run:     func(ctx context.Context, s *Service, r *request) error { return s.cancel(ctx, r) },
 		},
 		{
 			name:        "proposals",

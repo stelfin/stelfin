@@ -131,6 +131,17 @@ func (s *Store) CreateProposal(ctx context.Context, p CreateProposalParams) (Pro
 	}
 	defer tx.Rollback(ctx)
 
+	// A proposal whose window has passed still holds the treasury's one open
+	// slot until something closes it. The sweep does that on a timer, and a
+	// timer is not something to stake the slot on: a process that was asleep,
+	// or restarting, or a minute behind, would refuse a new proposal on account
+	// of one that no signature can ever complete. So the slot is cleared here,
+	// in the same transaction that takes it.
+	if _, err := tx.Exec(ctx, expireSQL+` AND treasury_id = $1 AND org_id = $2`+expireEventsSQL,
+		int64(p.Treasury), int64(p.Org)); err != nil {
+		return Proposal{}, fmt.Errorf("store: expire the stale proposal: %w", err)
+	}
+
 	out, err := scanProposal(tx.QueryRow(ctx, `
 		INSERT INTO proposals (
 			org_id, treasury_id, kind, base_xdr, tx_hash, source_seq,
@@ -179,13 +190,18 @@ func (s *Store) Proposal(ctx context.Context, org ledger.OrgID, id ProposalID) (
 }
 
 // OpenProposal returns the treasury's open proposal, if it has one.
+//
+// One past its window is not open, whether or not the sweep has reached it yet:
+// it can collect no signature that would let it land, and offering it to
+// somebody to sign would be offering them nothing.
 func (s *Store) OpenProposal(
 	ctx context.Context, org ledger.OrgID, treasury TreasuryID,
 ) (Proposal, bool, error) {
 	p, err := scanProposal(s.pool.QueryRow(ctx,
 		`SELECT `+proposalColumns+`
 		   FROM proposals
-		  WHERE treasury_id = $1 AND org_id = $2 AND status = 'open'`,
+		  WHERE treasury_id = $1 AND org_id = $2 AND status = 'open'
+		    AND expires_at > now()`,
 		int64(treasury), int64(org)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Proposal{}, false, nil
@@ -414,21 +430,30 @@ func (s *Store) ProposalHistory(
 	return out, rows.Err()
 }
 
-// ExpireProposals closes proposals whose window has passed.
-//
-// Run on a timer rather than checked lazily on read, because an expired
-// proposal still holds the treasury's one open slot. Left to a lazy check,
-// nobody could open a new proposal until somebody happened to look at the old
-// one — and the person blocked is the person who does not know it exists.
-func (s *Store) ExpireProposals(ctx context.Context) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `
+// expireSQL closes open proposals whose window has passed, and expireEventsSQL
+// records that it did. A further predicate goes between the two.
+const (
+	expireSQL = `
 		WITH expired AS (
 			UPDATE proposals SET status = 'expired', resolved_at = now()
-			 WHERE status = 'open' AND expires_at <= now()
+			 WHERE status = 'open' AND expires_at <= now()`
+	expireEventsSQL = `
 			RETURNING id
 		)
 		INSERT INTO proposal_events (proposal_id, kind, detail)
-		SELECT id, 'expired', 'the signing window closed' FROM expired`)
+		SELECT id, 'expired', 'the signing window closed' FROM expired`
+)
+
+// ExpireProposals closes proposals whose window has passed.
+//
+// Run on a timer, because an expired proposal still holds the treasury's one
+// open slot and its status is what every listing shows. It is not the only
+// thing standing between an expired proposal and a new one: CreateProposal
+// clears the slot it is about to take, and OpenProposal does not report a
+// proposal past its window. The timer is what makes the record say "expired"
+// without anybody having to ask.
+func (s *Store) ExpireProposals(ctx context.Context) (int64, error) {
+	tag, err := s.pool.Exec(ctx, expireSQL+expireEventsSQL)
 	if err != nil {
 		return 0, fmt.Errorf("store: expire proposals: %w", err)
 	}

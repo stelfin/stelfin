@@ -286,6 +286,72 @@ func TestExpireProposalsFreesTheSlot(t *testing.T) {
 	}
 }
 
+// TestAnExpiredProposalDoesNotHoldTheSlot: the sweep runs on a timer, and a
+// timer is not something to stake a treasury's one slot on. A process that was
+// asleep or restarting when the window closed would otherwise refuse every new
+// proposal on account of one no signature can complete.
+func TestAnExpiredProposalDoesNotHoldTheSlot(t *testing.T) {
+	s := New(testPool)
+	ctx := context.Background()
+	tn := newTenant(t, s, "pr-nosweep")
+	tr := linkTreasury(t, s, tn, 1)
+	stale := newProposal(t, s, tn, tr, 10*time.Millisecond)
+
+	time.Sleep(30 * time.Millisecond)
+
+	// Nothing has swept. It is not offered as the open one,
+	if _, open, err := s.OpenProposal(ctx, tn.org.ID, tr.ID); err != nil || open {
+		t.Fatalf("an expired proposal was reported open (open=%v, err=%v)", open, err)
+	}
+	// and a new one takes the slot,
+	fresh := newProposal(t, s, tn, tr, time.Hour)
+
+	// which closes the old one in the same step, and says why.
+	got, err := s.Proposal(ctx, tn.org.ID, stale.ID)
+	must(t, err, "read stale proposal")
+	if got.Status != ProposalExpired {
+		t.Fatalf("the stale proposal is %q, want expired", got.Status)
+	}
+	history, err := s.ProposalHistory(ctx, tn.org.ID, stale.ID)
+	must(t, err, "history")
+	if len(history) != 2 || history[1].Kind != EventExpired {
+		t.Fatalf("history = %+v", history)
+	}
+
+	now, open, err := s.OpenProposal(ctx, tn.org.ID, tr.ID)
+	must(t, err, "open proposal")
+	if !open || now.ID != fresh.ID {
+		t.Fatalf("open proposal = #%d (open=%v), want #%d", now.ID, open, fresh.ID)
+	}
+}
+
+// TestALiveProposalStillHoldsTheSlot: clearing the slot is for a proposal that
+// is past its window, and for nothing else.
+func TestALiveProposalStillHoldsTheSlot(t *testing.T) {
+	s := New(testPool)
+	ctx := context.Background()
+	tn := newTenant(t, s, "pr-live")
+	tr := linkTreasury(t, s, tn, 1)
+	live := newProposal(t, s, tn, tr, time.Hour)
+
+	proposalSeq++
+	_, err := s.CreateProposal(ctx, CreateProposalParams{
+		Org: tn.org.ID, Treasury: tr.ID, Kind: "payment",
+		XDR:  fmt.Sprintf("AAAAAgAAenvelope%d", proposalSeq),
+		Hash: fmt.Sprintf("%064x", proposalSeq), SourceSeq: int64(4_000_000 + proposalSeq),
+		Description: "pay", Digest: bytes.Repeat([]byte{1}, 32),
+		CreatedBy: tn.member.ID, ExpiresAt: time.Now().Add(time.Hour),
+	})
+	if !errors.Is(err, ErrProposalAlreadyOpen) {
+		t.Fatalf("a second proposal beside a live one: %v", err)
+	}
+	got, err := s.Proposal(ctx, tn.org.ID, live.ID)
+	must(t, err, "read live proposal")
+	if got.Status != ProposalOpen {
+		t.Fatalf("the live proposal is %q, want open", got.Status)
+	}
+}
+
 func TestProposalReadsAreScopedToTheirOrg(t *testing.T) {
 	s := New(testPool)
 	ctx := context.Background()

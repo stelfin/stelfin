@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/stellar/go-stellar-sdk/keypair"
@@ -37,7 +38,42 @@ var (
 	// anything else the treasury submits meanwhile invalidates it permanently —
 	// with no event, no signal, and a failure much later that reads as a bug.
 	ErrSequenceMoved = errors.New("api: the treasury has transacted since this proposal was built")
+
+	// ErrNotYoursToCancel reports someone withdrawing a proposal that is not
+	// theirs, without the standing to withdraw anybody's.
+	ErrNotYoursToCancel = errors.New("api: only whoever made a proposal, or an admin, can cancel it")
 )
+
+// RefusedError reports a proposal the network would not take, in its own codes.
+//
+// A type and not a sentence, because the codes are the whole of what anybody
+// can do about it: op_underfunded is a treasury to top up, tx_bad_auth is a
+// signer set that changed, and a caller that could only say "it failed" would
+// leave a room of signers to guess which.
+type RefusedError struct {
+	// Transaction is the transaction-level result code, such as tx_failed.
+	Transaction string
+	// Operations are the per-operation codes, when the transaction got as far
+	// as running them.
+	Operations []string
+	// Closed reports that the proposal was closed because its envelope can
+	// never be sent again. When false, nothing about the proposal has changed:
+	// it is still open, with its signatures, and can be executed again once
+	// what the network objected to has been put right.
+	Closed bool
+}
+
+func (e *RefusedError) Error() string {
+	state := "it is still open"
+	if e.Closed {
+		state = "it has been closed"
+	}
+	codes := e.Transaction
+	if len(e.Operations) > 0 {
+		codes += " (" + strings.Join(e.Operations, ", ") + ")"
+	}
+	return fmt.Sprintf("api: the network refused this proposal with %s; %s", codes, state)
+}
 
 // ProposePaymentParams describes a payment to put to the treasury's signers.
 type ProposePaymentParams struct {
@@ -174,6 +210,14 @@ func (s *Service) LoadProposal(
 	ctx context.Context, scope Scope, id store.ProposalID,
 ) (*ProposalView, error) {
 	if err := scope.check(); err != nil {
+		return nil, err
+	}
+
+	// Before anything is read, so that what is read is true. A proposal past
+	// its window says "open" until something closes it, and the timer that
+	// does so cannot be relied on to have run: this may be the first request
+	// a sleeping instance has served in an hour.
+	if _, err := s.store.ExpireProposals(ctx); err != nil {
 		return nil, err
 	}
 
@@ -441,6 +485,10 @@ func (s *Service) ExecuteProposal(
 		}
 	} else {
 		if result, err = s.settle.Submit(ctx, signed); err != nil {
+			var rejected *settlement.Rejection
+			if errors.As(err, &rejected) {
+				return nil, s.refused(ctx, scope, id, rejected, by)
+			}
 			// An ambiguous submission is not a resolution. The proposal stays open
 			// and the next attempt finds the transaction on chain or does not — the
 			// alternative, marking it failed, would invite a second envelope for a
@@ -454,6 +502,91 @@ func (s *Service) ExecuteProposal(
 		return nil, err
 	}
 	return &result, nil
+}
+
+// refused records what the network said about a proposal it would not take.
+//
+// A rejection with result codes is an answer, not an open question, and it is
+// one of two answers. If the envelope is spent — it reached a ledger and failed
+// there, or its sequence number or time bounds are behind the network — nothing
+// can ever make it land, and it is closed here. Leaving it open would hold the
+// treasury's one slot for a proposal that cannot be executed and, there being
+// no other way to close one, hold it for good.
+//
+// Otherwise the envelope is as valid as it was and only the moment was wrong:
+// the account now wants more weight than these signatures carry, or cannot pay
+// the fee. It stays open, signatures and all.
+func (s *Service) refused(
+	ctx context.Context, scope Scope, id store.ProposalID,
+	rejected *settlement.Rejection, by store.IdentityID,
+) error {
+	out := &RefusedError{
+		Transaction: rejected.Transaction,
+		Operations:  rejected.Operations,
+		Closed:      rejected.Spent(),
+	}
+	if !out.Closed {
+		return out
+	}
+
+	status, hash := store.ProposalFailed, ""
+	switch rejected.Transaction {
+	case "tx_too_late":
+		status = store.ProposalExpired
+	case "tx_failed":
+		// It is on the ledger, as a failure. The hash is how anybody finds it.
+		hash = rejected.Hash
+	}
+	err := s.store.ResolveProposal(ctx, scope.Org, id, status, hash,
+		"the network refused it: "+rejected.Codes(), by)
+	if err != nil && !errors.Is(err, store.ErrProposalClosed) {
+		return err
+	}
+	return out
+}
+
+// CancelProposal withdraws an open proposal.
+//
+// Whoever made it may, and so may an admin of the workspace: the first because
+// a mistyped amount should not need anyone's permission to take back, the
+// second because the person who made it may not be around.
+//
+// What this closes is stelfin's record, and the caller is told so. Signatures
+// already given are signatures over a valid transaction, and they stay valid on
+// the network until its time bounds pass or the treasury's sequence number
+// moves on. Nothing here can take a signature back; it can only stop offering
+// the envelope to anybody else.
+//
+// Allowed while the deployment is read-only. Withdrawing builds nothing and
+// submits nothing, and the day somebody turns that switch on is not a day to
+// be unable to take a proposal off the table.
+func (s *Service) CancelProposal(
+	ctx context.Context, scope Scope, id store.ProposalID, by store.MemberID, admin bool,
+) (store.Proposal, error) {
+	if err := scope.check(); err != nil {
+		return store.Proposal{}, err
+	}
+	if _, err := s.store.ExpireProposals(ctx); err != nil {
+		return store.Proposal{}, err
+	}
+
+	proposal, err := s.store.Proposal(ctx, scope.Org, id)
+	if err != nil {
+		return store.Proposal{}, err
+	}
+	if proposal.Status != store.ProposalOpen {
+		return proposal, fmt.Errorf("%w: %d is %s", store.ErrProposalClosed, id, proposal.Status)
+	}
+	if !admin && proposal.CreatedBy != by {
+		return proposal, ErrNotYoursToCancel
+	}
+
+	if err := s.store.ResolveProposal(ctx, scope.Org, id, store.ProposalCancelled, "",
+		fmt.Sprintf("withdrawn by member #%d", by), 0); err != nil {
+		return proposal, err
+	}
+	proposal.Status = store.ProposalCancelled
+	return proposal, nil
 }
 
 // rebuild reports which of the account's signers are already on record for this

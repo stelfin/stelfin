@@ -220,6 +220,26 @@ func (f *fakeSender) viewOf(
 	}, nil
 }
 
+func (f *fakeSender) CancelProposal(
+	ctx context.Context, scope api.Scope, id store.ProposalID, by store.MemberID, admin bool,
+) (store.Proposal, error) {
+	p, err := f.db.Proposal(ctx, scope.Org, id)
+	if err != nil {
+		return store.Proposal{}, err
+	}
+	if p.Status != store.ProposalOpen {
+		return p, fmt.Errorf("%w: %d is %s", store.ErrProposalClosed, id, p.Status)
+	}
+	if !admin && p.CreatedBy != by {
+		return p, api.ErrNotYoursToCancel
+	}
+	if err := f.db.ResolveProposal(ctx, p.Org, id, store.ProposalCancelled, "", "withdrawn", 0); err != nil {
+		return p, err
+	}
+	p.Status = store.ProposalCancelled
+	return p, nil
+}
+
 func (f *fakeSender) ExecuteProposal(
 	ctx context.Context, scope api.Scope, id store.ProposalID, _ store.IdentityID,
 ) (*settlement.Result, error) {

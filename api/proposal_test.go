@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -367,6 +368,147 @@ func TestExecuteSubmitsAndResolves(t *testing.T) {
 		err, store.ErrProposalClosed,
 	) {
 		t.Fatalf("second execution: %v", err)
+	}
+}
+
+// approved opens a proposal and gives it both signatures.
+func (f *proposalFixture) approved(t *testing.T) *ProposalView {
+	t.Helper()
+	view := f.propose(t)
+	if _, err := f.svc.Approve(context.Background(), f.scope, view.Proposal.ID,
+		signEnvelope(t, view.Proposal.XDR, f.treasury, f.co), f.identity); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	return view
+}
+
+// TestAProposalTheNetworkSpentIsClosed: a transaction that reaches a ledger and
+// fails there has used its sequence number, and no signature can make that
+// envelope land again. It used to stay open — holding the treasury's one slot
+// for a proposal that could not be executed, with no way to close it.
+func TestAProposalTheNetworkSpentIsClosed(t *testing.T) {
+	for name, c := range map[string]struct {
+		codes   []string
+		status  string
+		onChain bool
+	}{
+		"included and failed": {[]string{"tx_failed", "op_underfunded"}, store.ProposalFailed, true},
+		"sequence behind":     {[]string{"tx_bad_seq"}, store.ProposalFailed, false},
+		"window closed":       {[]string{"tx_too_late"}, store.ProposalExpired, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newProposalFixture(t, "spent-"+strings.ReplaceAll(name, " ", "-"))
+			ctx := context.Background()
+			view := f.approved(t)
+			f.horizon.refuse = c.codes
+
+			_, err := f.svc.ExecuteProposal(ctx, f.scope, view.Proposal.ID, f.identity)
+			var refused *RefusedError
+			if !errors.As(err, &refused) {
+				t.Fatalf("Execute: %v, want a RefusedError", err)
+			}
+			if !refused.Closed || refused.Transaction != c.codes[0] {
+				t.Fatalf("refused = %+v", refused)
+			}
+			if len(c.codes) > 1 && (len(refused.Operations) != 1 || refused.Operations[0] != c.codes[1]) {
+				t.Fatalf("operation codes = %v, want %v", refused.Operations, c.codes[1:])
+			}
+
+			after, err := f.store.Proposal(ctx, f.scope.Org, view.Proposal.ID)
+			if err != nil {
+				t.Fatalf("read proposal: %v", err)
+			}
+			if after.Status != c.status {
+				t.Fatalf("status = %q, want %q", after.Status, c.status)
+			}
+			// A failure that is on the ledger can be looked up; one that never
+			// got there has nothing to look up.
+			if got := after.SubmittedTx != ""; got != c.onChain {
+				t.Fatalf("recorded hash %q, on chain = %v", after.SubmittedTx, c.onChain)
+			}
+
+			// The slot is free: this is the whole point.
+			f.propose(t)
+		})
+	}
+}
+
+// TestAProposalTheNetworkTurnedAwayStaysOpen: refused before it reached a
+// ledger, for something about the moment rather than the envelope. Nothing was
+// spent, the signatures are as good as they were, and closing it would throw
+// away a room's worth of signing over a treasury that was briefly out of XLM.
+func TestAProposalTheNetworkTurnedAwayStaysOpen(t *testing.T) {
+	for _, code := range []string{"tx_bad_auth", "tx_insufficient_balance", "tx_insufficient_fee"} {
+		t.Run(code, func(t *testing.T) {
+			f := newProposalFixture(t, "turned-away-"+code)
+			ctx := context.Background()
+			view := f.approved(t)
+			f.horizon.refuse = []string{code}
+
+			_, err := f.svc.ExecuteProposal(ctx, f.scope, view.Proposal.ID, f.identity)
+			var refused *RefusedError
+			if !errors.As(err, &refused) || refused.Closed {
+				t.Fatalf("Execute: %v (refused = %+v), want an open refusal", err, refused)
+			}
+
+			after, err := f.store.Proposal(ctx, f.scope.Org, view.Proposal.ID)
+			if err != nil {
+				t.Fatalf("read proposal: %v", err)
+			}
+			if after.Status != store.ProposalOpen {
+				t.Fatalf("status = %q, want it left open", after.Status)
+			}
+
+			// And it goes through, unchanged, once the network will take it.
+			if _, err := f.svc.ExecuteProposal(ctx, f.scope, view.Proposal.ID, f.identity); err != nil {
+				t.Fatalf("second attempt: %v", err)
+			}
+		})
+	}
+}
+
+func TestCancelAtTheService(t *testing.T) {
+	f := newProposalFixture(t, "cancel")
+	ctx := context.Background()
+	view := f.propose(t)
+	stranger := f.member + 1_000
+
+	if _, err := f.svc.CancelProposal(ctx, f.scope, view.Proposal.ID, stranger, false); !errors.Is(err, ErrNotYoursToCancel) {
+		t.Fatalf("a member cancelled somebody else's proposal: %v", err)
+	}
+	if got, err := f.svc.CancelProposal(ctx, f.scope, view.Proposal.ID, stranger, true); err != nil ||
+		got.Status != store.ProposalCancelled {
+		t.Fatalf("an admin could not cancel it: %v (%+v)", err, got)
+	}
+	if _, err := f.svc.CancelProposal(ctx, f.scope, view.Proposal.ID, f.member, false); !errors.Is(err, store.ErrProposalClosed) {
+		t.Fatalf("cancelled twice: %v", err)
+	}
+
+	history, err := f.store.ProposalHistory(ctx, f.scope.Org, view.Proposal.ID)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	if last := history[len(history)-1]; last.Kind != store.EventCancelled || !strings.Contains(last.Detail, "withdrawn by member") {
+		t.Fatalf("the record does not say who withdrew it: %+v", last)
+	}
+
+	// Its own, with nobody's permission, and the slot is free afterwards.
+	mine := f.propose(t)
+	if _, err := f.svc.CancelProposal(ctx, f.scope, mine.Proposal.ID, f.member, false); err != nil {
+		t.Fatalf("cancelling my own: %v", err)
+	}
+	f.propose(t)
+}
+
+// TestCancelStillWorksReadOnly: the day somebody turns the kill switch on is
+// not a day to be unable to take a proposal off the table.
+func TestCancelStillWorksReadOnly(t *testing.T) {
+	f := newProposalFixture(t, "cancel-readonly")
+	view := f.propose(t)
+	f.svc.cfg.ReadOnly = true
+
+	if _, err := f.svc.CancelProposal(context.Background(), f.scope, view.Proposal.ID, f.member, false); err != nil {
+		t.Fatalf("cancel while read-only: %v", err)
 	}
 }
 
