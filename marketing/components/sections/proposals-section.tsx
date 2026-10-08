@@ -46,9 +46,9 @@ export function ProposalsSection() {
           <Reveal delay={0.15}>
             <p className="mt-6 max-w-md text-base leading-relaxed text-fg-muted md:text-lg">
               stelfin reads the signing weights off your Stellar account and
-              collects approvals against them. A single signer, an M-of-N
-              multisig, or a Soroban smart account all work the same way,
-              because the network decides what counts, not the bot.
+              collects approvals against them. A single signer and an M-of-N
+              multisig work the same way, because the network decides what
+              counts, not the bot.
             </p>
           </Reveal>
         </div>

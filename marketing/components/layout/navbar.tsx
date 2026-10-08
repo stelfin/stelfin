@@ -34,7 +34,10 @@ export function Navbar() {
   }, [open]);
 
   useEffect(() => {
-    const mq = window.matchMedia("(min-width: 1024px)");
+    // 768px is Tailwind's md, where the toggle and the menu both disappear.
+    // Watching a wider breakpoint left a band of widths in which an open menu
+    // vanished with the page still scroll-locked and nothing left to close it.
+    const mq = window.matchMedia("(min-width: 768px)");
     const onChange = (e: MediaQueryListEvent) => {
       if (e.matches) setOpen(false);
     };

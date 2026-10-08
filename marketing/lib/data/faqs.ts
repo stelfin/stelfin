@@ -27,7 +27,7 @@ export const FAQS: FaqItem[] = [
     id: "custodial",
     question: "Can stelfin move the treasury without us?",
     answer:
-      "No. Each signer's key is generated on their own device and never transmitted anywhere, including to us. stelfin can build a transaction and ask; only the signers can authorize it.",
+      "No. A signer's key stays in their own wallet, on their own device, and is never sent anywhere, including to us. stelfin can build a transaction and ask; only the signers can authorize it.",
   },
   {
     id: "connectors",

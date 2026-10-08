@@ -27,15 +27,26 @@ export default function Image() {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: "20px" }}>
-          <div
-            style={{
-              width: 64,
-              height: 64,
-              borderRadius: 18,
-              background: "#14713D",
-              display: "flex",
-            }}
-          />
+          {/* The mark itself, the same artwork as app/icon.svg. This was a
+              blank green square: the shape of the logo with the logo left
+              out, on the one image a shared link is judged by. */}
+          <svg width={64} height={64} viewBox="0 0 32 32">
+            <rect width="32" height="32" rx="9" fill="#14713D" />
+            <path
+              d="M8 10.5A2.5 2.5 0 0 1 10.5 8h11A2.5 2.5 0 0 1 24 10.5v8a2.5 2.5 0 0 1-2.5 2.5H14l-4.5 3.5V21h-1A2.5 2.5 0 0 1 6 18.5v-8Z"
+              fill="none"
+              stroke="#ffffff"
+              strokeWidth="1.8"
+              strokeLinejoin="round"
+            />
+            <circle cx="16" cy="14.2" r="3" fill="#ffffff" />
+            <path
+              d="M16 12.6v3.2M15.1 13.4h1.8M15.1 15h1.5"
+              stroke="#14713D"
+              strokeWidth="0.9"
+              strokeLinecap="round"
+            />
+          </svg>
           <div style={{ fontSize: 44, fontWeight: 700, color: "#fafaf9", letterSpacing: "-0.02em" }}>
             stelfin
           </div>

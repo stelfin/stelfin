@@ -45,8 +45,8 @@ export function ConnectorsSection() {
           />
           <Reveal delay={0.15}>
             <p className="mt-6 max-w-xl text-base leading-relaxed text-fg-muted md:text-lg">
-              Spreadsheets, models and trading venues can all put work in front
-              of the treasury. None of them can move it.
+              A spreadsheet or an agent can put work in front of the treasury.
+              Neither can move it.
             </p>
           </Reveal>
         </div>
