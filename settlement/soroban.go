@@ -225,8 +225,51 @@ func (c *Client) SubmitSoroban(
 
 	// The envelope's own expiry, kept because it is what makes one kind of
 	// NOT_FOUND definite: past this, the transaction can never be included.
-	maxTime := tx.Timebounds().MaxTime
+	return c.sendSoroban(ctx, hash, envelope, tx.Timebounds().MaxTime)
+}
 
+// SubmitSorobanFeeBump sends a contract call somebody else signed, inside the
+// envelope that pays for it, and waits for it to land.
+//
+// Through the RPC rather than Horizon, which is where the classic fee bump
+// goes. Horizon would carry it, and would answer for a call that trapped with
+// a refusal indistinguishable from one that never reached a ledger — and for a
+// contract call those are different facts: the second cost nothing and may be
+// tried again, the first spent the signer's sequence number and cannot.
+//
+// The hash looked up is the outer one. It is what lands, and what an explorer
+// finds.
+func (c *Client) SubmitSorobanFeeBump(
+	ctx context.Context, bump *txnbuild.FeeBumpTransaction,
+) (Result, error) {
+	if c.soroban == nil {
+		return Result{}, ErrNoSoroban
+	}
+	inner := bump.InnerTransaction()
+	if inner == nil {
+		return Result{}, errors.New("settlement: a fee bump with nothing inside it")
+	}
+	if _, err := sorobanOp(inner); err != nil {
+		return Result{}, err
+	}
+
+	hash, err := bump.HashHex(c.network)
+	if err != nil {
+		return Result{}, fmt.Errorf("settlement: hash fee-bump transaction: %w", err)
+	}
+	envelope, err := bump.Base64()
+	if err != nil {
+		return Result{}, fmt.Errorf("settlement: encode fee-bump transaction: %w", err)
+	}
+	// The inner transaction's bounds are the ones that apply: a fee bump has
+	// none of its own.
+	return c.sendSoroban(ctx, hash, envelope, inner.Timebounds().MaxTime)
+}
+
+// sendSoroban sends one encoded envelope and waits for the hash it lands under.
+func (c *Client) sendSoroban(
+	ctx context.Context, hash, envelope string, maxTime int64,
+) (Result, error) {
 	resp, err := c.soroban.SendTransaction(ctx,
 		protocol.SendTransactionRequest{Transaction: envelope})
 	if err != nil {
@@ -291,6 +334,10 @@ func (c *Client) awaitSoroban(
 				Hash:     hash,
 				Ledger:   int32(resp.Ledger),
 				ClosedAt: time.Unix(resp.LedgerCloseTime, 0).UTC(),
+				// Best effort, and said to be: the transaction succeeded
+				// whether or not what it returned can be read back, and a
+				// caller that needs the value has to cope with its absence.
+				ReturnValue: returnValueOf(resp.ResultMetaXDR),
 			}, nil
 
 		case protocol.TransactionStatusFailed:
@@ -348,6 +395,37 @@ func (c *Client) awaitSoroban(
 		case <-time.After(interval):
 		}
 	}
+}
+
+// returnValueOf reads what a contract call returned out of the transaction's
+// metadata, as XDR. Empty when there is nothing to read, or nothing readable.
+func returnValueOf(metaXDR string) string {
+	if metaXDR == "" {
+		return ""
+	}
+	var meta xdr.TransactionMeta
+	if err := xdr.SafeUnmarshalBase64(metaXDR, &meta); err != nil {
+		return ""
+	}
+	var value *xdr.ScVal
+	switch meta.V {
+	case 3:
+		if meta.V3 != nil && meta.V3.SorobanMeta != nil {
+			value = &meta.V3.SorobanMeta.ReturnValue
+		}
+	case 4:
+		if meta.V4 != nil && meta.V4.SorobanMeta != nil {
+			value = meta.V4.SorobanMeta.ReturnValue
+		}
+	}
+	if value == nil {
+		return ""
+	}
+	encoded, err := xdr.MarshalBase64(*value)
+	if err != nil {
+		return ""
+	}
+	return encoded
 }
 
 // describeCoreError turns a TransactionResult XDR into something a log can

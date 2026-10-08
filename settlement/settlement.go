@@ -118,6 +118,10 @@ type Result struct {
 	// either is wrong in a different way — "success" credits money that never
 	// moved, "error" invites a retry against a sequence that has moved on.
 	Failed bool
+	// ReturnValue is what a contract call returned, as XDR. Empty for anything
+	// that is not a contract call, for one that returned nothing, and for one
+	// whose metadata the RPC did not send.
+	ReturnValue string
 }
 
 // ErrNotFound reports that a transaction is not on the ledger.

@@ -1079,3 +1079,122 @@ fn anyone_can_keep_a_treasury_alive() {
     assert_eq!(f.client.policy(), strict());
     assert_eq!(f.client.total_weight(), 3);
 }
+
+// ---------------------------------------------------------------------------
+// How it looks from outside
+// ---------------------------------------------------------------------------
+
+/// The exact bytes this contract's values travel as.
+///
+/// Three programs have to agree about them: this one, the server that builds
+/// the calls, and the page a member signs on, which reads a call back out of
+/// the envelope and says in words what it does. Each checks itself against the
+/// same file, so a field renamed or reordered here turns two other suites red
+/// instead of turning a signing page into one that misreads what it shows.
+///
+/// `UPDATE_GOLDEN=1 cargo test` rewrites the file. Doing that is a statement
+/// that the other two have been changed to match.
+#[test]
+fn its_values_are_encoded_the_way_the_golden_file_says() {
+    use soroban_sdk::xdr::ToXdr;
+    use soroban_sdk::{IntoVal, Val};
+    use std::string::String;
+
+    let env = Env::default();
+    let ada = Address::from_str(
+        &env,
+        "GDKQYYPKNOHKK6W5JVT57WZDEWHQY5IQYLZHFNXS2326H7ROC5ZU5763",
+    );
+    let payee = Address::from_str(
+        &env,
+        "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+    );
+    let token = Address::from_str(
+        &env,
+        "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+    );
+
+    let policy = Policy {
+        quorum_bps: 5_000,
+        approval_bps: 6_000,
+        voting_period: 259_200,
+        timelock: 86_400,
+        spend_limit: 2_500_000_000,
+        spend_window: 86_400,
+    };
+    let pay = Action::Pay(Payment {
+        token: token.clone(),
+        to: payee.clone(),
+        amount: 12_500_000_000,
+    });
+    let proposal = crate::types::Proposal {
+        id: 3,
+        proposer: ada.clone(),
+        action: pay.clone(),
+        memo: memo(&env),
+        status: Status::Passed,
+        closes_at: 1_700_086_400,
+        executable_at: 1_700_090_000,
+        yes: 2,
+        no: 1,
+    };
+
+    let hex = |value: Val| -> String {
+        let mut out = String::new();
+        for byte in value.to_xdr(&env).iter() {
+            out.push_str(&std::format!("{byte:02x}"));
+        }
+        out
+    };
+    let values: [(&str, Val); 13] = [
+        ("policy", policy.clone().into_val(&env)),
+        ("member", member(&ada, 2).into_val(&env)),
+        (
+            "members",
+            vec![&env, member(&ada, 2), member(&payee, 1)].into_val(&env),
+        ),
+        (
+            "addresses",
+            vec![&env, payee.clone(), ada.clone()].into_val(&env),
+        ),
+        ("action_pay", pay.into_val(&env)),
+        (
+            "action_set_policy",
+            Action::SetPolicy(policy).into_val(&env),
+        ),
+        (
+            "action_set_member",
+            Action::SetMember(member(&payee, 0)).into_val(&env),
+        ),
+        (
+            "action_allow_recipient",
+            Action::AllowRecipient(payee.clone()).into_val(&env),
+        ),
+        (
+            "action_deny_recipient",
+            Action::DenyRecipient(payee).into_val(&env),
+        ),
+        ("action_revoke", Action::Revoke(7).into_val(&env)),
+        ("status_passed", Status::Passed.into_val(&env)),
+        ("memo", memo(&env).into_val(&env)),
+        ("proposal", proposal.into_val(&env)),
+    ];
+
+    let mut ours = String::new();
+    for (name, value) in values {
+        ours.push_str(name);
+        ours.push('\t');
+        ours.push_str(&hex(value));
+        ours.push('\n');
+    }
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/abi.tsv");
+    if std::env::var("UPDATE_GOLDEN").is_ok() {
+        std::fs::write(&path, &ours).expect("write the golden file");
+    }
+    let golden = std::fs::read_to_string(&path).expect("read the golden file");
+    assert_eq!(
+        ours, golden,
+        "the encoding has changed: see the comment on this test"
+    );
+}
