@@ -1,5 +1,6 @@
 use soroban_sdk::{token, Address, Env};
 
+use crate::events::Spent;
 use crate::policy;
 use crate::types::Error;
 use crate::Key;
@@ -67,8 +68,17 @@ pub(crate) fn spend(
     // allowed to spend the window twice.
     window.spent = spent;
     env.storage().persistent().set(&Key::Window, &window);
+    policy::keep(env, &Key::Window);
 
     token::Client::new(env, token_id).transfer(&env.current_contract_address(), to, &amount);
+
+    Spent {
+        member: member.clone(),
+        token: token_id.clone(),
+        to: to.clone(),
+        amount,
+    }
+    .publish(env);
     Ok(())
 }
 

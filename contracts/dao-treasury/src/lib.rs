@@ -8,13 +8,33 @@
 //! disagree about whether a proposal passed. There is no version of that
 //! disagreement that is not a bug about money.
 //!
+//! # Nobody stands above the members
+//!
+//! There is no admin. Everything that moves money or changes who decides — a
+//! payment, the policy, who is a member and with what weight, who may be paid —
+//! is a proposal, and a proposal does nothing until the members have passed it
+//! and its timelock has run.
+//!
+//! The timelock is the members' chance to stop something that passed and
+//! should not have, and stopping it is a proposal too: one that takes a
+//! recipient off the list, or revokes the proposal outright. Those two only
+//! ever make the treasury able to do less, so they do not wait out a timelock
+//! of their own. They need the votes like anything else.
+//!
+//! The version before this one had an admin whose key could replace the policy,
+//! add itself as a member, allow itself as a recipient and spend: the whole
+//! treasury, in four calls, with no vote. A treasury like that is held by one
+//! key and decorated with a voting system. This one is held by its members.
+//!
+//! The one thing a single member can do alone is spend under the rolling limit,
+//! to a recipient already allowed — and both that limit and that list are set
+//! by vote, and both start at nothing.
+//!
 //! # What this contract does not claim
 //!
 //! It enforces policy only over funds it holds. A DAO whose treasury is a
 //! classic M-of-N account can point this contract at nothing — any M signers
-//! move that money directly and this contract never hears about it. In that
-//! configuration this is policy *advice*, and stelfin has to say so, because
-//! manufactured assurance is worse than none.
+//! move that money directly and this contract never hears about it.
 //!
 //! # Why `execute` takes no authorisation
 //!
@@ -24,6 +44,7 @@
 //! is already made and merely waiting. A contract whose funds need a specific
 //! person online is a contract with a hostage.
 
+mod events;
 mod policy;
 mod proposals;
 mod spend;
@@ -32,14 +53,19 @@ mod types;
 #[cfg(test)]
 mod test;
 
-use soroban_sdk::{contract, contractimpl, contractmeta, Address, BytesN, Env, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contractmeta, panic_with_error, Address, BytesN, Env, Vec,
+};
 
-pub use types::{Error, Policy, Proposal, Status};
+pub use types::{Action, Error, Member, Payment, Policy, Proposal, Status};
 
 contractmeta!(
     key = "Description",
     val = "Treasury policy and proposals for a DAO, from its chat platform."
 );
+
+/// Which shape of this contract an instance is. Two: the one with no admin.
+const VERSION: u32 = 2;
 
 /// Storage keys.
 ///
@@ -49,7 +75,6 @@ contractmeta!(
 #[soroban_sdk::contracttype]
 #[derive(Clone)]
 pub(crate) enum Key {
-    Admin,
     Policy,
     /// Member weight, by address.
     Member(Address),
@@ -72,48 +97,31 @@ pub struct DaoTreasury;
 
 #[contractimpl]
 impl DaoTreasury {
-    /// Sets the treasury up, once.
+    /// Sets the treasury up, in the transaction that creates it.
     ///
-    /// The admin can change policy and membership and nothing else. It cannot
-    /// move money, cannot vote on its own, and cannot execute a proposal that
-    /// has not passed — the separation is the point, and a treasury whose admin
-    /// key is stolen loses its rules rather than its balance.
-    pub fn init(env: Env, admin: Address, policy: Policy) -> Result<(), Error> {
-        if env.storage().instance().has(&Key::Admin) {
-            return Err(Error::AlreadyInitialised);
+    /// A constructor rather than a call made afterwards, for two reasons. A
+    /// contract that is created in one transaction and set up in another is,
+    /// in between, a contract anybody can set up. And everything a treasury
+    /// starts with — its rules, its members, whom it may pay — is then one
+    /// thing, signed once, by whoever created it, and readable from the
+    /// transaction that did.
+    ///
+    /// From here on none of it changes except by proposal.
+    pub fn __constructor(env: Env, policy: Policy, members: Vec<Member>, allowlist: Vec<Address>) {
+        if let Err(err) = policy::setup(&env, &policy, &members, &allowlist) {
+            panic_with_error!(&env, err);
         }
-        admin.require_auth();
-        policy::check(&policy)?;
+        policy::keep_alive(&env);
+    }
 
-        env.storage().instance().set(&Key::Admin, &admin);
-        env.storage().instance().set(&Key::Policy, &policy);
-        env.storage().instance().set(&Key::NextId, &1u32);
-        env.storage()
-            .instance()
-            .set(&Key::Members, &Vec::<Address>::new(&env));
-        env.storage()
-            .instance()
-            .set(&Key::Allowlist, &Vec::<Address>::new(&env));
-        Ok(())
+    /// Which shape of this contract this is.
+    pub fn version(_env: Env) -> u32 {
+        VERSION
     }
 
     /// Reports the policy in force.
     pub fn policy(env: Env) -> Result<Policy, Error> {
         policy::load(&env)
-    }
-
-    /// Replaces the policy.
-    pub fn set_policy(env: Env, policy: Policy) -> Result<(), Error> {
-        policy::require_admin(&env)?;
-        policy::check(&policy)?;
-        env.storage().instance().set(&Key::Policy, &policy);
-        Ok(())
-    }
-
-    /// Gives a member voting weight, or removes them by setting it to zero.
-    pub fn set_member(env: Env, member: Address, weight: u32) -> Result<(), Error> {
-        policy::require_admin(&env)?;
-        policy::set_member(&env, &member, weight)
     }
 
     /// Reports one member's weight. Zero for anyone who is not one.
@@ -131,40 +139,31 @@ impl DaoTreasury {
         policy::total_weight(&env)
     }
 
-    /// Adds a recipient the treasury may pay.
-    pub fn allow_recipient(env: Env, to: Address) -> Result<(), Error> {
-        policy::require_admin(&env)?;
-        policy::allow(&env, &to);
-        Ok(())
-    }
-
-    /// Removes a recipient.
-    pub fn deny_recipient(env: Env, to: Address) -> Result<(), Error> {
-        policy::require_admin(&env)?;
-        policy::deny(&env, &to);
-        Ok(())
-    }
-
     /// Reports the recipients this treasury may pay.
     pub fn allowlist(env: Env) -> Vec<Address> {
         policy::allowlist(&env)
     }
 
-    /// Puts a payment to the members.
+    /// Puts something to the members: a payment, or a change to the rules.
     pub fn propose(
         env: Env,
         proposer: Address,
-        token: Address,
-        to: Address,
-        amount: i128,
+        action: Action,
         memo: BytesN<32>,
     ) -> Result<u32, Error> {
-        proposals::propose(&env, &proposer, &token, &to, amount, &memo)
+        policy::keep_alive(&env);
+        proposals::propose(&env, &proposer, &action, &memo)
     }
 
-    /// Records one member's vote.
+    /// Records one member's vote, and settles the proposal if that settles it.
     pub fn vote(env: Env, voter: Address, id: u32, approve: bool) -> Result<(), Error> {
+        policy::keep_alive(&env);
         proposals::vote(&env, &voter, id, approve)
+    }
+
+    /// Reports how a member voted on a proposal, if they have.
+    pub fn voted(env: Env, id: u32, voter: Address) -> Option<bool> {
+        proposals::voted(&env, id, &voter)
     }
 
     /// Reports a proposal.
@@ -172,12 +171,20 @@ impl DaoTreasury {
         proposals::load(&env, id)
     }
 
-    /// Closes voting and records the outcome.
+    /// Reports how many proposals there have been. They are numbered from one.
+    pub fn proposal_count(env: Env) -> u32 {
+        let next: u32 = env.storage().instance().get(&Key::NextId).unwrap_or(1);
+        next - 1
+    }
+
+    /// Settles a proposal whose outcome is no longer in question, and records
+    /// it.
     ///
     /// Separate from `execute` because a proposal that fails still has to stop
     /// being open, and nobody has an incentive to execute one that lost. Anyone
     /// may call it, for the same reason anyone may execute.
     pub fn tally(env: Env, id: u32) -> Result<Status, Error> {
+        policy::keep_alive(&env);
         proposals::tally(&env, id)
     }
 
@@ -188,19 +195,22 @@ impl DaoTreasury {
     /// person to be online afterwards would make this deployment a liveness
     /// dependency for somebody else's money.
     pub fn execute(env: Env, id: u32) -> Result<(), Error> {
+        policy::keep_alive(&env);
         proposals::execute(&env, id)
     }
 
-    /// Withdraws a proposal. Its proposer or the admin, and only while open.
-    pub fn cancel(env: Env, id: u32) -> Result<(), Error> {
-        proposals::cancel(&env, id)
+    /// Withdraws a proposal. Whoever made it, and only while it is open.
+    pub fn cancel(env: Env, proposer: Address, id: u32) -> Result<(), Error> {
+        policy::keep_alive(&env);
+        proposals::cancel(&env, &proposer, id)
     }
 
     /// Pays out under the rolling limit, without a proposal.
     ///
-    /// Off by default: `spend_limit` starts at zero, which means every payment
-    /// is a proposal. Turning it up is how a treasury trades review for speed
-    /// on small amounts, and it is the treasury's trade to make.
+    /// Off by default: `spend_limit` starts at whatever the members set, and
+    /// zero means every payment is a proposal. Turning it up is how a treasury
+    /// trades review for speed on small amounts, and it is the treasury's trade
+    /// to make — by vote, like any other change to its policy.
     pub fn spend(
         env: Env,
         member: Address,
@@ -208,11 +218,23 @@ impl DaoTreasury {
         to: Address,
         amount: i128,
     ) -> Result<(), Error> {
+        policy::keep_alive(&env);
         spend::spend(&env, &member, &token, &to, amount)
     }
 
     /// Reports how much of the rolling window is left.
     pub fn spendable(env: Env) -> Result<i128, Error> {
         spend::remaining(&env)
+    }
+
+    /// Keeps the treasury's state alive, without doing anything else: its
+    /// rules, its members and whom it may pay.
+    ///
+    /// Anyone may call it. Using the treasury renews it, so this is for one
+    /// that is not being used: state that is left alone long enough is archived
+    /// by the network and has to be paid to be brought back, and a treasury's
+    /// members should not find that out on the day they next want to vote.
+    pub fn bump(env: Env) {
+        policy::keep_everything(&env);
     }
 }

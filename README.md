@@ -150,10 +150,14 @@ Two Soroban contracts, in `contracts/`, written in Rust.
 
 **`dao_treasury`** holds a DAO's policy and its proposals in one state machine:
 members with voting weight, quorum and approval measured separately, a voting
-period, a timelock, a rolling auto-spend allowance that starts at zero, and a
-recipient allowlist that starts empty. `execute` takes no authorisation — once a
-proposal has passed and its timelock has run, anyone may carry it out, because a
-contract whose funds need a specific person online is a contract with a hostage.
+period, a timelock, a rolling auto-spend allowance, and a list of recipients it
+may pay. It has no admin. A payment, the policy, who is a member and who may be
+paid are each a proposal, set once when the contract is created and changed
+afterwards only by a vote that has passed and waited out its timelock; stopping
+something during that wait is a vote too, and the one kind that does not wait.
+`execute` takes no authorisation — once a proposal has passed and its timelock
+has run, anyone may carry it out, because a contract whose funds need a specific
+person online is a contract with a hostage.
 
 **`connector_registry`** records what a DAO has allowed each connector to do.
 It stores no credential, no token and no endpoint URL: everything in a contract
@@ -169,7 +173,7 @@ DAO is created on demand and recorded in Postgres, not here.
 
 | Contract             | WASM hash                                                          | Upload                                                                                                              |
 | -------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| `dao_treasury`       | `3e9ffbfbd7f3c71d0821f8f15c0a1b1206ba4ae738eeb82800292b9598a93c78` | [tx](https://stellar.expert/explorer/testnet/tx/9b59999c5131807db77944c8a8baf12d9199d6268dd768acf908947978ab0b70) |
+| `dao_treasury`       | `e8f0f9216a35849880d77dc8dbedacce02a25faa9763059f000d2bb35e232a3f` | [tx](https://stellar.expert/explorer/testnet/tx/ef992e084153586bccaa849726150b1105640083645b49ea47594d7c2cf19ae9) |
 | `connector_registry` | `903898770dba6b113fb7f60c3f81cc430d3492613ba876993829be952b10d25e` | [tx](https://stellar.expert/explorer/testnet/tx/66eaf4fd5ea8e721ed734373b39a174fad96db8854df9d3963ecae905835d501) |
 
 Those hashes are not taken on trust. `contracts/deployments.json` is embedded in

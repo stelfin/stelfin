@@ -149,6 +149,14 @@ proposal passed. Members with weights, quorum and approval thresholds in basis
 points, a voting window, a timelock, a rolling-window auto-spend limit, and a
 recipient allowlist.
 
+It has no admin. All of that is set once, by the constructor, in the
+transaction that creates the contract, and changed afterwards only by a
+proposal: a payment, the policy, a member's weight and the allowlist are the
+same kind of thing, decided the same way. A proposal is settled as soon as the
+votes not yet cast could not change it, and the timelock then runs in full.
+Two actions skip the timelock because they can only stop something — removing a
+recipient and revoking another proposal — and they are how members use it.
+
 `execute` deliberately takes no authorization: anyone may execute a proposal
 that has passed and cleared its timelock. Restricting it to the bot would make
 our uptime a treasury liveness dependency, which is the worst property a
@@ -394,9 +402,9 @@ seen the bot would actually do. Fixed; listed for the same reason as the others.
 
 ### What is next
 
-**Contract-held treasuries**, on a `dao_treasury` in which no single key can
-move funds or change the rules without a passed vote. The contract uploaded
-today lets its admin do both, so it is not used.
+**Contract-held treasuries.** The `dao_treasury` they need is written and
+uploaded: no single key can move its funds or change its rules without a passed
+vote. Nothing in the server creates one or votes in one yet.
 
 Built since this list was first written, and no longer on it: signing with
 Freighter beside paste; a decoder for any provider speaking the OpenAI format,
