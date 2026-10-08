@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/stelfin/stelfin/api"
 	"github.com/stelfin/stelfin/chat"
@@ -53,20 +54,9 @@ func (s *Service) Handle(ctx context.Context, m chat.Inbound, out api.Replier, l
 	// An unregistered space is where setup has to be possible, and it is the
 	// only thing that can happen there: the bot has been added somewhere with
 	// no tenant behind it, so there is nobody to be a member of and no books to
-	// read. Everything else is silence — answering would be talking to a room
-	// that never asked.
+	// read.
 	if !registered {
-		if m.Command != commandSetup && m.Command != commandConnect {
-			return nil
-		}
-		claimed, err := s.claimDelivery(ctx, m)
-		if err != nil || !claimed {
-			return err
-		}
-		if m.Command == commandConnect {
-			return s.connectHere(ctx, &request{msg: m, actor: m.Actor, out: out})
-		}
-		return s.runSetup(ctx, m, out)
+		return s.handleUnregistered(ctx, m, out)
 	}
 
 	claimed, err := s.claimDelivery(ctx, m)
@@ -102,7 +92,14 @@ func (s *Service) Handle(ctx context.Context, m chat.Inbound, out api.Replier, l
 		return s.sender.HandleSend(ctx, req.scope, m, out, links)
 	}
 
-	cmd, known := s.commands[m.Command]
+	name := m.Command
+	if name == commandStart {
+		// What Telegram sends when somebody opens a chat with a bot, and what
+		// people type at one they have not met. Here it means the same as
+		// asking what there is.
+		name = commandHelp
+	}
+	cmd, known := s.commands[name]
 	if !known {
 		return req.reply(ctx, fmt.Sprintf(
 			"I don't know /%s. Try /help.", m.Command))
@@ -130,6 +127,82 @@ func (s *Service) Handle(ctx context.Context, m chat.Inbound, out api.Replier, l
 		return err
 	}
 	return nil
+}
+
+// handleUnregistered answers a message from a space no workspace has claimed.
+//
+// Setup and connect run here, because here is the only place they can. For
+// everything else the rule used to be silence, on the reasoning that answering
+// is talking to a room that never asked. That is still right for a room. It was
+// wrong for a person: someone who types a command at the bot has asked, and
+// silence told them the bot was broken. It was most wrong in a direct message,
+// which is where the bot itself sends people — "open a chat with me, press
+// Start" — and where it then ignored the Start it had asked for.
+//
+// So the line is drawn at who is being answered. A command gets a private
+// reply saying what has to happen first. A direct message gets an introduction.
+// Ordinary conversation in a group gets nothing, and costs nothing: it is not
+// claimed, so it leaves no row behind.
+func (s *Service) handleUnregistered(ctx context.Context, m chat.Inbound, out api.Replier) error {
+	r := &request{msg: m, actor: m.Actor, out: out}
+
+	switch {
+	case m.Command == commandSetup, m.Command == commandConnect:
+	case m.Conversation.IsDM:
+	case m.Command == commandStart:
+	case m.Command != "" && s.commands[m.Command] != nil:
+		// A command this bot has. One it has never heard of was meant for some
+		// other bot in the same group, and is none of its business.
+	default:
+		return nil
+	}
+
+	claimed, err := s.claimDelivery(ctx, m)
+	if err != nil || !claimed {
+		return err
+	}
+
+	switch {
+	case m.Command == commandConnect:
+		return s.connectHere(ctx, r)
+	case m.Command == commandSetup:
+		return s.runSetup(ctx, m, out)
+	case m.Conversation.IsDM:
+		return r.reply(ctx, s.introduction())
+	default:
+		return r.reply(ctx, notSetUpReply)
+	}
+}
+
+// notSetUpReply answers a command in a group or server with no workspace.
+//
+// A constant, and the same wherever it is said: a space that has joined nothing
+// must learn nothing from asking, including whether a workspace by some name
+// exists.
+const notSetUpReply = "This space isn't set up with stelfin yet. " +
+	"One of its administrators can run /setup <name> here — for example /setup Acme DAO — " +
+	"or /connect <code> to join a workspace that already exists. " +
+	"After that, /help lists what I can do."
+
+// introduction is what somebody is told in a direct message.
+//
+// It has to say where the work happens, because nothing else does: every
+// command acts on a workspace, a workspace is a group or a server, and a person
+// who has just pressed Start has no way to know that this chat is only where
+// their private links arrive.
+func (s *Service) introduction() string {
+	var b strings.Builder
+	b.WriteString("I'm stelfin. A DAO runs its Stellar treasury through me from its group chat: " +
+		"someone proposes a payment, the treasury's signers approve it on their own devices, " +
+		"and it settles on Stellar. I never hold anyone's key.\n\n" +
+		"I work in a group or a server, not here. This chat is where I send you your own " +
+		"signing links, privately, so it's worth keeping open.\n\n" +
+		"To start: add me to your group, then have one of its administrators run " +
+		"/setup <name> there. After that, /help in the group lists what I can do.")
+	if s.network == "testnet" {
+		b.WriteString("\n\nThis deployment runs on Stellar testnet. No real money moves.")
+	}
+	return b.String()
 }
 
 // readOnlyReply answers anything that would build or submit while the

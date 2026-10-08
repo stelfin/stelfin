@@ -354,20 +354,21 @@ func message(space, command, args string) chat.Inbound {
 	}
 }
 
-// TestUnregisteredSpaceIsSilent is the tenancy rule at its most consequential.
+// TestARoomThatNeverAskedIsNotAnswered is the tenancy rule at its most
+// consequential.
 //
 // The bot has been added somewhere nobody ran setup. There is no org to be a
-// member of and no books to read, so anything other than setup gets no reply at
-// all — not an error, not an explanation. Answering would be talking to a room
-// that never asked, in a group that may not have wanted the bot in the first
-// place.
-func TestUnregisteredSpaceIsSilent(t *testing.T) {
+// member of and no books to read, and ordinary conversation there gets no reply
+// at all — not an error, not an explanation. Answering would be talking to a
+// room that never asked, in a group that may not have wanted the bot in the
+// first place. A command meant for some other bot is the same thing.
+func TestARoomThatNeverAskedIsNotAnswered(t *testing.T) {
 	h := newHarness(t, true)
 
 	for _, m := range []chat.Inbound{
 		message("-999001", "", "send 5000 to ada"),
-		message("-999001", "whoami", ""),
-		message("-999001", "help", ""),
+		message("-999001", "", "lunch at one?"),
+		message("-999001", "weather", "lagos"),
 	} {
 		if err := h.handle(t, m); err != nil {
 			t.Fatalf("handle: %v", err)
@@ -381,13 +382,100 @@ func TestUnregisteredSpaceIsSilent(t *testing.T) {
 	}
 }
 
+// TestACommandBeforeSetupIsToldWhatComesFirst: someone who types a command at
+// the bot has asked, and silence told them it was broken. On Discord it was
+// worse than silence, because the interaction had already been deferred and
+// the spinner never stopped.
+func TestACommandBeforeSetupIsToldWhatComesFirst(t *testing.T) {
+	for _, name := range []string{"whoami", "help", "pay", commandStart} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, true)
+			if err := h.handle(t, message("-999010", name, "")); err != nil {
+				t.Fatalf("handle: %v", err)
+			}
+			reply := h.out.only(t)
+			if !strings.Contains(reply.Text, "/setup") {
+				t.Errorf("reply does not say what has to happen first:\n%s", reply.Text)
+			}
+			if !reply.Ephemeral {
+				t.Error("the reply was addressed to the room, not to whoever asked")
+			}
+			if got := len(h.sender.sent()); got != 0 {
+				t.Errorf("routed %d messages to the payment path in a space with no org", got)
+			}
+		})
+	}
+}
+
+// TestADirectMessageIsIntroduced: the bot sends people to a direct message —
+// "open a chat with me, press Start" — and used to ignore the Start it had
+// asked for, along with everything else typed there.
+func TestADirectMessageIsIntroduced(t *testing.T) {
+	for name, m := range map[string]chat.Inbound{
+		"start":     message("700001", commandStart, ""),
+		"help":      message("700001", "help", ""),
+		"free text": message("700001", "", "hello?"),
+		"a command": message("700001", "pay", "5 to ada"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, true)
+			m.Conversation.IsDM = true
+			if err := h.handle(t, m); err != nil {
+				t.Fatalf("handle: %v", err)
+			}
+			body := h.out.only(t).Text
+			for _, want := range []string{"/setup", "group", "testnet", "never hold"} {
+				if !strings.Contains(body, want) {
+					t.Errorf("introduction does not mention %q:\n%s", want, body)
+				}
+			}
+			if got := len(h.sender.sent()); got != 0 {
+				t.Errorf("a direct message reached the payment path %d times", got)
+			}
+		})
+	}
+}
+
+// TestAnAnswerBeforeSetupIsGivenOnce: a platform's retry of the same delivery
+// must not tell the same person twice.
+func TestAnAnswerBeforeSetupIsGivenOnce(t *testing.T) {
+	h := newHarness(t, true)
+
+	m := message("-999011", "whoami", "")
+	for range 2 {
+		if err := h.handle(t, m); err != nil {
+			t.Fatalf("handle: %v", err)
+		}
+	}
+	if got := len(h.out.replies()); got != 1 {
+		t.Fatalf("replied %d times to one delivery, want 1", got)
+	}
+}
+
+// TestStartMeansHelpInAWorkspace: /start is what Telegram sends when somebody
+// opens a chat with a bot, and what people type at one they have not met.
+func TestStartMeansHelpInAWorkspace(t *testing.T) {
+	h := newHarness(t, true)
+	if err := h.handle(t, message("-999012", commandSetup, "Acme DAO")); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	h.out = &fakeReplier{}
+
+	if err := h.handle(t, message("-999012", commandStart, "")); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if body := h.out.only(t).Text; !strings.Contains(body, "/whoami") {
+		t.Errorf("/start did not list what can be done here:\n%s", body)
+	}
+}
+
 // TestUnregisteredSpaceCostsNothing: with no org, nothing is claimed either. A
 // message that was ignored must not consume its delivery id, or setup could
 // never run after a stray message from the same delivery.
 func TestUnregisteredSpaceCostsNothing(t *testing.T) {
 	h := newHarness(t, true)
 
-	m := message("-999002", "whoami", "")
+	m := message("-999002", "", "lunch at one?")
 	if err := h.handle(t, m); err != nil {
 		t.Fatalf("handle: %v", err)
 	}

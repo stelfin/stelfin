@@ -44,14 +44,17 @@ func TestASecondSpaceJoinsTheSameWorkspace(t *testing.T) {
 	}
 	code := found[1]
 
-	// The Discord server knows nothing yet, and says nothing to anyone.
+	// The Discord server knows nothing yet. Whoever asks there is told it is
+	// not set up, in words that are the same for every space and so say
+	// nothing about the workspace it has not joined.
 	h.out = &fakeReplier{}
 	if err := h.handle(t, discordMessage("guild-460001", "777", "treasuries", nil)); err != nil {
 		t.Fatalf("treasuries before connecting: %v", err)
 	}
-	if n := len(h.out.sent); n != 0 {
-		t.Fatalf("an unconnected space got %d replies", n)
+	if body := h.out.only(t).Text; body != notSetUpReply {
+		t.Fatalf("an unconnected space was told:\n%s", body)
 	}
+	h.out = &fakeReplier{}
 
 	if err := h.handle(t, discordMessage("guild-460001", "777", "connect", map[string]string{"code": strings.ToLower(code)})); err != nil {
 		t.Fatalf("connect with code: %v", err)

@@ -14,7 +14,14 @@ import (
 )
 
 // Command names, as constants where the router needs to compare against one.
-const commandSetup = "setup"
+const (
+	commandSetup = "setup"
+	commandHelp  = "help"
+	// commandStart is not a command of its own. It is what Telegram sends when
+	// somebody opens a chat with a bot, and the router answers it as help in a
+	// workspace and with an introduction everywhere else.
+	commandStart = "start"
+)
 
 // command is one thing the bot can be asked to do.
 type command struct {
@@ -50,7 +57,7 @@ func (s *Service) registerCommands() {
 			run:         func(ctx context.Context, s *Service, r *request) error { return s.whoami(ctx, r) },
 		},
 		{
-			name:        "help",
+			name:        commandHelp,
 			description: "List what stelfin can do",
 			minRole:     chat.RoleNone,
 			run:         func(ctx context.Context, s *Service, r *request) error { return s.help(ctx, r) },

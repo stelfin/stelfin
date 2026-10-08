@@ -182,10 +182,12 @@ func TestTreasuryPaymentEndToEnd(t *testing.T) {
 
 	chat := &group{t: t, base: base, telegram: telegram}
 
-	// ---- A message in a space nobody set up gets no answer at all.
+	// ---- A space nobody set up. Conversation there gets no answer at all;
+	// somebody who types a command at the bot is told what has to come first.
 
-	chat.say(benID, "ben", "/whoami")
+	chat.say(benID, "ben", "lunch at one?")
 	telegram.expectSilence(t, benID, 2*time.Second)
+	mustContain(t, chat.ask(benID, "ben", "/whoami"), "isn't set up with stelfin yet")
 
 	// ---- Setup, by an administrator of the group.
 
@@ -597,9 +599,10 @@ func TestTreasuryPaymentEndToEnd(t *testing.T) {
 
 	guild := &server{t: t, base: base, discord: discord}
 
-	// A server the bot was added to and nobody connected gets silence.
-	guild.say(frankDiscord, "frank", true, "proposals", nil)
-	discord.expectSilence(t, 2*time.Second)
+	// A server the bot was added to and nobody connected. Discord has already
+	// been told an answer is coming, so silence would be a spinner that never
+	// stops; the answer says nothing about the workspace it has not joined.
+	mustContain(t, guild.ask(frankDiscord, "frank", true, "proposals", nil), "isn't set up with stelfin yet")
 
 	// A code from an admin of the workspace, presented by an administrator of
 	// the server: each side proving the half it can.
