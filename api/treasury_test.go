@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/stellar/go-stellar-sdk/keypair"
 	"github.com/stellar/go-stellar-sdk/network"
 	"github.com/stellar/go-stellar-sdk/protocols/horizon"
+	"github.com/stellar/go-stellar-sdk/support/render/problem"
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 
 	"github.com/stelfin/stelfin/api/intent"
@@ -29,6 +31,9 @@ type signerHorizon struct {
 	data       map[string]string
 	sponsoring uint32
 	submitted  []*txnbuild.Transaction
+	// absent are addresses with no account on the network; bare are accounts
+	// holding XLM and no trustline. Everything else can be paid.
+	absent, bare map[string]bool
 }
 
 // SubmitTransactionWithOptions answers with the envelope's real hash. The
@@ -54,12 +59,24 @@ func (h *signerHorizon) AccountDetail(req horizonclient.AccountRequest) (horizon
 	if seq == 0 {
 		seq = 1
 	}
+	if h.absent[req.AccountID] {
+		return horizon.Account{}, &horizonclient.Error{
+			Problem: problem.P{Title: "Resource Missing", Status: http.StatusNotFound},
+		}
+	}
+	balances := h.balances
+	switch {
+	case h.bare[req.AccountID]:
+		balances = receivable()[:1]
+	case balances == nil:
+		balances = receivable()
+	}
 	return horizon.Account{
 		AccountID:     req.AccountID,
 		Sequence:      seq,
 		Signers:       h.signers,
 		Thresholds:    h.thresholds,
-		Balances:      h.balances,
+		Balances:      balances,
 		Data:          h.data,
 		NumSponsoring: h.sponsoring,
 	}, nil

@@ -84,6 +84,17 @@ func (s *Service) ProposePayment(
 	if p.Amount <= 0 {
 		return nil, errors.New("api: a proposal must move a positive amount")
 	}
+	if err := s.writable(); err != nil {
+		return nil, err
+	}
+	// Both before the envelope is built: neither a payment over a ceiling nor
+	// one to an account that cannot receive it should reach a signer's screen.
+	if err := s.checkSpend(ctx, scope.Org, p.Amount); err != nil {
+		return nil, err
+	}
+	if err := s.preflight(ctx, p.Destination, p.Amount); err != nil {
+		return nil, err
+	}
 
 	org, err := s.store.Org(ctx, scope.Org)
 	if err != nil {
@@ -141,6 +152,7 @@ func (s *Service) ProposePayment(
 		SourceSeq:   tx.SequenceNumber(),
 		Description: canonical,
 		Digest:      digest[:],
+		Amount:      p.Amount,
 		CreatedBy:   p.CreatedBy,
 		ExpiresAt:   time.Unix(tx.Timebounds().MaxTime, 0).UTC(),
 	})
@@ -325,6 +337,9 @@ func (s *Service) ExecuteProposal(
 	if err := scope.check(); err != nil {
 		return nil, err
 	}
+	if err := s.writable(); err != nil {
+		return nil, err
+	}
 
 	view, err := s.LoadProposal(ctx, scope, id)
 	if err != nil {
@@ -372,13 +387,66 @@ func (s *Service) ExecuteProposal(
 		return nil, err
 	}
 
-	result, err := s.settle.Submit(ctx, signed)
-	if err != nil {
-		// An ambiguous submission is not a resolution. The proposal stays open
-		// and the next attempt finds the transaction on chain or does not — the
-		// alternative, marking it failed, would invite a second envelope for a
-		// payment that may already have landed.
-		return nil, err
+	var result settlement.Result
+	if view.Proposal.Kind == "invoke" {
+		// The last moment the contract can be checked, and the one that
+		// matters: its code may have been replaced while the signatures were
+		// being collected, and what the signers agreed to call is what it ran
+		// then.
+		contract, err := invokedContract(signed)
+		if err != nil {
+			return nil, err
+		}
+		allowed, err := s.store.AllowedContractByAddress(ctx, scope.Org, contract)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.contractCallsOn(); err != nil {
+			return nil, err
+		}
+		if err := s.checkPinned(ctx, allowed); err != nil {
+			return nil, err
+		}
+		if result, err = s.settle.SubmitSoroban(ctx, signed); err != nil {
+			// An ambiguous submission is not a resolution. The proposal stays open
+			// and the next attempt finds the transaction on chain or does not — the
+			// alternative, marking it failed, would invite a second envelope for a
+			// payment that may already have landed.
+			return nil, err
+		}
+		if result.Failed {
+			// Included and trapped: the fee and the sequence are spent and
+			// nothing else happened. Recorded as what it was.
+			if resolveErr := s.store.ResolveProposal(ctx, scope.Org, id, store.ProposalFailed,
+				result.Hash, "the contract call was included and failed", by); resolveErr != nil {
+				return nil, resolveErr
+			}
+			return nil, fmt.Errorf("%w (%s)", ErrContractCallFailed, result.Hash)
+		}
+	} else if view.Proposal.Kind == "restore" {
+		// A restore runs no contract code, so there is no pin to re-check;
+		// it only pays to bring archived entries back.
+		if err := s.contractCallsOn(); err != nil {
+			return nil, err
+		}
+		if result, err = s.settle.SubmitSoroban(ctx, signed); err != nil {
+			return nil, err
+		}
+		if result.Failed {
+			if resolveErr := s.store.ResolveProposal(ctx, scope.Org, id, store.ProposalFailed,
+				result.Hash, "the restore was included and failed", by); resolveErr != nil {
+				return nil, resolveErr
+			}
+			return nil, fmt.Errorf("%w (%s)", ErrContractCallFailed, result.Hash)
+		}
+	} else {
+		if result, err = s.settle.Submit(ctx, signed); err != nil {
+			// An ambiguous submission is not a resolution. The proposal stays open
+			// and the next attempt finds the transaction on chain or does not — the
+			// alternative, marking it failed, would invite a second envelope for a
+			// payment that may already have landed.
+			return nil, err
+		}
 	}
 
 	if err := s.store.ResolveProposal(ctx, scope.Org, id, store.ProposalExecuted,

@@ -189,6 +189,7 @@ type CompletedLink struct {
 	Purpose  string
 	Member   *LinkResult
 	Treasury *TreasuryLinkResult
+	Grant    *GrantResult
 }
 
 // SubmitChallenge completes whichever handshake this challenge was issued for.
@@ -229,6 +230,13 @@ func (s *Service) SubmitChallenge(
 			return nil, err
 		}
 		return &CompletedLink{Purpose: c.Purpose, Treasury: res}, nil
+
+	case store.PurposeGrantConnector:
+		res, err := s.SubmitGrant(ctx, scope, hash, signedXDR)
+		if err != nil {
+			return nil, err
+		}
+		return &CompletedLink{Purpose: c.Purpose, Grant: res}, nil
 
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrNoChallenge, hash)

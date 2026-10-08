@@ -205,6 +205,17 @@ func TestLinkRoundTrip(t *testing.T) {
 	if member.Address != f.kp.Address() || member.AddressSource != store.AddressLinked {
 		t.Errorf("member = %+v", member)
 	}
+
+	// Booked, so ingestion records what the wallet pays and receives — to an
+	// account of its own, so it is never taken for a wallet stelfin set up and
+	// will one day take back.
+	tracked, ok, err := f.store.TrackedAddress(ctx, f.kp.Address())
+	if err != nil || !ok || tracked.Org != f.scope.Org || tracked.Role != store.RoleMember {
+		t.Fatalf("linked wallet in the books: %+v (found %v, err %v)", tracked, ok, err)
+	}
+	if _, err := f.store.AddressForOwner(ctx, f.scope.Org, f.scope.OwnerRef); !errors.Is(err, store.ErrAddressNotTracked) {
+		t.Fatalf("a linked wallet is being treated as a provisioned one: %v", err)
+	}
 }
 
 // TestSubmitLinkRejectsTheWrongSigner: the signature is checked against the

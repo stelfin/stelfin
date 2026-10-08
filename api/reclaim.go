@@ -223,9 +223,19 @@ type ReclaimResult struct {
 // proceed; the address is released only after the network has accepted the
 // merge, because an address forgotten while the account still exists is an
 // account nothing is watching.
+//
+// The operator pays the fee, through a fee-bump, exactly as it does for a
+// payment. It has to: a provisioned account is created holding no XLM at all,
+// so one asked to pay for its own hand-back could never be handed back — the
+// network refuses the transaction for a fee the account was designed not to
+// have.
 func (s *Service) SubmitReclaim(
-	ctx context.Context, scope Scope, hash, signedXDR string,
+	ctx context.Context, scope Scope, hash, signedXDR, treasuryAddress string,
+	sign func(*txnbuild.FeeBumpTransaction) (*txnbuild.FeeBumpTransaction, error),
 ) (*ReclaimResult, error) {
+	if err := s.writable(); err != nil {
+		return nil, err
+	}
 	if err := scope.check(); err != nil {
 		return nil, err
 	}
@@ -256,12 +266,24 @@ func (s *Service) SubmitReclaim(
 		return nil, fmt.Errorf("%w: signed %s, expected %s", ErrWrongEnvelope, returnedHash, hash)
 	}
 
+	// Built and signed before the claim is taken: a fee-bump that cannot be
+	// made is this deployment's problem, and should not cost the member the
+	// envelope they just signed.
+	bump, err := s.settle.FeeBump(signed, treasuryAddress)
+	if err != nil {
+		return nil, err
+	}
+	signedBump, err := sign(bump)
+	if err != nil {
+		return nil, fmt.Errorf("api: sign fee-bump: %w", err)
+	}
+
 	claimed, err := s.store.ClaimReclaim(ctx, scope.Org, hash)
 	if err != nil {
 		return nil, err
 	}
 
-	result, err := s.settle.Submit(ctx, signed)
+	result, err := s.settle.SubmitFeeBump(ctx, signedBump)
 	if err != nil {
 		// Left claimed. An ambiguous submission may still have landed, and
 		// re-offering the same envelope would invite a second attempt at an

@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
+
+	"github.com/stellar/go-stellar-sdk/clients/horizonclient"
 
 	"github.com/stelfin/stelfin/api/intent"
 	"github.com/stelfin/stelfin/chat"
@@ -51,6 +54,14 @@ func (s *Service) HandleSend(
 		return err
 	}
 	if !enrolled {
+		switch err := s.provisioningOpen(ctx, scope); {
+		case errors.Is(err, store.ErrProvisioningOff):
+			// Said here, in chat, rather than on a page the link would have
+			// led to: there is nothing this person can do about it themselves.
+			return s.reply(ctx, out, m, provisioningOffReply)
+		case err != nil:
+			return err
+		}
 		return s.replyWithEnrollLink(ctx, out, links, m, scope)
 	}
 
@@ -86,6 +97,15 @@ func (s *Service) HandleSend(
 func (s *Service) reply(ctx context.Context, out Replier, m chat.Inbound, body string) error {
 	return out.Send(ctx, m.Conversation, m.Actor, chat.Reply{Text: body, Ephemeral: true})
 }
+
+// provisioningOffReply answers a free-text instruction in a workspace that
+// does not pay for members' wallets.
+const provisioningOffReply = "To send in your own words I need a wallet to send from, " +
+	"and you don't have one here yet.\n\n" +
+	"If you have a Stellar wallet already, /link it and I'll use that — you sign " +
+	"each payment in your own wallet. Or an admin can have me set wallets up for " +
+	"members, with /provisioning on, once a treasury is linked. " +
+	"To pay from the treasury instead, use /pay."
 
 // replyWithEnrollLink sends a not-yet-enrolled user the link that creates their
 // account.
@@ -145,6 +165,12 @@ func (s *Service) replyWithProblem(ctx context.Context, out Replier, m chat.Inbo
 		body = "That doesn't look like a valid wallet address. Can you check it?"
 	case errors.Is(cause, intent.ErrAmountUnreadable), errors.Is(cause, intent.ErrAmountAmbiguous):
 		body = "How much would you like to send? A number works best, like 5000."
+	case sourceMissing(cause):
+		body = "Your wallet doesn't exist on this network yet, so there's nothing to send from. " +
+			"It needs to be funded, and to hold the asset, before I can build a payment from it."
+	case errors.Is(cause, ErrReadOnly):
+		body = "stelfin is in read-only mode right now, so I can't start a payment. " +
+			"Nothing was sent — try again once it's back."
 	case errors.Is(cause, ErrNoAccount):
 		body = "Your wallet isn't set up yet. Give me a moment and try again."
 	case errors.Is(cause, ErrNotASend), errors.Is(cause, intent.ErrSpanMismatch),
@@ -162,4 +188,12 @@ func (s *Service) replyWithProblem(ctx context.Context, out Replier, m chat.Inbo
 		return fmt.Errorf("api: reply after %v: %w", cause, err)
 	}
 	return nil
+}
+
+// sourceMissing reports a payment that could not be built because the account
+// it would come from is not on the network. A linked wallet is only an address
+// somebody proved they hold the key for; nothing says it was ever funded.
+func sourceMissing(err error) bool {
+	var problem *horizonclient.Error
+	return errors.As(err, &problem) && problem.Problem.Status == http.StatusNotFound
 }

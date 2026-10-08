@@ -7,6 +7,7 @@ import (
 	"hash/fnv"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/stellar/go-stellar-sdk/keypair"
 	"github.com/stellar/go-stellar-sdk/network"
 	"github.com/stellar/go-stellar-sdk/protocols/horizon"
+	"github.com/stellar/go-stellar-sdk/protocols/horizon/base"
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 
 	"github.com/stelfin/stelfin/api/intent"
@@ -50,18 +52,39 @@ func TestMain(m *testing.M) {
 
 // fakeHorizon serves the sender's account so a transaction can be built with
 // no network.
-type fakeHorizon struct{ sequence int64 }
+type fakeHorizon struct {
+	sequence int64
+	// submits counts plain submissions, so a test can assert that a refusal
+	// happened before anything reached the network.
+	submits atomic.Int32
+}
 
 func (f *fakeHorizon) AccountDetail(req horizonclient.AccountRequest) (horizon.Account, error) {
 	return horizon.Account{
 		AccountID: req.AccountID,
 		Sequence:  f.sequence,
+		Balances:  receivable(),
 	}, nil
+}
+
+// receivable is the balances of an account that can be paid in the test asset
+// and can afford to sponsor: plenty of XLM, so the sponsor's float is never the
+// reason a test's enrolment is refused, and an open trustline, so the
+// destination pre-flight is never the reason a test's proposal is.
+func receivable() []horizon.Balance {
+	return []horizon.Balance{
+		{Balance: "10000.0000000", Asset: base.Asset{Type: "native"}},
+		{
+			Balance: "0.0000000", Limit: "922337203685.4775807",
+			Asset: base.Asset{Type: "credit_alphanum4", Code: "USDC", Issuer: testIssuer},
+		},
+	}
 }
 
 func (f *fakeHorizon) SubmitTransactionWithOptions(
 	*txnbuild.Transaction, horizonclient.SubmitTxOpts,
 ) (horizon.Transaction, error) {
+	f.submits.Add(1)
 	return horizon.Transaction{
 		Hash: "provisioned", Ledger: 7, LedgerCloseTime: time.Unix(1700000000, 0),
 	}, nil

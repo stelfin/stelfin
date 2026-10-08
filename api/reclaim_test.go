@@ -281,7 +281,8 @@ func TestSubmitReclaimIsOverTheEnvelopeItShowed(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 
-	if _, err := f.svc.SubmitReclaim(ctx, f.scope, prepared.Hash, encoded); !errors.Is(
+	if _, err := f.svc.SubmitReclaim(ctx, f.scope, prepared.Hash, encoded,
+		f.sponsor.Address(), signWith(f.sponsor)); !errors.Is(
 		err, ErrWrongEnvelope,
 	) {
 		t.Fatalf("a merge to somewhere else was accepted: %v", err)
@@ -304,7 +305,8 @@ func TestSubmitReclaimReleasesTheAccount(t *testing.T) {
 	}
 	signed := signEnvelope(t, prepared.XDR, f.account)
 
-	result, err := f.svc.SubmitReclaim(ctx, f.scope, prepared.Hash, signed)
+	result, err := f.svc.SubmitReclaim(ctx, f.scope, prepared.Hash, signed,
+		f.sponsor.Address(), signWith(f.sponsor))
 	if err != nil {
 		t.Fatalf("SubmitReclaim: %v", err)
 	}
@@ -332,7 +334,8 @@ func TestSubmitReclaimReleasesTheAccount(t *testing.T) {
 
 	// Submitting the same envelope again does nothing. The account is gone;
 	// a second attempt can only produce a confusing failure.
-	if _, err := f.svc.SubmitReclaim(ctx, f.scope, prepared.Hash, signed); !errors.Is(
+	if _, err := f.svc.SubmitReclaim(ctx, f.scope, prepared.Hash, signed,
+		f.sponsor.Address(), signWith(f.sponsor)); !errors.Is(
 		err, store.ErrNoReclaim,
 	) {
 		t.Fatalf("second submission: %v", err)
@@ -357,7 +360,8 @@ func TestReclaimIsScopedToItsOwner(t *testing.T) {
 		t.Errorf("LoadReclaim for another owner: %v", err)
 	}
 	if _, err := f.svc.SubmitReclaim(ctx, elsewhere, prepared.Hash,
-		signEnvelope(t, prepared.XDR, f.account)); !errors.Is(err, store.ErrNoReclaim) {
+		signEnvelope(t, prepared.XDR, f.account),
+		f.sponsor.Address(), signWith(f.sponsor)); !errors.Is(err, store.ErrNoReclaim) {
 		t.Errorf("SubmitReclaim for another owner: %v", err)
 	}
 }

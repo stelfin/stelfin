@@ -220,9 +220,25 @@ func TestHandleSendOffersEnrollmentBeforeAnAccountExists(t *testing.T) {
 	// A registered space with no member account behind it.
 	org := orgFor(t, "/unenrolled")
 
+	scope := Scope{Org: org.ID, OwnerRef: actor.Ref()}
+
+	// Provisioning is off until a workspace turns it on. A link offered before
+	// then leads to a page that can only refuse, so the reply has to say so
+	// itself — and say who can change it.
 	out := &fakeReplier{}
-	msg := inboundIn(actor, spaceFor(org), "telegram:enroll", sendMessage)
-	if err := svc.HandleSend(ctx, Scope{Org: org.ID, OwnerRef: actor.Ref()}, msg, out, stubLinker{}); err != nil {
+	msg := inboundIn(actor, spaceFor(org), "telegram:enroll-off", sendMessage)
+	if err := svc.HandleSend(ctx, scope, msg, out, stubLinker{}); err != nil {
+		t.Fatalf("HandleSend: %v", err)
+	}
+	if body := out.only(t).Text; strings.Contains(body, "/enroll#") || !strings.Contains(body, "/provisioning") {
+		t.Fatalf("with provisioning off, want an explanation and no link:\n%s", body)
+	}
+
+	openProvisioning(t, scope)
+
+	out = &fakeReplier{}
+	msg = inboundIn(actor, spaceFor(org), "telegram:enroll", sendMessage)
+	if err := svc.HandleSend(ctx, scope, msg, out, stubLinker{}); err != nil {
 		t.Fatalf("HandleSend: %v", err)
 	}
 

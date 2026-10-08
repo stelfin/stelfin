@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 
+	"github.com/stelfin/stelfin/chat"
+	"github.com/stelfin/stelfin/internal/money"
 	"github.com/stelfin/stelfin/ledger"
 	"github.com/stelfin/stelfin/ledger/store"
 	"github.com/stelfin/stelfin/settlement"
@@ -33,6 +36,74 @@ import (
 // account. Re-enrolling would either be a no-op or, worse, silently orphan an
 // existing account's funds behind a mapping nothing points at any more.
 var ErrAlreadyEnrolled = errors.New("api: user already has a stellar account")
+
+// ProvisionReserve is what one provisioned account locks of the operator's XLM
+// for as long as it exists: the account itself and its one trustline.
+const ProvisionReserve = settlement.AccountReserve + settlement.BaseReserve
+
+// provisioningOpen reports whether this org will pay for accounts at all.
+//
+// The cheap half of the limiter, asked before a link is offered and again
+// before a transaction is built, so a workspace that has not turned
+// provisioning on is told so in chat rather than discovering it on a page. The
+// half that counts — the caps, the float floor, one per member — is
+// GrantEnrollment, in the same step that commits the operator to paying.
+func (s *Service) provisioningOpen(ctx context.Context, scope Scope) error {
+	policy, err := s.store.EnrollmentPolicyOf(ctx, scope.Org)
+	if err != nil {
+		return err
+	}
+	if !policy.On() {
+		return store.ErrProvisioningOff
+	}
+	return nil
+}
+
+// grantFor records that the operator is about to pay for address, or refuses.
+//
+// The sponsor's balance is read from the chain here, at the last moment, and
+// not taken from a caller: the float floor is the limit that cannot be tuned
+// past what the operator can afford, and it is only as good as the number it
+// is checked against.
+func (s *Service) grantFor(ctx context.Context, scope Scope, address, sponsor string) error {
+	channel, userID, ok := strings.Cut(scope.OwnerRef, ":")
+	if !ok {
+		return fmt.Errorf("api: owner reference %q names no chat identity", scope.OwnerRef)
+	}
+	member, found, err := s.store.MemberByIdentity(ctx, scope.Org, chat.Channel(channel), userID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("%w: %s", store.ErrMemberNotFound, scope.OwnerRef)
+	}
+	identity, err := s.store.IdentityFor(ctx, scope.Org, chat.Channel(channel), userID)
+	if err != nil {
+		return err
+	}
+
+	account, err := s.settle.LoadAccount(ctx, sponsor)
+	if err != nil {
+		return err
+	}
+	var float money.Stroops
+	for _, b := range account.Balances {
+		if b.Asset.Type == "native" {
+			if float, err = money.Parse(b.Balance); err != nil {
+				return fmt.Errorf("api: read sponsor balance: %w", err)
+			}
+		}
+	}
+
+	return s.store.GrantEnrollment(ctx, store.GrantParams{
+		Org:            scope.Org,
+		Member:         member.ID,
+		Identity:       identity,
+		Address:        address,
+		ReserveCost:    ProvisionReserve,
+		SponsorBalance: float,
+	})
+}
 
 // Enrollment is the unsigned provisioning transaction a device must sign.
 type Enrollment struct {
@@ -67,6 +138,9 @@ func (s *Service) hasStellarAccount(ctx context.Context, scope Scope) (bool, err
 func (s *Service) PrepareEnrollment(
 	ctx context.Context, scope Scope, userAddress, treasuryAddress string,
 ) (*Enrollment, error) {
+	if err := s.writable(); err != nil {
+		return nil, err
+	}
 	if err := scope.check(); err != nil {
 		return nil, err
 	}
@@ -80,6 +154,9 @@ func (s *Service) PrepareEnrollment(
 	}
 	if enrolled {
 		return nil, fmt.Errorf("%w: %s", ErrAlreadyEnrolled, scope.OwnerRef)
+	}
+	if err := s.provisioningOpen(ctx, scope); err != nil {
+		return nil, err
 	}
 
 	trustline, ok := s.cfg.Asset.(txnbuild.CreditAsset)
@@ -182,6 +259,9 @@ func (s *Service) SubmitEnrollment(
 	ctx context.Context, scope Scope, signedXDR, treasuryAddress string,
 	sign func(*txnbuild.Transaction) (*txnbuild.Transaction, error),
 ) (EnrollResult, error) {
+	if err := s.writable(); err != nil {
+		return EnrollResult{}, err
+	}
 	parsed, err := txnbuild.TransactionFromXDR(signedXDR)
 	if err != nil {
 		return EnrollResult{}, fmt.Errorf("api: unreadable enrollment envelope: %w", err)
@@ -204,6 +284,21 @@ func (s *Service) SubmitEnrollment(
 		return EnrollResult{}, err
 	}
 
+	// The grant is taken before the operator's signature goes on, never after.
+	// Signing is the moment the operator commits to paying, and a limit checked
+	// afterwards is a limit on bookkeeping rather than on spending.
+	if err := s.grantFor(ctx, scope, address, treasuryAddress); err != nil {
+		// Nothing was signed, so the envelope is still good: hand the claim
+		// back, and someone refused for being too new can use the same page
+		// once they are not.
+		if _, relErr := s.pool.Exec(ctx, `
+			UPDATE pending_enrollments SET submitted_at = NULL
+			 WHERE hash = $1 AND org_id = $2`, hash, int64(scope.Org)); relErr != nil {
+			return EnrollResult{}, fmt.Errorf("api: release enrollment claim after %v: %w", err, relErr)
+		}
+		return EnrollResult{}, err
+	}
+
 	signedTx, err := sign(tx)
 	if err != nil {
 		return EnrollResult{}, fmt.Errorf("api: sign provisioning transaction: %w", err)
@@ -215,6 +310,16 @@ func (s *Service) SubmitEnrollment(
 		// genuinely unresolved submission can be authorised again once the
 		// outcome is established, and releasing it here would reopen the
 		// double-submit window on an outcome we could not establish.
+		//
+		// The grant stays too, unless the network refused the transaction
+		// outright. A grant is one per member for ever, so one kept for an
+		// account that was definitely never created would lock them out of it;
+		// one released while the outcome is still open could be granted twice.
+		if errors.Is(err, settlement.ErrNoEffect) {
+			if relErr := s.store.ReleaseGrant(ctx, scope.Org, address); relErr != nil {
+				return EnrollResult{}, fmt.Errorf("api: release grant after %v: %w", err, relErr)
+			}
+		}
 		return EnrollResult{}, err
 	}
 

@@ -268,17 +268,41 @@ func (s *Service) ProposeBatch(
 	if err := scope.check(); err != nil {
 		return nil, err
 	}
-
 	batch, err := s.ResolveBatch(ctx, scope, p.Draft)
 	if err != nil {
 		return nil, err
+	}
+	return s.proposeBatch(ctx, scope, batch, p.Treasury, p.Memo, p.CreatedBy)
+}
+
+// proposeBatch opens a proposal for rows that have already been resolved.
+//
+// Split from ProposeBatch so that a draft somebody reviewed can be proposed as
+// it was reviewed, rather than read and resolved a second time into something
+// that may by then be different.
+func (s *Service) proposeBatch(
+	ctx context.Context, scope Scope, batch *Batch,
+	treasuryID store.TreasuryID, memo string, createdBy store.MemberID,
+) (*ProposalView, error) {
+	if err := s.writable(); err != nil {
+		return nil, err
+	}
+	// The whole batch is one proposal, so it is the total that meets the
+	// ceilings — a payroll split into rows is not a way under one.
+	if err := s.checkSpend(ctx, scope.Org, batch.Total); err != nil {
+		return nil, err
+	}
+	for _, row := range batch.Rows {
+		if err := s.preflight(ctx, row.Destination, row.Amount); err != nil {
+			return nil, err
+		}
 	}
 
 	org, err := s.store.Org(ctx, scope.Org)
 	if err != nil {
 		return nil, err
 	}
-	treasury, err := s.store.Treasury(ctx, scope.Org, p.Treasury)
+	treasury, err := s.store.Treasury(ctx, scope.Org, treasuryID)
 	if err != nil {
 		return nil, err
 	}
@@ -301,7 +325,7 @@ func (s *Service) ProposeBatch(
 	tx, err := s.settle.Build(ctx, settlement.BuildRequest{
 		Source:     treasury.Address,
 		Operations: ops,
-		Memo:       memoOf(p.Memo),
+		Memo:       memoOf(memo),
 		Timeout:    org.ProposalTTL,
 	})
 	if err != nil {
@@ -345,7 +369,8 @@ func (s *Service) ProposeBatch(
 		SourceSeq:   tx.SequenceNumber(),
 		Description: canonical,
 		Digest:      digest[:],
-		CreatedBy:   p.CreatedBy,
+		Amount:      batch.Total,
+		CreatedBy:   createdBy,
 		ExpiresAt:   time.Unix(tx.Timebounds().MaxTime, 0).UTC(),
 	})
 	if err != nil {

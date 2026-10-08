@@ -18,12 +18,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 
 	"github.com/stelfin/stelfin/api/intent"
+	"github.com/stelfin/stelfin/chat"
+	"github.com/stelfin/stelfin/connector"
 	"github.com/stelfin/stelfin/identity"
 	"github.com/stelfin/stelfin/internal/money"
 	"github.com/stelfin/stelfin/ledger/store"
@@ -73,6 +76,28 @@ type Config struct {
 	// AccountMerge — the one field in that operation that must not vary with
 	// what a caller happened to hand in.
 	SponsorAddress string
+
+	// ReadOnly is the deployment-wide kill switch: nothing new is built and
+	// nothing is submitted. See ErrReadOnly.
+	ReadOnly bool
+	// ReadOnlyFile is a path whose existence makes the deployment read-only,
+	// checked on every write. Empty means there is no such file to look for.
+	ReadOnlyFile string
+	// MaxPayment and MaxDaily are the deployment's own ceilings on treasury
+	// proposals, across every workspace. Zero means none, which is acceptable
+	// on testnet and refused by configuration on the public network.
+	MaxPayment money.Stroops
+	MaxDaily   money.Stroops
+
+	// ContractCalls turns on calling allowed third-party contracts from a
+	// treasury. Off by default, because a contract call moves money in ways no
+	// spend ceiling here can see.
+	ContractCalls bool
+
+	// Connectors is what reaching a workspace's own tools needs. Nil means no
+	// connector can be registered here, and every command that would use one
+	// says so.
+	Connectors *ConnectorConfig
 }
 
 // Service prepares payments for approval.
@@ -84,6 +109,12 @@ type Service struct {
 	store      *store.Store
 	challenges *identity.Challenges
 	cfg        Config
+
+	// connectors, guard and live are nil and empty on a deployment with no
+	// connector configuration. The guard is the only way a connector is read.
+	connectors *ConnectorConfig
+	guard      *connector.Guard
+	live       liveConnectors
 }
 
 // NewService returns a Service.
@@ -96,10 +127,20 @@ func NewService(
 	if cfg.AssetCode == "" {
 		return nil, errors.New("api: asset code is required")
 	}
-	return &Service{
+	svc := &Service{
 		pool: pool, decoder: d, resolver: r, settle: s,
 		store: store.New(pool), challenges: cfg.Challenges, cfg: cfg,
-	}, nil
+	}
+	if cfg.Connectors != nil {
+		guard, err := connector.NewGuard(grants{store: svc.store}, nil)
+		if err != nil {
+			return nil, err
+		}
+		// Counted in the database: with the guard's own in-process count, two
+		// instances of this deployment would each allow a grant's full rate.
+		svc.connectors, svc.guard = cfg.Connectors, guard.WithLimiter(sharedLimits{store: svc.store})
+	}
+	return svc, nil
 }
 
 // Confirmation is what the user is asked to approve.
@@ -142,6 +183,9 @@ func (s *Service) PrepareSend(ctx context.Context, scope Scope, turns []string) 
 	}
 	if len(turns) == 0 {
 		return nil, errors.New("api: conversation is empty")
+	}
+	if err := s.writable(); err != nil {
+		return nil, err
 	}
 
 	decoded, err := s.decoder.Decode(ctx, turns)
@@ -257,14 +301,35 @@ func agrees(
 	return nil
 }
 
-// stellarAddress finds the account provisioned for a user.
+// stellarAddress finds the wallet a member's own payments come from.
+//
+// The wallet stelfin set up for them if there is one, and otherwise the address
+// they proved with /link. In that order: a provisioned wallet exists only
+// because its owner asked for one to send from, while a linked address may be
+// a signer key on a treasury that was never meant to hold anything.
+//
+// Either way the member signs. For a provisioned wallet the key is on their
+// device; for a linked one it is wherever they keep it, and the confirmation
+// page hands the transaction over to be signed there.
 func (s *Service) stellarAddress(ctx context.Context, scope Scope) (string, error) {
 	address, err := s.store.AddressForOwner(ctx, scope.Org, scope.OwnerRef)
-	if errors.Is(err, store.ErrAddressNotTracked) {
+	if err == nil {
+		return address, nil
+	}
+	if !errors.Is(err, store.ErrAddressNotTracked) {
+		return "", err
+	}
+
+	channel, userID, ok := strings.Cut(scope.OwnerRef, ":")
+	if !ok {
 		return "", fmt.Errorf("%w: %s", ErrNoAccount, scope.OwnerRef)
 	}
+	member, found, err := s.store.MemberByIdentity(ctx, scope.Org, chat.Channel(channel), userID)
 	if err != nil {
 		return "", err
 	}
-	return address, nil
+	if !found || !member.HasAddress() {
+		return "", fmt.Errorf("%w: %s", ErrNoAccount, scope.OwnerRef)
+	}
+	return member.Address, nil
 }

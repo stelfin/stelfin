@@ -54,7 +54,8 @@ func (s *Server) handleReclaimSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.svc.SubmitReclaim(r.Context(), scope, hash, req.SignedXDR)
+	result, err := s.svc.SubmitReclaim(r.Context(), scope, hash, req.SignedXDR,
+		s.cfg.TreasuryAddress, s.cfg.SignFeeBump)
 	if err != nil {
 		s.writeError(w, err)
 		return

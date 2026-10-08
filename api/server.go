@@ -138,6 +138,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /v1/enroll/submit", s.handleEnrollSubmit)
 	mux.HandleFunc("GET /v1/link", s.handleLink)
 	mux.HandleFunc("POST /v1/link/submit", s.handleLinkSubmit)
+	mux.HandleFunc("POST /v1/connector/setup", s.handleConnectorSetup)
 	mux.HandleFunc("GET /v1/reclaim", s.handleReclaim)
 	mux.HandleFunc("POST /v1/reclaim/submit", s.handleReclaimSubmit)
 	mux.HandleFunc("GET /v1/proposal", s.handleProposal)
@@ -314,9 +315,15 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	// The token named one transaction; Submit independently authorised the
 	// envelope against pending_sends. Both agreeing is the expected case —
 	// a disagreement means a token was reused against a different envelope.
-	if res.Hash != "" && hash != "" && !res.AlreadyKnown && res.Hash != hash {
-		s.log.Warn("submitted hash differs from the token's",
-			"token_hash", hash, "submitted_hash", res.Hash, "owner", scope.OwnerRef)
+	//
+	// Compared against the payment the user signed, not against what landed.
+	// What lands is the operator's fee-bump around it, which has a hash of its
+	// own, so comparing that fired this warning on every payment ever sent —
+	// and a warning that is always on is one nobody reads on the day it is
+	// right.
+	if res.InnerHash != "" && hash != "" && res.InnerHash != hash {
+		s.log.Warn("submitted envelope is not the one the token named",
+			"token_hash", hash, "submitted_hash", res.InnerHash, "owner", scope.OwnerRef)
 	}
 
 	s.writeJSON(w, http.StatusOK, map[string]any{
@@ -421,12 +428,29 @@ func (s *Server) handleLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A set-up link is not a challenge: there is nothing to sign, only a
+	// connector to describe and a credential to take.
+	if id, isSetup := setupTarget(hash); isSetup {
+		row, err := s.svc.ConnectorForSetup(r.Context(), scope, id)
+		if err != nil {
+			s.writeError(w, err)
+			return
+		}
+		s.writeJSON(w, http.StatusOK, map[string]any{
+			"purpose": "connector_setup",
+			"connector": map[string]any{
+				"name": row.Name, "kind": row.Kind, "reaches": row.EndpointHost, "ready": row.Ready,
+			},
+		})
+		return
+	}
+
 	challenge, err := s.svc.LoadChallenge(r.Context(), scope, hash)
 	if err != nil {
 		s.writeError(w, err)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"address":            challenge.Address,
 		"xdr":                challenge.XDR,
 		"network_passphrase": challenge.NetworkPassphrase,
@@ -435,6 +459,56 @@ func (s *Server) handleLink(w http.ResponseWriter, r *http.Request) {
 		// back, so a client that lied about this would change nothing but its
 		// own headings.
 		"purpose": challenge.Purpose,
+	}
+	if challenge.Statement != "" {
+		// The whole text, for the page to hash and compare with the digest in
+		// the envelope. It is what the signature commits to.
+		body["statement"] = challenge.Statement
+	}
+	s.writeJSON(w, http.StatusOK, body)
+}
+
+type connectorSetupRequest struct {
+	// Endpoint is where the connector is. It may be a secret in itself.
+	Endpoint string `json:"endpoint"`
+	// Credential is the connector's bearer token. Optional: an endpoint that
+	// needs none is set up with an empty one.
+	Credential string `json:"credential"`
+}
+
+// handleConnectorSetup takes a connector's credential and tries the connector.
+//
+// The credential is in the request body, over TLS, from the page of the admin
+// who registered the connector. It is never in a URL, never in chat, and never
+// in a response: what comes back is what the connector offers.
+func (s *Server) handleConnectorSetup(w http.ResponseWriter, r *http.Request) {
+	scope, hash, ok := s.authoriseLink(w, r)
+	if !ok {
+		return
+	}
+	id, isSetup := setupTarget(hash)
+	if !isSetup {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	var req connectorSetupRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+		http.Error(w, "malformed request", http.StatusBadRequest)
+		return
+	}
+
+	done, err := s.svc.SetUpConnector(r.Context(), scope, id,
+		strings.TrimSpace(req.Endpoint), strings.TrimSpace(req.Credential))
+	if err != nil {
+		s.writeError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"name":  done.Connector.Name,
+		"kind":  done.Connector.Kind,
+		"tools": done.Tools,
+		"rows":  done.Rows,
 	})
 }
 
@@ -476,6 +550,11 @@ func (s *Server) handleLinkSubmit(w http.ResponseWriter, r *http.Request) {
 		body["address"] = done.Treasury.Treasury.Address
 		body["signed_by"] = done.Treasury.Signed
 		body["threshold"] = done.Treasury.Treasury.Medium
+	case done.Grant != nil:
+		body["address"] = done.Grant.Treasury.Address
+		body["signed_by"] = done.Grant.Grant.SignedBy
+		body["threshold"] = done.Grant.Threshold
+		body["connector"] = done.Grant.Connector.Name
 	}
 	s.writeJSON(w, http.StatusOK, body)
 }
@@ -548,8 +627,16 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 		http.Error(w, "expired", http.StatusGone)
 	case errors.Is(err, ErrUnsigned):
 		http.Error(w, "transaction is not signed", http.StatusBadRequest)
-	case errors.Is(err, ErrAlreadyEnrolled):
+	case errors.Is(err, ErrAlreadyEnrolled), errors.Is(err, store.ErrAlreadyGranted):
 		http.Error(w, "already enrolled", http.StatusConflict)
+	case errors.Is(err, store.ErrProvisioningOff):
+		http.Error(w, "this workspace does not set up wallets", http.StatusForbidden)
+	case errors.Is(err, store.ErrTooNew):
+		// 425: nothing is wrong with the request except when it was made.
+		http.Error(w, "too new to be set up a wallet yet", http.StatusTooEarly)
+	case errors.Is(err, store.ErrDailyCapReached), errors.Is(err, store.ErrGlobalCapReached),
+		errors.Is(err, store.ErrFloatTooLow):
+		http.Error(w, "no more wallets can be set up right now", http.StatusTooManyRequests)
 	case errors.Is(err, ErrNoChallenge):
 		// Unknown, expired and already-used are one answer on purpose.
 		http.Error(w, "not found", http.StatusNotFound)
@@ -557,6 +644,31 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 		http.Error(w, "the signature does not prove that address", http.StatusBadRequest)
 	case errors.Is(err, store.ErrAddressTaken):
 		http.Error(w, "that address already belongs to another member", http.StatusConflict)
+	case errors.Is(err, store.ErrNoConnector):
+		http.Error(w, "not found", http.StatusNotFound)
+	case errors.Is(err, ErrConnectorsUnavailable):
+		http.Error(w, "connectors are not available", http.StatusServiceUnavailable)
+	case errors.Is(err, ErrConnectorChanged):
+		http.Error(w, "the connector changed since this was requested", http.StatusConflict)
+	case errors.Is(err, ErrConnectorEndpoint):
+		// Its own status, because the page can say something useful: the
+		// address itself is the problem, and the person can fix it.
+		http.Error(w, "that address cannot be used: it must be https, on the public internet",
+			http.StatusBadRequest)
+	case errors.Is(err, ErrConnectorFailed),
+		errors.Is(err, ErrConnectorNotReady), errors.Is(err, ErrConnectorKind):
+		// 422: the request was fine and the connector is the problem. The
+		// reason is ours to word — never the connector's own text.
+		http.Error(w, "the connector could not be reached or did not answer usefully",
+			http.StatusUnprocessableEntity)
+	case errors.Is(err, ErrReadOnly):
+		http.Error(w, "stelfin is in read-only mode", http.StatusServiceUnavailable)
+	case errors.Is(err, ErrContractChanged):
+		http.Error(w, "the contract's code has changed since it was allowed", http.StatusConflict)
+	case errors.Is(err, ErrContractCallsOff), errors.Is(err, store.ErrContractNotAllowed):
+		http.Error(w, "that contract cannot be called from here", http.StatusConflict)
+	case errors.Is(err, ErrContractCallFailed):
+		http.Error(w, "the contract call failed on chain", http.StatusUnprocessableEntity)
 	case errors.Is(err, ErrLinkingUnavailable):
 		http.Error(w, "address linking is not available", http.StatusServiceUnavailable)
 	case errors.Is(err, store.ErrNoReclaim), errors.Is(err, ErrNothingToReclaim):

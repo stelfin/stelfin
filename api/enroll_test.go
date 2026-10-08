@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 
 	"github.com/stelfin/stelfin/api/intent"
+	"github.com/stelfin/stelfin/chat"
+	"github.com/stelfin/stelfin/ledger/store"
 	"github.com/stelfin/stelfin/settlement"
 )
 
@@ -31,7 +34,54 @@ func newUnenrolledService(t *testing.T) (*Service, Scope) {
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
-	return svc, Scope{Org: orgFor(t, "/enroll").ID, OwnerRef: ownerFor(t)}
+	owner := Scope{Org: orgFor(t, "/enroll").ID, OwnerRef: ownerFor(t)}
+	openProvisioning(t, owner)
+	return svc, owner
+}
+
+// openProvisioning puts a workspace and one of its members in the state in
+// which the operator will pay for an account: a proved treasury, a budget, and
+// a member and a workspace both old enough.
+//
+// The ages are written straight to the database. Every other condition is
+// reached the way a workspace reaches it; nothing but time makes something old.
+func openProvisioning(t *testing.T, owner Scope) {
+	t.Helper()
+	ctx := context.Background()
+	db := store.New(testPool)
+
+	if _, err := db.LinkTreasury(ctx, store.LinkTreasuryParams{
+		Org: owner.Org, Kind: store.TreasuryClassic,
+		Address: keypair.MustRandom().Address(), Label: "main",
+		Low: 1, Medium: 1, High: 1,
+	}); err != nil {
+		t.Fatalf("link treasury: %v", err)
+	}
+	if err := db.SetEnrollmentPolicy(ctx, owner.Org, ProvisionReserve*25, 25); err != nil {
+		t.Fatalf("set enrolment policy: %v", err)
+	}
+	seen(t, owner)
+	if _, err := testPool.Exec(ctx,
+		`UPDATE orgs SET created_at = now() - interval '2 hours' WHERE id = $1`,
+		int64(owner.Org)); err != nil {
+		t.Fatalf("age the workspace: %v", err)
+	}
+}
+
+// seen makes owner a member of their org, first seen long enough ago.
+func seen(t *testing.T, owner Scope) {
+	t.Helper()
+	ctx := context.Background()
+	channel, userID, _ := strings.Cut(owner.OwnerRef, ":")
+	if _, err := store.New(testPool).EnsureMember(ctx, owner.Org, chat.Channel(channel), userID, "ada"); err != nil {
+		t.Fatalf("ensure member: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `
+		UPDATE user_identities SET linked_at = now() - interval '1 hour'
+		 WHERE org_id = $1 AND channel = $2 AND channel_user_id = $3`,
+		int64(owner.Org), channel, userID); err != nil {
+		t.Fatalf("age the identity: %v", err)
+	}
 }
 
 // prepareAndSign runs PrepareEnrollment and signs the returned envelope as
@@ -347,5 +397,101 @@ func TestConcurrentSubmitEnrollmentClaimsOnce(t *testing.T) {
 	}
 	if accepted != 1 {
 		t.Errorf("%d submissions were accepted, want exactly 1", accepted)
+	}
+}
+
+// limitedService is newUnenrolledService with the fake network kept in hand,
+// and provisioning left exactly as a new workspace has it: off.
+func limitedService(t *testing.T) (*Service, *fakeHorizon, Scope) {
+	t.Helper()
+	horizon := &fakeHorizon{sequence: 5}
+	settle, err := settlement.NewWith(horizon, settlement.Config{
+		HorizonURL:        "https://horizon-testnet.stellar.org",
+		NetworkPassphrase: network.TestNetworkPassphrase,
+	})
+	if err != nil {
+		t.Fatalf("settlement client: %v", err)
+	}
+	svc, err := NewService(testPool, fixedDecoder{decoded: sendDecoded()},
+		intent.NewResolver(testPool), settle,
+		Config{Asset: txnbuild.CreditAsset{Code: "USDC", Issuer: testIssuer}, AssetCode: "USDC"})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	return svc, horizon, Scope{Org: orgFor(t, "/limited").ID, OwnerRef: ownerFor(t)}
+}
+
+// TestEnrollmentIsOffUntilAWorkspaceTurnsItOn: every account costs the operator
+// reserve it does not get back on its own. A workspace that has proved nothing
+// and asked for nothing must not be able to spend it — otherwise adding the bot
+// to a group is all it takes to drain the float.
+func TestEnrollmentIsOffUntilAWorkspaceTurnsItOn(t *testing.T) {
+	svc, horizon, owner := limitedService(t)
+	seen(t, owner)
+	treasury := keypair.MustRandom()
+
+	_, err := svc.PrepareEnrollment(context.Background(), owner,
+		keypair.MustRandom().Address(), treasury.Address())
+	if !errors.Is(err, store.ErrProvisioningOff) {
+		t.Fatalf("error = %v, want ErrProvisioningOff", err)
+	}
+
+	// A budget alone is not enough: the treasury is the gate.
+	if err := store.New(testPool).SetEnrollmentPolicy(context.Background(),
+		owner.Org, ProvisionReserve*25, 25); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+	_, err = svc.PrepareEnrollment(context.Background(), owner,
+		keypair.MustRandom().Address(), treasury.Address())
+	if !errors.Is(err, store.ErrProvisioningOff) {
+		t.Fatalf("with a budget and no treasury: error = %v, want ErrProvisioningOff", err)
+	}
+	if n := horizon.submits.Load(); n != 0 {
+		t.Fatalf("%d transactions reached the network", n)
+	}
+}
+
+// TestSubmitEnrollmentTakesTheGrantBeforeSigning is the limiter doing its job
+// at the only moment it can: before the operator's signature goes on. A member
+// first seen moments ago is refused, nothing reaches the network, and — because
+// nothing was signed — the same envelope is good again once they are not new.
+func TestSubmitEnrollmentTakesTheGrantBeforeSigning(t *testing.T) {
+	svc, horizon, owner := limitedService(t)
+	openProvisioning(t, owner)
+	ctx := context.Background()
+	treasury := keypair.MustRandom()
+	userKey := keypair.MustRandom()
+
+	// Seen just now.
+	if _, err := testPool.Exec(ctx,
+		`UPDATE user_identities SET linked_at = now() WHERE org_id = $1`, int64(owner.Org)); err != nil {
+		t.Fatalf("reset identity age: %v", err)
+	}
+
+	_, signedXDR := prepareAndSign(t, svc, owner, treasury.Address(), userKey)
+	_, err := svc.SubmitEnrollment(ctx, owner, signedXDR, treasury.Address(), signProvisionWith(treasury))
+	if !errors.Is(err, store.ErrTooNew) {
+		t.Fatalf("error = %v, want ErrTooNew", err)
+	}
+	if n := horizon.submits.Load(); n != 0 {
+		t.Fatalf("a refused enrolment reached the network %d time(s)", n)
+	}
+
+	seen(t, owner) // old enough now
+	res, err := svc.SubmitEnrollment(ctx, owner, signedXDR, treasury.Address(), signProvisionWith(treasury))
+	if err != nil {
+		t.Fatalf("SubmitEnrollment once old enough: %v", err)
+	}
+	if res.Address != userKey.Address() || horizon.submits.Load() != 1 {
+		t.Fatalf("result = %+v after %d submissions", res, horizon.submits.Load())
+	}
+
+	// The grant is what /reclaim looks for, and what makes it one per member.
+	grant, ok, err := store.New(testPool).GrantFor(ctx, owner.Org, userKey.Address())
+	if err != nil || !ok {
+		t.Fatalf("grant for the new account: %v (found %v)", err, ok)
+	}
+	if grant.ReserveCost != ProvisionReserve {
+		t.Errorf("grant records %s of reserve, want %s", grant.ReserveCost, ProvisionReserve)
 	}
 }

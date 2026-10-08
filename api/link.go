@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/stelfin/stelfin/identity"
+	"github.com/stelfin/stelfin/ledger"
 	"github.com/stelfin/stelfin/ledger/store"
 )
 
@@ -41,6 +43,14 @@ type LinkChallenge struct {
 	// could choose its own purpose could present one person's wallet proof as
 	// proof that a group controls its money.
 	Purpose string
+	// Statement is the text a grant's signers are agreeing to, exactly as it
+	// was hashed. Empty for a challenge that only proves control.
+	//
+	// It goes to the page whole, and the page hashes it itself and compares
+	// the result with the digest inside the envelope. A page that showed a
+	// summary instead would be asking signers to trust that the summary and
+	// the digest describe the same thing.
+	Statement string
 }
 
 // PrepareLink issues a challenge proving control of address.
@@ -105,13 +115,24 @@ func (s *Service) LoadChallenge(ctx context.Context, scope Scope, hash string) (
 		return nil, err
 	}
 
-	return &LinkChallenge{
+	out := &LinkChallenge{
 		Address:           c.Address,
 		XDR:               c.XDR,
 		Hash:              c.Hash,
 		NetworkPassphrase: s.challenges.Network(),
 		Purpose:           c.Purpose,
-	}, nil
+	}
+	if c.Purpose == store.PurposeGrantConnector {
+		request, err := s.store.GrantRequest(ctx, scope.Org, hash)
+		if errors.Is(err, store.ErrNoChallenge) {
+			return nil, fmt.Errorf("%w: %s", ErrNoChallenge, hash)
+		}
+		if err != nil {
+			return nil, err
+		}
+		out.Statement = request.Statement
+	}
+	return out, nil
 }
 
 // LinkResult describes a completed link.
@@ -170,7 +191,37 @@ func (s *Service) SubmitLink(
 		return nil, err
 	}
 
+	s.bookLinkedWallet(ctx, scope, c.Address)
 	return &LinkResult{Address: c.Address, Member: member}, nil
+}
+
+// LinkedOwnerPrefix marks the ledger account a linked wallet is booked to.
+const LinkedOwnerPrefix = "linked:"
+
+// bookLinkedWallet gives a linked wallet an account in the books, so that
+// ingestion records what it pays and receives.
+//
+// Its own account, beside the one a provisioned wallet is booked to and not in
+// place of it. A member can have both, and the books keep them apart because
+// they are different money: one is a wallet stelfin set up and will take back,
+// the other is theirs.
+//
+// Best effort, and said so in the log. An address is booked to one workspace
+// — the network has one history, and ingestion posts each payment once — so a
+// wallet already linked in another workspace stays booked there. The link
+// itself stands either way: proving a key is not the same as being in the
+// books, and failing it here would make a member's identity depend on
+// bookkeeping.
+func (s *Service) bookLinkedWallet(ctx context.Context, scope Scope, address string) {
+	account, err := s.store.EnsureAccount(ctx, scope.Org, ledger.AccountMember,
+		LinkedOwnerPrefix+scope.OwnerRef, "linked wallet of "+scope.OwnerRef)
+	if err == nil {
+		err = s.store.TrackAddress(ctx, scope.Org, address, account, store.RoleMember)
+	}
+	if err != nil {
+		slog.Warn("a linked wallet could not be booked; it is linked, and its payments will not be in the ledger",
+			"org", scope.Org, "address", address, "error", err)
+	}
 }
 
 // Challenges exposes the challenge issuer, for callers that need to know

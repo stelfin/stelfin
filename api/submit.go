@@ -65,8 +65,13 @@ func (s *Service) recordPending(
 
 // SubmitResult describes an accepted submission.
 type SubmitResult struct {
-	Hash   string
-	Ledger int32
+	// Hash is what landed on chain: the fee-bump the operator wrapped the
+	// payment in. It is what a block explorer finds.
+	Hash string
+	// InnerHash is the payment the user signed, and the hash their
+	// confirmation named. The two differ on every submission, by construction.
+	InnerHash string
+	Ledger    int32
 	// AlreadyKnown reports that the transaction was found on chain rather than
 	// accepted by this submission.
 	AlreadyKnown bool
@@ -81,6 +86,9 @@ func (s *Service) Submit(
 	ctx context.Context, scope Scope, signedXDR, treasuryAddress string,
 	sign func(*txnbuild.FeeBumpTransaction) (*txnbuild.FeeBumpTransaction, error),
 ) (SubmitResult, error) {
+	if err := s.writable(); err != nil {
+		return SubmitResult{}, err
+	}
 	parsed, err := txnbuild.TransactionFromXDR(signedXDR)
 	if err != nil {
 		return SubmitResult{}, fmt.Errorf("api: unreadable transaction envelope: %w", err)
@@ -122,7 +130,9 @@ func (s *Service) Submit(
 		return SubmitResult{}, err
 	}
 
-	return SubmitResult{Hash: res.Hash, Ledger: res.Ledger, AlreadyKnown: res.AlreadyKnown}, nil
+	return SubmitResult{
+		Hash: res.Hash, InnerHash: hash, Ledger: res.Ledger, AlreadyKnown: res.AlreadyKnown,
+	}, nil
 }
 
 // authorise claims a pending send for submission.
