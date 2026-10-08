@@ -113,10 +113,17 @@
     border: 1px solid var(--line); border-radius: 10px; resize: vertical;
   }
   h2 { font-size: var(--t-md); font-weight: 600; margin: 1.5rem 0 0.5rem; }
-  input[type="text"] {
+  input[type="text"], input[type="url"], input[type="password"] {
     width: 100%; padding: 0.7rem; font: inherit; color: var(--fg);
     background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
   }
+  label.field { display: block; font-size: var(--t-sm); color: var(--muted); margin: 1rem 0 0.35rem; }
+  /* What the signers are agreeing to, boxed and set apart from the envelope
+     details above it: this is the part of the page a person reads, and the
+     rest is how they can check it. */
+  .statement { border: 1px solid var(--line); border-radius: 10px; padding: 0.35rem 0.85rem; margin: 0 0 0.6rem; }
+  .statement .row dd { overflow-wrap: anywhere; }
+  .statement .row + .row { border-top: 1px solid var(--line); }
   button.secondary { color: var(--fg); background: transparent; border: 1px solid var(--line); }
 </style>
 </head>
@@ -135,6 +142,16 @@
       <div class="row"><dt>Sequence</dt><dd><code id="sequence" translate="no"></code></dd></div>
       <div class="row"><dt>Network</dt><dd><code id="network" translate="no"></code></dd></div>
     </dl>
+
+    <section id="grant" hidden>
+      <h2>What signing this grants</h2>
+      <dl class="statement" id="statement"></dl>
+      <p class="note flush" id="grantNote">
+        Your browser hashed this text itself and found the same digest inside
+        the envelope below. Signing commits you to exactly this, and to nothing
+        else.
+      </p>
+    </section>
 
     <section id="labelBox" hidden>
       <h2>Name this treasury</h2>
@@ -164,6 +181,42 @@
     <textarea id="signed" translate="no" spellcheck="false" placeholder="Paste the signed XDR here…" aria-label="Signed challenge"
               aria-describedby="pasteNote"></textarea>
     <button id="submit" type="button" class="secondary spaced">Submit signature</button>
+  </section>
+
+  <!-- Setting a connector up: where it is, and the token it is reached with.
+       Typed here and nowhere else. A chat message is read by a room, kept by a
+       platform and quoted back in replies; this goes over TLS to the server,
+       is sealed before it is stored, and is never sent back. -->
+  <section id="setup" hidden>
+    <h1 id="setupHeading">Set up a connector</h1>
+    <p class="lede">
+      Tell stelfin where this connector is. Setting it up grants it nothing —
+      the treasury's signers decide that afterwards.
+    </p>
+    <dl>
+      <div class="row"><dt>Connector</dt><dd><code id="setupName" translate="no"></code></dd></div>
+      <div class="row"><dt>Kind</dt><dd id="setupKind"></dd></div>
+    </dl>
+
+    <label class="field" for="endpoint">Address</label>
+    <input id="endpoint" type="url" inputmode="url" autocomplete="off" spellcheck="false"
+           placeholder="https://…" aria-describedby="endpointNote">
+    <p class="note flush" id="endpointNote">
+      Must be https and on the public internet. If the address is itself a
+      secret, that is fine: only its host is ever shown to anyone.
+    </p>
+
+    <label class="field" for="credential">Access token, if it needs one</label>
+    <input id="credential" type="password" autocomplete="off" spellcheck="false"
+           aria-describedby="credentialNote">
+    <p class="note flush" id="credentialNote">
+      Sent as a bearer token on every call. Leave empty if there is none.
+    </p>
+
+    <button id="save" type="button" class="spaced">Save and try it</button>
+    <p class="note center" id="saveNote">
+      stelfin will call it once now, to see what it offers.
+    </p>
   </section>
 
   <section id="done" hidden>

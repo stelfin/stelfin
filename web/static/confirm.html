@@ -60,6 +60,16 @@
   button:hover:not([disabled]) { filter: brightness(1.08); }
   button:active:not([disabled]) { transform: translateY(1px); }
   button[disabled] { opacity: 0.6; cursor: not-allowed; }
+  button.secondary { color: var(--fg); background: transparent; border: 1px solid var(--line); }
+  button.spaced { margin-top: 0.75rem; }
+  h2 { font-size: var(--t-md); font-weight: 600; margin: 1.5rem 0 0.5rem; }
+  .note.flush { margin-top: 0; }
+  textarea {
+    width: 100%; min-height: 6.5rem; padding: 0.7rem; font: inherit;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--t-mono);
+    color: var(--fg); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 10px; resize: vertical;
+  }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   /* The refusal box takes focus so a screen reader announces it, which
      also gives it a ring. The ring should be its own colour: an accent-
@@ -98,10 +108,32 @@
     <dl>
       <div class="row"><dt>You said</dt><dd id="said"></dd></div>
       <div class="row"><dt>Recipient</dt><dd><code id="toAddress" translate="no"></code></dd></div>
+      <div class="row"><dt>From</dt><dd><code id="fromAddress" translate="no"></code></dd></div>
       <div class="row"><dt>Reference</dt><dd><code id="hashShort" translate="no"></code></dd></div>
     </dl>
 
-    <button id="confirm" type="button">Send</button>
+    <!-- Exactly one of the next two is shown. Which one is decided by whether
+         this device holds the key for the wallet the payment comes from, and
+         never by whether it holds a key at all: a key for some other wallet
+         would sign this happily and the network would refuse it. -->
+    <div id="device" hidden>
+      <button id="confirm" type="button">Send</button>
+    </div>
+
+    <div id="own" hidden>
+      <h2>Sign in your own wallet</h2>
+      <p class="note flush" id="ownNote">
+        This payment comes from a wallet whose key is not on this device. Copy
+        the transaction, sign it in that wallet, and paste the result back.
+      </p>
+      <textarea id="envelope" translate="no" spellcheck="false" readonly aria-label="Transaction to sign"
+                aria-describedby="ownNote"></textarea>
+      <h2>Signed transaction</h2>
+      <textarea id="signed" translate="no" spellcheck="false" placeholder="Paste the signed XDR here…"
+                aria-label="Signed transaction" aria-describedby="ownNote"></textarea>
+      <button id="submitSigned" type="button" class="secondary spaced">Send signed payment</button>
+    </div>
+
     <p class="note center" id="paymentNote">Check the amount and recipient before sending. Payments cannot be reversed.</p>
   </section>
 </main>

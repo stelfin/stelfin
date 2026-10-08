@@ -13,7 +13,7 @@
   };
 
 
-  function fail(title, detail) {
+  function fail(title, detail, keepPayment) {
     const box = $("alert");
     box.innerHTML = "";
     const strong = document.createElement("strong");
@@ -28,7 +28,10 @@
     box.setAttribute("role", "alert");
     box.hidden = false;
     box.focus();
-    $("payment").hidden = true;
+    // A refusal normally takes the payment off the screen: there is nothing
+    // left to do with it. A paste that can simply be done again is different,
+    // and hiding the box it goes in would make the mistake unfixable.
+    $("payment").hidden = !keepPayment;
   }
 
   // The token lives in the fragment so it never reaches the server as part of
@@ -63,7 +66,7 @@
   // the page: the server's summary is treated as a claim to be checked, not as
   // the thing to display.
   function readEnvelope(xdr, networkPassphrase) {
-    const tx = new StellarSdk.TransactionBuilder.fromXDR(xdr, networkPassphrase);
+    const tx = StellarSdk.TransactionBuilder.fromXDR(xdr, networkPassphrase);
     if (tx.operations.length !== 1) {
       throw new Error("this transaction contains more than the payment shown");
     }
@@ -143,47 +146,93 @@
       : "—";
     $("payment").hidden = false;
 
-    const key = loadSigningKey();
-    if (!key) {
-      $("confirm").disabled = true;
-      fail("This device isn't set up yet.",
-        "Your wallet key is not on this device, so this payment cannot be signed here. " +
-        "Open the link on the device you set up, or start enrolment again.");
-      $("payment").hidden = false;
-      return;
-    }
+    $("fromAddress").textContent = data.from_address;
 
-    $("confirm").addEventListener("click", async () => {
-      const button = $("confirm");
+    // Sending, by whichever route produced the signature. One function, so the
+    // two routes cannot come to report the same outcome differently.
+    async function send(signedXDR, button, idle) {
       busy(button, true);
       button.textContent = "Sending…";
       try {
-        envelope.tx.sign(key);
         const result = await api("/v1/submit", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ signed_xdr: envelope.tx.toXDR() }),
+          body: JSON.stringify({ signed_xdr: signedXDR }),
         });
         button.textContent = "Sent";
-        // Addressed by id, not by "the first .note inside #payment". The
-        // selector version silently retargeted itself the moment any other
-        // note was added above this one, and threw outright if the class
-        // was renamed. This is the only querySelector on any of these pages.
+        // Left disabled, and no longer busy: it is finished, not working.
+        button.setAttribute("aria-busy", "false");
+        $("alert").hidden = true;
+        $("own").hidden = true;
         $("paymentNote").textContent =
           "Sent. Reference " + short(result.hash) + ". You can close this page.";
       } catch (err) {
-        button.disabled = false;
-        button.textContent = "Send";
+        busy(button, false);
+        button.textContent = idle;
         if (err.status === 409) {
           fail("This payment has already been sent.", "Nothing was sent twice.");
         } else if (err.status === 410) {
           fail("This payment expired before it was sent.",
             "Nothing has been sent. Send your message again to start over.");
+        } else if (err.status === 503) {
+          fail("stelfin is not sending payments right now.",
+            "Nothing has been sent. Please try again later.");
         } else {
           fail("The payment could not be sent.",
             "Nothing has been sent. Please try again in a moment.");
         }
       }
+    }
+
+    // The key on this device signs only if it is the key for the wallet this
+    // payment comes from. Having *a* key is not enough: one for a different
+    // wallet would sign without complaint, and the first sign of trouble would
+    // be the network refusing the payment after the page had said "Sending".
+    const key = loadSigningKey();
+    if (key && key.publicKey() === data.from_address) {
+      $("device").hidden = false;
+      $("confirm").addEventListener("click", () => {
+        envelope.tx.sign(key);
+        send(envelope.tx.toXDR(), $("confirm"), "Send");
+      });
+      return;
+    }
+
+    // Otherwise the wallet is somewhere else — a hardware device, another app —
+    // and that is an ordinary way to hold one, not an error. The page hands
+    // over exactly the transaction it just verified and takes back the same
+    // one, signed.
+    $("envelope").value = data.xdr;
+    $("own").hidden = false;
+    const wanted = envelope.tx.hash().toString("hex");
+
+    $("submitSigned").addEventListener("click", () => {
+      const pasted = $("signed").value.trim();
+      if (!pasted) {
+        fail("Nothing to send.", "Paste the signed transaction first.", true);
+        return;
+      }
+      let signed;
+      try {
+        signed = StellarSdk.TransactionBuilder.fromXDR(pasted, data.network_passphrase);
+      } catch {
+        fail("That is not a transaction.", "Paste the whole signed result from your wallet.", true);
+        return;
+      }
+      // A transaction's hash covers everything except its signatures. The same
+      // hash therefore means the same payment that is shown above, whatever
+      // was done to it in between — and a different one means something else
+      // was signed, which this page will not pass on.
+      if (typeof signed.hash !== "function" || signed.hash().toString("hex") !== wanted) {
+        fail("That is not this payment.",
+          "What you pasted is a different transaction from the one shown here. Nothing has been sent.", true);
+        return;
+      }
+      if (!signed.signatures.length) {
+        fail("That transaction is not signed.", "Sign it in your wallet, then paste the result.", true);
+        return;
+      }
+      send(pasted, $("submitSigned"), "Send signed payment");
     });
   })();
 })();

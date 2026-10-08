@@ -199,15 +199,11 @@
       if (op.summary) {
         const summary = document.createElement("p");
         summary.className = "note";
-        summary.style.marginTop = "0";
         summary.textContent = op.summary;
         section.appendChild(summary);
       }
 
       const dl = document.createElement("dl");
-      dl.style.borderTop = "0";
-      dl.style.margin = "0";
-      dl.style.paddingTop = "0";
       for (const field of op.fields) {
         const row = document.createElement("div");
         row.className = "row";

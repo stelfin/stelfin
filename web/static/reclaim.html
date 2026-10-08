@@ -62,6 +62,13 @@
   .op { border: 1px solid var(--line); border-radius: 10px; padding: 0.6rem 0.85rem; margin-bottom: 0.6rem; }
   .op h3 { font-size: var(--t-sm); font-weight: 600; margin: 0 0 0.35rem; }
   .op .idx { color: var(--muted); font-weight: 400; }
+  /* The summary line carries a whole address, which is one 56-character word.
+     Without a rule saying where it may break it does not break at all, and
+     runs straight out of the box it is in — on the page whose whole purpose
+     is to let somebody read where the money is going. */
+  .op .note { margin-top: 0; overflow-wrap: anywhere; }
+  .op dl { border-top: 0; margin: 0; padding-top: 0; }
+  .note.flush { margin-top: 0; }
   /* The consequence, stated once, in the colour of the thing it describes.
      Not an error — the page is working correctly — so it is bordered rather
      than filled, and it never moves or blinks. */
@@ -150,7 +157,7 @@
     <div id="operations"></div>
 
     <h2>Confirm</h2>
-    <p class="note" style="margin-top: 0;" id="tailNote">
+    <p class="note flush" id="tailNote">
       Type the last six characters of the account —
       <code id="tail" translate="no"></code> — to enable signing.
     </p>
@@ -164,7 +171,7 @@
     </section>
 
     <h2>Or sign in your own wallet</h2>
-    <p class="note" style="margin-top: 0;" id="envelopeNote">
+    <p class="note flush" id="envelopeNote">
       Copy the envelope, sign it, and paste it back.
     </p>
     <textarea id="envelope" translate="no" spellcheck="false" readonly aria-label="Envelope to sign"

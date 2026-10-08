@@ -201,6 +201,60 @@
     return price.n() + "/" + price.d();
   }
 
+  // describeRestore mirrors settlement/describe_restore.go.
+  //
+  // A restore's operation has no fields of its own: what it brings back is its
+  // footprint, which lives on the transaction. Every entry is listed, because
+  // a restore is money spent on somebody's contract state.
+  function describeRestore(txExt) {
+    if (!txExt || txExt.switch() !== 1) {
+      throw new Indescribable("a restore with no footprint");
+    }
+    const data = txExt.sorobanData();
+    const footprint = data.resources().footprint();
+    if (footprint.readOnly().length !== 0) {
+      throw new Indescribable("a restore with read-only entries");
+    }
+    const entries = footprint.readWrite();
+    if (!entries.length) {
+      throw new Indescribable("a restore of nothing");
+    }
+    const fields = [
+      { label: "resource fee", kind: "number", value: data.resourceFee().toString() },
+      { label: "entries", kind: "number", value: String(entries.length) },
+    ];
+    entries.forEach((key, i) => {
+      fields.push({ label: "entry " + i, kind: "raw", value: ledgerKeyString(key) });
+    });
+    return {
+      fields,
+      summary:
+        "Restore " + entries.length + " archived contract " + (entries.length === 1 ? "entry" : "entries"),
+    };
+  }
+
+  function ledgerKeyString(key) {
+    switch (key.switch().name) {
+      case "contractData": {
+        const cd = key.contractData();
+        const durability =
+          cd.durability().name === "temporary" ? "temporary" : "persistent";
+        return (
+          "data " +
+          StelfinScval.addressString(cd.contract()) +
+          " " +
+          durability +
+          " " +
+          StelfinScval.render(cd.key())
+        );
+      }
+      case "contractCode":
+        return "code " + key.contractCode().hash().toString("hex");
+      default:
+        throw new Indescribable("a restore of a " + key.switch().name + " entry");
+    }
+  }
+
   // describeInvoke mirrors settlement/describe_invoke.go.
   //
   // Read from the raw XDR rather than from the SDK's parsed operation. The
@@ -268,7 +322,7 @@
     }
   }
 
-  function describeOp(index, op, txSource, rawOp) {
+  function describeOp(index, op, txSource, rawOp, txExt) {
     const source = op.source || txSource;
     const out = { index, type: null, source, summary: "", fields: [] };
 
@@ -447,6 +501,14 @@
         break;
       }
 
+      case "restoreFootprint": {
+        out.type = "restore_footprint";
+        const { fields, summary } = describeRestore(txExt);
+        out.fields = fields;
+        out.summary = summary;
+        break;
+      }
+
       case "invokeHostFunction": {
         out.type = "invoke_contract";
         const { fields, summary } = describeInvoke(rawOp);
@@ -491,8 +553,9 @@
 
     if (!tx.operations.length) throw new Indescribable("no operations");
     const raw = tx.tx.operations();
+    const ext = tx.tx.ext();
     tx.operations.forEach((op, i) => {
-      description.operations.push(describeOp(i, op, source, raw[i]));
+      description.operations.push(describeOp(i, op, source, raw[i], ext));
     });
     return description;
   }

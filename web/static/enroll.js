@@ -65,7 +65,7 @@
   // treasury sourcing the sponsorship and creation, this device's own fresh
   // address sourcing the trustline and the end of sponsorship.
   function verifyProvisioning(xdr, networkPassphrase, expectedAddress) {
-    const tx = new StellarSdk.TransactionBuilder.fromXDR(xdr, networkPassphrase);
+    const tx = StellarSdk.TransactionBuilder.fromXDR(xdr, networkPassphrase);
     const ops = tx.operations;
     if (ops.length !== 4) {
       throw new Error("this transaction does not look like account creation");
@@ -77,7 +77,12 @@
     if (create.type !== "createAccount" || create.destination !== expectedAddress) {
       throw new Error("this transaction does not create this device's address");
     }
-    if (create.startingBalance !== "0") {
+    // The SDK prints an amount with seven decimal places, so nothing is
+    // "0.0000000" and never "0". Comparing against the bare digit refused every
+    // provisioning transaction this server has ever built. Matched as text and
+    // not as a number: a starting balance is exactly zero or it is refused, and
+    // no float gets a say in which.
+    if (!/^0(\.0+)?$/.test(String(create.startingBalance))) {
       throw new Error("this transaction funds the account with unexpected XLM");
     }
     if (trust.type !== "changeTrust" || trust.source !== expectedAddress) {
@@ -106,6 +111,11 @@
     localStorage.setItem(KEY, keypair.secret());
 
     $("address").textContent = keypair.publicKey();
+    // Held closed until there is something behind it. The button is on screen
+    // from here, and the transaction it signs arrives a round trip later — a
+    // tap in between used to land on a button with no handler and do nothing,
+    // with nothing to say so.
+    $("create").disabled = true;
     $("pending").hidden = false;
 
     let built;
@@ -130,6 +140,7 @@
       return;
     }
 
+    $("create").disabled = false;
     $("create").addEventListener("click", async () => {
       const button = $("create");
       busy(button, true);

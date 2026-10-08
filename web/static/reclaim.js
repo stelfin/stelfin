@@ -110,7 +110,6 @@
       if (op.summary) {
         const summary = document.createElement("p");
         summary.className = "note";
-        summary.style.marginTop = "0";
         summary.textContent = op.summary;
         section.appendChild(summary);
       }
@@ -192,7 +191,7 @@
     $("sign").addEventListener("click", async () => {
       busy($("sign"), true);
       try {
-        const tx = new StellarSdk.TransactionBuilder.fromXDR(
+        const tx = StellarSdk.TransactionBuilder.fromXDR(
           data.xdr,
           data.network_passphrase
         );

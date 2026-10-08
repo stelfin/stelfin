@@ -72,3 +72,31 @@ test("every module a page can load is one this test knows about", () => {
     );
   }
 });
+
+test("no page constructs what the SDK only offers as a function", () => {
+  // `new StellarSdk.TransactionBuilder.fromXDR(…)` reads like a constructor
+  // call and is not one: fromXDR is a static method, and `new` on it throws
+  // "is not a constructor" before a single byte of the envelope is read. Four
+  // of the five pages once did exactly that, and nothing here noticed, because
+  // nothing here loads a page — every wallet link and every confirmation was
+  // dead in a real browser while this suite stayed green.
+  const sdk = require("./stellar-sdk.min.js");
+  assert.throws(
+    () => new sdk.TransactionBuilder.fromXDR("AAAA", "x"),
+    /not a constructor/,
+    "the premise of this test: the SDK refuses `new` on fromXDR"
+  );
+
+  const scripts = fs
+    .readdirSync(__dirname)
+    .filter((f) => f.endsWith(".js") && !f.endsWith(".test.js") && !f.endsWith(".min.js"));
+  assert.ok(scripts.length > 0, "no page scripts found");
+  for (const script of scripts) {
+    const source = fs.readFileSync(path.join(__dirname, script), "utf8");
+    assert.doesNotMatch(
+      source,
+      /new\s+StellarSdk\.[\w.]*\.from\w+\(/,
+      `${script} calls a static SDK method with \`new\`, which throws in the browser`
+    );
+  }
+});
