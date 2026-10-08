@@ -196,6 +196,20 @@
     $("envelope").value = data.xdr;
     StelfinClipboard.wire($("copyEnvelope"), $("envelope"), $("copiedEnvelope"));
     $("own").hidden = false;
+
+    // A wallet in this browser can be asked directly. It has to sign as the
+    // wallet this payment comes from: any other account's signature is one the
+    // network will refuse, and saying so here is better than sending it.
+    StelfinWallet.offer({
+      section: $("walletOffer"),
+      button: $("walletSign"),
+      absent: $("noWallet"),
+      envelope: () => ({ xdr: data.xdr, passphrase: data.network_passphrase, address: data.from_address }),
+      signed: ({ xdr }) => send(xdr, $("walletSign"), "Sign with Freighter"),
+      refused: (title, detail) => fail(title, detail, true),
+    }).then((there) => {
+      if (there) $("pasteHeading").textContent = "Or sign in another wallet";
+    });
     const wanted = envelope.tx.hash().toString("hex");
 
     $("submitSigned").addEventListener("click", () => {

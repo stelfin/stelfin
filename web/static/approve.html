@@ -177,7 +177,18 @@
       </p>
     </section>
 
-    <h2>Add your signature</h2>
+    <div id="walletOffer" hidden>
+      <h2>Sign with Freighter</h2>
+      <button id="walletSign" type="button">Sign with Freighter</button>
+      <p class="note center">Freighter shows you this transaction again, and signs only if you agree there.</p>
+    </div>
+    <p id="noWallet" class="note" hidden>
+      No wallet extension was found in this browser, which is usual on a phone
+      and inside a chat app. Where Freighter is installed, this page signs with
+      it in one click.
+    </p>
+
+    <h2 id="pasteHeading">Add your signature</h2>
     <p class="note flush" id="envelopeNote">
       Copy the envelope, sign it in your wallet, and paste it back. Any wallet
       that signs a transaction given as XDR will do; <a href="https://lab.stellar.org/transaction/sign" target="_blank" rel="noopener noreferrer">Stellar Lab</a> is one, under
@@ -210,6 +221,8 @@
 <script src="/static/policy.js"></script>
 <script src="/static/chain.js"></script>
 <script src="/static/clipboard.js"></script>
+<script src="/static/freighter-api.min.js"></script>
+<script src="/static/wallet.js"></script>
 <script src="/static/approve.js"></script>
 </body>
 </html>

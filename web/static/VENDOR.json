@@ -1,0 +1,35 @@
+{
+  "comment": [
+    "Code in this directory that was not written here, and what it is.",
+    "",
+    "Both files below run on the pages where people sign transactions. They are",
+    "vendored rather than loaded from a CDN because the content policy those",
+    "pages are served with allows scripts from this origin and nowhere else,",
+    "and that policy is most of what stands between an injected script and a",
+    "signing key.",
+    "",
+    "A vendored file nobody can identify is its own problem: there is no way to",
+    "tell an upgrade from a substitution. So each is recorded here with the",
+    "package and version it came from, where to fetch it again, and its",
+    "SHA-256. pages.test.js fails if a file here differs from its hash, or if a",
+    "minified script appears in this directory that is not listed."
+  ],
+  "files": {
+    "stellar-sdk.min.js": {
+      "package": "@stellar/stellar-sdk",
+      "version": "16.2.0",
+      "path": "dist/stellar-sdk.min.js",
+      "source": "https://cdn.jsdelivr.net/npm/@stellar/stellar-sdk@16.2.0/dist/stellar-sdk.min.js",
+      "license": "Apache-2.0",
+      "sha256": "c872bee0e34302f812bcb404580f288cf3d434efeee3d40755d4024d74982fd0"
+    },
+    "freighter-api.min.js": {
+      "package": "@stellar/freighter-api",
+      "version": "6.0.1",
+      "path": "build/index.min.js",
+      "source": "https://cdn.jsdelivr.net/npm/@stellar/freighter-api@6.0.1/build/index.min.js",
+      "license": "Apache-2.0",
+      "sha256": "d797429cf97f9a67f1999910830a89dc01d565aedebafb651a11b1ed003a7e9d"
+    }
+  }
+}

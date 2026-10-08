@@ -28,13 +28,17 @@ const NEEDS = {
   "chain.js": [],
   // The button that copies what a text box holds.
   "clipboard.js": [],
+  // Freighter's own library: how a page speaks to the browser extension.
+  "freighter-api.min.js": [],
+  // Signs with a wallet in the browser, and checks what it gets back.
+  "wallet.js": ["stellar-sdk.min.js", "freighter-api.min.js", "chain.js"],
   // Finds the key this device holds for a wallet, by the wallet's address.
   "devicekey.js": ["stellar-sdk.min.js"],
-  "approve.js": ["linktoken.js", "stellar-sdk.min.js", "describe.js", "policy.js", "chain.js", "clipboard.js"],
-  "reclaim.js": ["linktoken.js", "stellar-sdk.min.js", "describe.js", "policy.js", "devicekey.js", "chain.js", "clipboard.js"],
-  "confirm.js": ["linktoken.js", "stellar-sdk.min.js", "devicekey.js", "chain.js", "clipboard.js"],
+  "approve.js": ["linktoken.js", "stellar-sdk.min.js", "describe.js", "policy.js", "chain.js", "clipboard.js", "wallet.js"],
+  "reclaim.js": ["linktoken.js", "stellar-sdk.min.js", "describe.js", "policy.js", "devicekey.js", "chain.js", "clipboard.js", "wallet.js"],
+  "confirm.js": ["linktoken.js", "stellar-sdk.min.js", "devicekey.js", "chain.js", "clipboard.js", "wallet.js"],
   "enroll.js": ["linktoken.js", "stellar-sdk.min.js"],
-  "link.js": ["linktoken.js", "stellar-sdk.min.js", "devicekey.js", "chain.js", "clipboard.js"],
+  "link.js": ["linktoken.js", "stellar-sdk.min.js", "devicekey.js", "chain.js", "clipboard.js", "wallet.js"],
 };
 
 function scriptsIn(html) {
@@ -106,5 +110,50 @@ test("no page constructs what the SDK only offers as a function", () => {
       /new\s+StellarSdk\.[\w.]*\.from\w+\(/,
       `${script} calls a static SDK method with \`new\`, which throws in the browser`
     );
+  }
+});
+
+test("every vendored script is the one it is recorded as", () => {
+  // A vendored file nobody can identify is its own problem: there is no way to
+  // tell an upgrade from a substitution. These run on the pages where people
+  // sign, under a content policy that trusts this origin and nothing else.
+  const crypto = require("node:crypto");
+  const vendor = JSON.parse(fs.readFileSync(path.join(__dirname, "VENDOR.json"), "utf8")).files;
+
+  for (const [name, entry] of Object.entries(vendor)) {
+    const file = path.join(__dirname, name);
+    assert.ok(fs.existsSync(file), `${name} is recorded as vendored and is not here`);
+    const hash = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+    assert.strictEqual(
+      hash,
+      entry.sha256,
+      `${name} is not ${entry.package}@${entry.version}: it has been changed, or upgraded without its record`
+    );
+    for (const field of ["package", "version", "source", "license"]) {
+      assert.ok(entry[field], `${name} has no ${field} recorded`);
+    }
+  }
+
+  // And nothing minified is here that the record does not know about.
+  for (const name of fs.readdirSync(__dirname).filter((f) => f.endsWith(".min.js"))) {
+    assert.ok(vendor[name], `${name} is in this directory and is not recorded in VENDOR.json`);
+  }
+});
+
+test("no page names an element after a global a wallet library looks for", () => {
+  // A browser exposes every element id as a property of window. Freighter's
+  // library decides the extension is installed by checking window.freighter,
+  // so a page with id="freighter" tells it the extension is there — and the
+  // page then offers a button that waits for ever on a wallet that is not.
+  // That shipped to the browser test once, as the id of the very section the
+  // button lives in.
+  for (const page of pages) {
+    const html = fs.readFileSync(path.join(__dirname, page), "utf8");
+    for (const taken of ["freighter", "freighterApi", "StellarSdk"]) {
+      assert.ok(
+        !new RegExp(`\\bid="${taken}"`).test(html),
+        `${page} has an element with id="${taken}", which shadows a global its scripts read`
+      );
+    }
   }
 });

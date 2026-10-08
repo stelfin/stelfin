@@ -124,7 +124,18 @@
     </div>
 
     <div id="own" hidden>
-      <h2>Sign in your own wallet</h2>
+      <div id="walletOffer" hidden>
+        <h2>Sign with Freighter</h2>
+        <button id="walletSign" type="button">Sign with Freighter</button>
+        <p class="note center">Freighter shows you this payment again, and signs only if you agree there.</p>
+      </div>
+      <p id="noWallet" class="note" hidden>
+        No wallet extension was found in this browser, which is usual on a phone
+        and inside a chat app. Where Freighter is installed, this page signs with
+        it in one click.
+      </p>
+
+      <h2 id="pasteHeading">Sign in your own wallet</h2>
       <p class="note flush" id="ownNote">
         This payment comes from a wallet whose key is not on this device. Copy
         the transaction, sign it in that wallet, and paste the result back. Any
@@ -151,6 +162,8 @@
 <script src="/static/devicekey.js"></script>
 <script src="/static/chain.js"></script>
 <script src="/static/clipboard.js"></script>
+<script src="/static/freighter-api.min.js"></script>
+<script src="/static/wallet.js"></script>
 <script src="/static/confirm.js"></script>
 </body>
 </html>

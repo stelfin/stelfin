@@ -45,7 +45,40 @@ for (let i = 0; ; i++) {
 
 const pageErrors = [];
 
-async function open(name, url) {
+// A stand-in for Freighter's content script: the half of the extension that
+// lives in the page and answers the messages Freighter's own library posts.
+//
+// The library on the page is the real one, as vendored. Only the extension is
+// stood in for, so what is exercised is everything a page does with a wallet:
+// finding it, asking which network it is on, handing it the envelope, and
+// checking what comes back. The message shapes are the ones that library sends
+// and expects, down to the field it matches replies on, which it spells
+// "messagedId".
+const freighterStandIn = (seed, passphrase) => `(() => {
+  window.freighter = true;
+  window.addEventListener("message", (e) => {
+    const m = e.data;
+    if (e.source !== window || !m || m.source !== "FREIGHTER_EXTERNAL_MSG_REQUEST") return;
+    const reply = (extra) => window.postMessage(
+      { source: "FREIGHTER_EXTERNAL_MSG_RESPONSE", messagedId: m.messageId, ...extra }, window.location.origin);
+    const key = StellarSdk.Keypair.fromSecret(${JSON.stringify(seed)});
+    switch (m.type) {
+      case "REQUEST_CONNECTION_STATUS": return reply({ isConnected: true });
+      case "REQUEST_ALLOWED_STATUS": return reply({ isAllowed: true });
+      case "REQUEST_ACCESS":
+      case "REQUEST_PUBLIC_KEY": return reply({ publicKey: key.publicKey() });
+      case "REQUEST_NETWORK_DETAILS": return reply({ networkDetails: {
+        network: "X", networkName: "X", networkUrl: "", networkPassphrase: ${JSON.stringify(passphrase)} } });
+      case "SUBMIT_TRANSACTION": {
+        const tx = StellarSdk.TransactionBuilder.fromXDR(m.transactionXdr, m.networkPassphrase);
+        tx.sign(key);
+        return reply({ signedTransaction: tx.toXDR(), signerAddress: key.publicKey() });
+      }
+    }
+  });
+})();`;
+
+async function open(name, url, wallet) {
   const target = await (await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: "PUT" })).json();
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
@@ -65,6 +98,13 @@ async function open(name, url) {
 
   await send("Runtime.enable");
   await send("Page.enable");
+  if (wallet) {
+    // Before any of the page's own scripts, which is when an extension's
+    // content script runs.
+    await send("Page.addScriptToEvaluateOnNewDocument", {
+      source: freighterStandIn(wallet.seed, wallet.passphrase ?? PASSPHRASE),
+    });
+  }
   await send("Page.navigate", { url });
 
   const run = async (body) => {
@@ -154,29 +194,33 @@ check("the secret key can be shown for a backup, and is this wallet's",
 // Eve linked her own wallet, so the page has nothing to sign with and that is
 // not an error: it hands the transaction over and takes it back signed.
 
-const own = await open("confirm (own wallet)", await held("confirm (eve)"));
+const own = await open("confirm (own wallet)", await held("confirm (eve)"), { seed: await held("eve seed") });
 await own.until(`${shown("payment")} || ${refused}`, "the payment");
 check("confirm page offers the transaction instead of a dead end",
   await own.run(`return ${shown("own")} && !${shown("device")} && !${shown("alert")}`));
+await own.until(`${shown("walletOffer")} || ${shown("noWallet")}`, "the page to look for a wallet");
+check("a wallet in the browser is offered for signing", await own.run(`return ${shown("walletOffer")} && !${shown("noWallet")}`));
 // Pasting the envelope back unsigned is the obvious mistake.
 await own.run(paste("signed", await own.run(`return document.getElementById("envelope").value`), "submitSigned"));
 await own.until(shown("alert"), "the unsigned notice");
 check("an unsigned paste is refused and can be corrected",
   await own.run(`return ${shown("payment")}`), (await own.text("alert")).replace(/\s+/g, " "));
-signed = await own.run(signedWith("envelope", await held("eve seed")));
-await own.run(paste("signed", signed, "submitSigned"));
+await own.run(`document.getElementById("signed").value = ""; document.getElementById("walletSign").click()`);
 await own.until(`document.getElementById("paymentNote").textContent.startsWith("Sent") || (${refused} && !${shown("payment")})`, "the payment to send");
-check("confirm page sent a payment signed in another wallet",
-  (await own.text("paymentNote")).startsWith("Sent"), await own.text("paymentNote"));
+check("confirm page sent a payment signed by the wallet in the browser",
+  (await own.text("paymentNote")).startsWith("Sent"),
+  (await own.run(`return ${shown("alert")}`)) ? (await own.text("alert")).replace(/\s+/g, " ") : await own.text("paymentNote"));
 
 // ---- Approve, as two signers, then execute from the page.
 
-const ada = await open("approve (ada)", await held("approve (ada)"));
+const ada = await open("approve (ada)", await held("approve (ada)"), { seed: await held("ada seed") });
 await ada.until(`${shown("proposal")} || ${refused}`, "the proposal");
 check("approve page derived the payment from the envelope",
   (await ada.text("operations")).includes("payment"), (await ada.text("operations")).replace(/\s+/g, " ").slice(0, 90));
-signed = await ada.run(signedWith("envelope", await held("ada seed")));
-await ada.run(paste("signed_xdr", signed, "submit"));
+// Ada is one of the treasury's signers and not the treasury: the wallet signs
+// an envelope whose source is some other account.
+await ada.until(`${shown("walletOffer")} || ${shown("noWallet")}`, "the page to look for a wallet");
+await ada.run(`document.getElementById("walletSign").click()`);
 // Until the button is free again, and not merely until the figure reads one:
 // it may have read one before this signature went in, and a click on a button
 // that is still busy is a click that does nothing.
@@ -192,8 +236,19 @@ await ada.until(shown("alert"), "the refusal");
 check("a stranger's signature is refused and the page stays usable",
   await ada.run(`return ${shown("proposal")}`), (await ada.text("alert")).replace(/\s+/g, " "));
 
-const ben = await open("approve (ben)", await held("approve (ben)"));
+// Ben's wallet is on the public network. A signature made there means nothing
+// here, and he is told which network to switch to before the wallet is shown
+// anything at all. The page stays as it was, and he signs by paste instead.
+const ben = await open("approve (ben)", await held("approve (ben)"),
+  { seed: await held("ben seed"), passphrase: "Public Global Stellar Network ; September 2015" });
 await ben.until(`${shown("proposal")} || ${refused}`, "the proposal");
+await ben.until(`${shown("walletOffer")} || ${shown("noWallet")}`, "the page to look for a wallet");
+await ben.run(`document.getElementById("walletSign").click()`);
+await ben.until(shown("alert"), "the wrong-network notice");
+check("a wallet on another network is told so, and nothing is sent",
+  (await ben.text("alert")).includes("different network") && (await ben.text("weight")).startsWith("1 of") &&
+    await ben.run(`return ${shown("proposal")}`),
+  (await ben.text("alert")).replace(/\s+/g, " "));
 signed = await ben.run(signedWith("envelope", await held("ben seed")));
 await ben.run(paste("signed_xdr", signed, "submit"));
 await ben.until(`${shown("ready")} || ${refused}`, "the execute button");
@@ -214,18 +269,29 @@ check("the envelope can be copied with a button, and the fee is in XLM",
 const link = await open("link", await held("link (ben)"));
 await link.until(`${shown("pending")} || ${refused}`, "the challenge");
 check("link page shows an unsubmittable challenge", (await link.text("sequence")) === "0");
+await link.until(`${shown("walletOffer")} || ${shown("noWallet")}`, "the page to look for a wallet");
+check("a browser with no wallet extension says so, and offers no button for one",
+  await link.run(`return ${shown("noWallet")} && !${shown("walletOffer")}`));
 signed = await link.run(signedWith("challenge", await held("ben new wallet")));
 await link.run(paste("signed", signed, "submit"));
 await link.until(`${shown("done")} || ${refused}`, "the link");
 check("link page linked the wallet", await link.run(`return ${shown("done")}`), await outcome(link, "done"));
 
-const treasury = await open("treasury", await held("treasury (ada)"));
+const treasury = await open("treasury", await held("treasury (ada)"), { seed: await held("ada seed") });
 await treasury.until(`${shown("pending")} || ${refused}`, "the treasury challenge");
-const one = await treasury.run(signedWith("challenge", await held("ada seed")));
-await treasury.run(`document.getElementById("label").value = "ops";` + paste("signed", one, "submit"));
+await treasury.until(`${shown("walletOffer")} || ${shown("noWallet")}`, "the page to look for a wallet");
+await treasury.run(`document.getElementById("label").value = "ops"; document.getElementById("walletSign").click()`);
 await treasury.until(shown("alert"), "the partial-signature notice");
 check("one signature on a 2-of-3 treasury is progress, not proof",
   await treasury.run(`return ${shown("pending")} && !${shown("done")}`), (await treasury.text("alert")).replace(/\s+/g, " "));
+// The envelope to pass on is the one left in the box: the challenge, carrying
+// the wallet's signature and nothing else.
+const one = await treasury.run(`return document.getElementById("signed").value`);
+check("the wallet's signature is left on the envelope for the next signer",
+  await treasury.run(`
+    const tx = StellarSdk.TransactionBuilder.fromXDR(${JSON.stringify(one)}, "${PASSPHRASE}");
+    const base = StellarSdk.TransactionBuilder.fromXDR(document.getElementById("challenge").value, "${PASSPHRASE}");
+    return tx.hash().equals(base.hash()) && tx.signatures.length === base.signatures.length + 1;`));
 const two = await treasury.run(`
   const tx = StellarSdk.TransactionBuilder.fromXDR(${JSON.stringify(one)}, "${PASSPHRASE}");
   tx.sign(StellarSdk.Keypair.fromSecret(${JSON.stringify(await held("ben seed"))})); return tx.toXDR();`);

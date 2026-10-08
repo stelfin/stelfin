@@ -307,6 +307,25 @@
 
     StelfinClipboard.wire($("copyEnvelope"), $("envelope"), $("copiedEnvelope"));
 
+    // The same exchange as the box below, with the copying taken out of it:
+    // the envelope this page has already derived and checked goes to the
+    // wallet, and one signature comes back. Whoever is signing is one of the
+    // treasury's signers and not the treasury, so no particular account is
+    // asked for; whether the signature counts is decided by the account's own
+    // signer list, as it is for a pasted one.
+    StelfinWallet.offer({
+      section: $("walletOffer"),
+      button: $("walletSign"),
+      absent: $("noWallet"),
+      envelope: () => ({ xdr: $("envelope").value, passphrase }),
+      signed: async ({ xdr }) => {
+        await refresh(xdr);
+      },
+      refused: (title, detail) => notice(title, detail, true),
+    }).then((there) => {
+      if (there) $("pasteHeading").textContent = "Or sign in another wallet";
+    });
+
     $("execute").addEventListener("click", async () => {
       busy($("execute"), true);
       try {

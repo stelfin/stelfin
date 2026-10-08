@@ -462,6 +462,45 @@
       });
     }
 
+    // What the next signature is added to: the challenge, or the challenge
+    // with the signatures other people have already put on it. Where several
+    // signers are needed they pass one envelope between them, and the box
+    // below is where it sits between signatures — so if what is in the box is
+    // this same challenge, signed so far, a wallet's signature goes onto that.
+    // Anything else in the box is ignored in favour of the challenge itself.
+    const soFar = () => {
+      const held = $("signed").value.trim();
+      if (!held) return undefined;
+      try {
+        const there = readChallenge(held, data.network_passphrase, data.address);
+        return there.hash().toString("hex") === tx.hash().toString("hex") ? held : undefined;
+      } catch (_) {
+        return undefined;
+      }
+    };
+
+    // Proving an address means signing as that address and no other. Proving a
+    // treasury, or granting on its behalf, means signing as one of its
+    // signers, so there no particular account is asked for.
+    StelfinWallet.offer({
+      section: $("walletOffer"),
+      button: $("walletSign"),
+      absent: $("noWallet"),
+      envelope: () => ({
+        xdr: data.xdr,
+        onto: soFar(),
+        passphrase: data.network_passphrase,
+        address: collected(purpose) ? undefined : data.address,
+      }),
+      signed: async ({ xdr }) => {
+        // Into the box, so that if it is still short of the threshold the
+        // envelope to pass on is the one on screen.
+        $("signed").value = xdr;
+        await submit(xdr, purpose);
+      },
+      refused: correctable,
+    });
+
     $("submit").addEventListener("click", async () => {
       const pasted = $("signed").value.trim();
       if (!pasted) {

@@ -173,6 +173,17 @@
       <p class="note center">Uses the key stelfin created on this device.</p>
     </section>
 
+    <div id="walletOffer" hidden>
+      <h2>Sign with Freighter</h2>
+      <button id="walletSign" type="button">Sign with Freighter</button>
+      <p class="note center">Freighter shows you this challenge again, and signs only if you agree there.</p>
+    </div>
+    <p id="noWallet" class="note" hidden>
+      No wallet extension was found in this browser, which is usual on a phone
+      and inside a chat app. Where Freighter is installed, this page signs with
+      it in one click.
+    </p>
+
     <h2 id="pasteHeading">Or sign in your own wallet</h2>
     <p class="note flush" id="pasteNote">
       Copy the challenge below, sign it in your wallet, and paste the signed
@@ -236,6 +247,8 @@
 <script src="/static/devicekey.js"></script>
 <script src="/static/chain.js"></script>
 <script src="/static/clipboard.js"></script>
+<script src="/static/freighter-api.min.js"></script>
+<script src="/static/wallet.js"></script>
 <script src="/static/link.js"></script>
 </body>
 </html>

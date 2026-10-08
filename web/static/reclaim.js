@@ -203,6 +203,25 @@
 
     $("reclaim").hidden = false;
 
+    // For somebody who took a copy of this wallet's key into Freighter. The
+    // same gate applies as to the button above: nothing deletes an account
+    // until its last six characters have been typed back.
+    StelfinWallet.offer({
+      section: $("walletOffer"),
+      button: $("walletSign"),
+      envelope: () => {
+        if ($("confirm").value.trim().toUpperCase() !== tail) {
+          throw new StelfinWallet.Refused("Type the last six characters first.",
+            "They are shown above. This is the one thing here that is not a single tap, on purpose.");
+        }
+        return { xdr: data.xdr, passphrase: data.network_passphrase, address: data.address };
+      },
+      signed: async ({ xdr }) => {
+        await submit(xdr);
+      },
+      refused: correctable,
+    });
+
     $("sign").addEventListener("click", async () => {
       busy($("sign"), true);
       try {
