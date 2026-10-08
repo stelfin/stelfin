@@ -392,17 +392,25 @@ seen the bot would actually do. Fixed; listed for the same reason as the others.
   two of the five, and nothing offered to copy the envelope a signer has to
   carry to their wallet.
 
-### What is next, in order
+### What is next
 
-1. **Signing with a wallet extension.** Freighter, beside paste, on the four
-   pages that sign.
-2. **A decoder that is not tied to one provider**, and a fixed grammar behind
-   it so that `/send` works with no model at all.
-3. **`/balance`, and treasury trustlines and swaps as proposals.** The
-   operations are built in `settlement` and nothing in chat reaches them.
-4. **Contract-held treasuries**, on a `dao_treasury` in which no single key can
-   move funds or change the rules without a passed vote. The contract uploaded
-   today lets its admin do both, so it is not used.
+**Contract-held treasuries**, on a `dao_treasury` in which no single key can
+move funds or change the rules without a passed vote. The contract uploaded
+today lets its admin do both, so it is not used.
+
+Built since this list was first written, and no longer on it: signing with
+Freighter beside paste; a decoder for any provider speaking the OpenAI format,
+with a fixed grammar behind it; `/balance`; and treasury trustlines and swaps
+as proposals.
+
+Three things about swaps are decisions rather than gaps. A swap is a path
+payment the treasury makes to itself, and nothing else is called one. It has no
+default floor: asked without one, the bot answers with what the market offers
+and proposes nothing, because the floor is the whole of a swap's risk and a
+default would be a number chosen here about somebody else's money. And it is
+checked against the market again just before it is submitted, since a swap that
+cannot meet its floor fails on the ledger and takes its signatures with it; one
+that would is held, not sent.
 
 ### Not code
 

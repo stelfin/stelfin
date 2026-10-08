@@ -802,6 +802,11 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrSequenceMoved):
 		http.Error(w, "the treasury has transacted since this proposal was built",
 			http.StatusConflict)
+	case errors.As(err, new(*MarketMovedError)):
+		// 409, with the proposal untouched: nothing was submitted, and the
+		// same press will work when the market is back above the minimum.
+		http.Error(w, "the market has moved below this swap's minimum; nothing was submitted",
+			http.StatusConflict)
 	case errors.As(err, new(*RefusedError)):
 		// 422: the request was fine and the network said no. The page cannot
 		// word the reason from a status, so it sends the person back to the

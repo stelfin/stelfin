@@ -115,8 +115,36 @@
     if (d.hash !== data.hash) {
       throw new Error("the envelope is not the transaction this proposal names");
     }
+    // The envelope spends from whoever its source is, and the page is about to
+    // say which treasury this is. Those have to be the same account. Agreeing
+    // with the server about what the envelope says does not establish it: the
+    // server could describe, accurately, an envelope from some other account
+    // this signer also signs for, under this treasury's name.
+    if (d.source !== data.treasury) {
+      throw new Error("the envelope is sent from a different account than the treasury this proposal names");
+    }
     return d;
   }
+
+  // What to call it, above the operations. Worked out by this page from the
+  // envelope: see StelfinPolicy.kind.
+  const HEADINGS = {
+    payment: ["Approve a payment", "It pays out of the treasury."],
+    batch: ["Approve a batch of payments", "It pays several people out of the treasury, in one transaction."],
+    "trustline-open": [
+      "Approve a new trustline",
+      "It lets the treasury hold an asset it could not hold before, and locks 0.5 XLM of its reserve. It moves nothing.",
+    ],
+    "trustline-close": [
+      "Approve closing a trustline",
+      "Afterwards the treasury cannot be paid in that asset until a trustline is opened again. It moves nothing.",
+    ],
+    swap: [
+      "Approve a swap",
+      "The treasury pays itself: it sends exactly the amount below and receives at least the minimum, or the swap does not happen.",
+    ],
+    other: ["Approve this proposal", "Read each operation below: together they are what this does."],
+  };
 
   // A batch is shown as one number and a list, because that is how it is read.
   //
@@ -249,8 +277,10 @@
       return null;
     }
 
+    const [heading, what] = HEADINGS[StelfinPolicy.kind(d)] || HEADINGS.other;
+    $("heading").textContent = heading;
     $("lede").textContent =
-      "Signing commits you to exactly what is shown below, which your browser " +
+      what + " Signing commits you to exactly what is shown below, which your browser " +
       "read from the envelope itself.";
     $("treasury").textContent =
       data.treasury_label ? data.treasury_label + " · " + data.treasury : data.treasury;

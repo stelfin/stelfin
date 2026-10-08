@@ -81,6 +81,7 @@ func (s *Service) registerCommands() {
 	cmds = append(cmds, s.linkCommands()...)
 	cmds = append(cmds, s.treasuryCommands()...)
 	cmds = append(cmds, s.proposalCommands()...)
+	cmds = append(cmds, s.assetCommands()...)
 	cmds = append(cmds, s.reclaimCommands()...)
 	cmds = append(cmds, s.provisioningCommands()...)
 	cmds = append(cmds, s.workspaceCommands()...)

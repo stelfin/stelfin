@@ -312,7 +312,7 @@ func Run(log *slog.Logger) error {
 	}
 	// The propose tier: a token minted for it can draft a payroll for a member
 	// to review, and nothing more.
-	agents = agents.WithDrafter(svc)
+	agents = agents.WithDrafter(svc).WithHoldings(svc)
 	routes := http.NewServeMux()
 	routes.Handle("POST /mcp", agents.Handler())
 	routes.Handle("/", server.Routes())

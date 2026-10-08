@@ -168,6 +168,11 @@ bot's replies open somebody else's page.
 | a proposer | `/pay 250 to G… march invoice` | A proposal, and their own link to sign it. |
 | any signer | `/approve` | Their own link to sign the open proposal. |
 | anyone with a role | `/execute` | Submits it, once it has the signatures. |
+| whoever made it, or an admin | `/cancel` | Withdraws the open proposal. One account holds one at a time, so this is how a mistyped one is taken back. |
+| anyone | `/balance` | What the treasury and their own wallet hold, read from the network. The treasury is shown to members with a role. |
+| a proposer | `/trust EURC:G…`, `/untrust EURC` | Proposes that the treasury can hold an asset, or stop. An asset is named with its issuer; a bare code works only for one the treasury already holds. |
+| a proposer | `/swap 100 XLM to USDC` | What the market offers now. Proposes nothing. |
+| a proposer | `/swap 100 XLM to USDC min:12` or `slippage:1%` | Proposes the swap, with the least it will accept. There is no default floor. |
 | an admin | `/provisioning on` | Members with no wallet can be set one up. Needs a linked treasury. Off by default. |
 | any member | `send 5 to G…` | From the wallet stelfin set up for them: a link to confirm exactly that payment. |
 | its owner | `/reclaim` | A link to hand a provisioned wallet back, once it is empty. |

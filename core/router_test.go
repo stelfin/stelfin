@@ -98,9 +98,18 @@ type fakeSender struct {
 	// executeErr is what ExecuteProposal returns, so a test can stand in for a
 	// treasury whose sequence moved.
 	executeErr error
-	executed   []store.ProposalID
-	reclaimErr error
-	reclaimed  []string
+
+	// What the balance, trustline and swap commands are given back, and what
+	// they asked for. market is what a swap's quote says it would bring.
+	balances     *api.BalanceReport
+	balanceAsked []string
+	assetErr     error
+	market       money.Stroops
+	quoted       int
+	swaps        []api.SwapParams
+	executed     []store.ProposalID
+	reclaimErr   error
+	reclaimed    []string
 
 	// What the connector commands are given back, and what they asked for.
 	observation connector.Observation
@@ -190,6 +199,98 @@ func (f *fakeSender) ProposePayment(
 		return nil, err
 	}
 	return f.viewOf(ctx, scope, proposal)
+}
+
+// open records a proposal of the given kind the way the service would, so that
+// what the chat layer does next — the link, the reply, the open-proposal slot —
+// is exercised against a real row.
+func (f *fakeSender) open(
+	ctx context.Context, scope api.Scope, treasury store.TreasuryID, kind string, by store.MemberID,
+) (*api.ProposalView, error) {
+	f.mu.Lock()
+	fakeProposalSeq++
+	n := fakeProposalSeq
+	f.mu.Unlock()
+
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%s %d", kind, n)))
+	proposal, err := f.db.CreateProposal(ctx, store.CreateProposalParams{
+		Org: scope.Org, Treasury: treasury, Kind: kind,
+		XDR:         fmt.Sprintf("AAAAAgAAenvelope%d", n),
+		Hash:        fmt.Sprintf("%064x", n),
+		SourceSeq:   4_000_000 + n,
+		Description: fmt.Sprintf("%s\t%d", kind, n),
+		Digest:      digest[:],
+		CreatedBy:   by,
+		ExpiresAt:   time.Now().Add(72 * time.Hour),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return f.viewOf(ctx, scope, proposal)
+}
+
+func (f *fakeSender) Balances(_ context.Context, _ api.Scope, treasuries bool, linked string) (*api.BalanceReport, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.balanceAsked = append(f.balanceAsked, fmt.Sprintf("treasuries=%v linked=%s", treasuries, linked))
+	if f.balances == nil {
+		return &api.BalanceReport{}, nil
+	}
+	out := *f.balances
+	if !treasuries {
+		out.Treasuries = nil
+	}
+	return &out, nil
+}
+
+func (f *fakeSender) ProposeTrust(
+	ctx context.Context, scope api.Scope, treasury store.TreasuryID, asset string, by store.MemberID,
+) (*api.ProposalView, string, error) {
+	if f.assetErr != nil {
+		return nil, "", f.assetErr
+	}
+	view, err := f.open(ctx, scope, treasury, "trustline", by)
+	return view, asset, err
+}
+
+func (f *fakeSender) ProposeUntrust(
+	ctx context.Context, scope api.Scope, treasury store.TreasuryID, asset string, by store.MemberID,
+) (*api.ProposalView, string, error) {
+	return f.ProposeTrust(ctx, scope, treasury, asset, by)
+}
+
+func (f *fakeSender) quote(amount money.Stroops, from, to string) *api.SwapQuote {
+	return &api.SwapQuote{FromName: strings.ToUpper(from), ToName: strings.ToUpper(to), Send: amount, Receive: f.market}
+}
+
+func (f *fakeSender) QuoteSwap(
+	_ context.Context, _ api.Scope, _ store.TreasuryID, amount money.Stroops, from, to string,
+) (*api.SwapQuote, error) {
+	if f.assetErr != nil {
+		return nil, f.assetErr
+	}
+	f.mu.Lock()
+	f.quoted++
+	f.mu.Unlock()
+	return f.quote(amount, from, to), nil
+}
+
+func (f *fakeSender) ProposeSwap(
+	ctx context.Context, scope api.Scope, p api.SwapParams,
+) (*api.ProposalView, *api.SwapQuote, money.Stroops, error) {
+	if f.assetErr != nil {
+		return nil, nil, 0, f.assetErr
+	}
+	f.mu.Lock()
+	f.swaps = append(f.swaps, p)
+	f.mu.Unlock()
+	quote := f.quote(p.Amount, p.From, p.To)
+	floor := p.Minimum
+	if floor == 0 {
+		floor = quote.Receive - quote.Receive*money.Stroops(p.SlippageBps)/10_000
+	}
+	view, err := f.open(ctx, scope, p.Treasury, "dex", p.CreatedBy)
+	return view, quote, floor, err
 }
 
 func (f *fakeSender) LoadProposal(

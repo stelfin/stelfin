@@ -29,6 +29,7 @@ import (
 	"github.com/stelfin/stelfin/chat"
 	"github.com/stelfin/stelfin/connector"
 	"github.com/stelfin/stelfin/identity"
+	"github.com/stelfin/stelfin/internal/money"
 	"github.com/stelfin/stelfin/ledger/store"
 	"github.com/stelfin/stelfin/settlement"
 )
@@ -49,6 +50,11 @@ type Sender interface {
 	LoadProposal(ctx context.Context, scope api.Scope, id store.ProposalID) (*api.ProposalView, error)
 	ExecuteProposal(ctx context.Context, scope api.Scope, id store.ProposalID, by store.IdentityID) (*settlement.Result, error)
 	CancelProposal(ctx context.Context, scope api.Scope, id store.ProposalID, by store.MemberID, admin bool) (store.Proposal, error)
+	Balances(ctx context.Context, scope api.Scope, treasuries bool, linked string) (*api.BalanceReport, error)
+	ProposeTrust(ctx context.Context, scope api.Scope, treasury store.TreasuryID, asset string, by store.MemberID) (*api.ProposalView, string, error)
+	ProposeUntrust(ctx context.Context, scope api.Scope, treasury store.TreasuryID, asset string, by store.MemberID) (*api.ProposalView, string, error)
+	QuoteSwap(ctx context.Context, scope api.Scope, treasury store.TreasuryID, amount money.Stroops, from, to string) (*api.SwapQuote, error)
+	ProposeSwap(ctx context.Context, scope api.Scope, p api.SwapParams) (*api.ProposalView, *api.SwapQuote, money.Stroops, error)
 	PrepareReclaim(ctx context.Context, scope api.Scope, address string) (*api.Reclaim, error)
 	RegisterConnector(ctx context.Context, scope api.Scope, by store.MemberID, name, kind string) (store.Connector, error)
 	PrepareGrant(ctx context.Context, scope api.Scope, identity store.IdentityID, by store.MemberID,

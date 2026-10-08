@@ -130,6 +130,52 @@
     return { total: fromStroops(total), asset: asset, rows: d.operations.length };
   }
 
+  // kind names what a treasury's envelope is, in the page's own judgement.
+  //
+  // The approval page shows whatever it is sent, operation by operation, and
+  // that stays the thing a signer reads. This is the sentence above it: "open a
+  // trustline", "swap". It is worked out here, from the envelope, and never
+  // taken from the server — a heading the server supplied would be the server
+  // describing what it is asking somebody to sign.
+  //
+  // Each name is given only to exactly the shape it means. A swap is one path
+  // payment from the treasury to the treasury; a path payment that delivers to
+  // anybody else is a payment to them in another asset, which is a different
+  // thing to agree to, and is not called a swap. Anything that fits no shape
+  // is "other", and the page says nothing above the operations but that they
+  // should be read.
+  function kind(d) {
+    var ops = d.operations;
+    if (!ops.length) return "other";
+    for (var i = 0; i < ops.length; i++) {
+      if (ops[i].source && ops[i].source !== d.source) return "other";
+    }
+
+    if (ops.length > 1) {
+      for (var j = 0; j < ops.length; j++) {
+        if (ops[j].type !== "payment") return "other";
+      }
+      return "batch";
+    }
+
+    var op = ops[0];
+    if (op.type === "payment") return "payment";
+    if (op.type === "change_trust") {
+      var limit = field(op, "limit");
+      if (!limit || !field(op, "asset")) return "other";
+      return toStroops(limit.value) === 0n ? "trustline-close" : "trustline-open";
+    }
+    if (op.type === "path_payment_strict_send") {
+      var to = field(op, "destination");
+      var floor = field(op, "minimum received");
+      if (!to || !floor || to.value !== d.source) return "other";
+      // A floor of nothing is no floor: the swap would accept any price.
+      if (toStroops(floor.value) <= 0n) return "other";
+      return "swap";
+    }
+    return "other";
+  }
+
   // Amounts go through BigInt, never Number. Ninety rows of seven decimal
   // places is exactly where floating point stops being able to add.
   function toStroops(amount) {
@@ -150,5 +196,5 @@
     return whole.toString() + "." + fraction;
   }
 
-  return { reclaim: reclaim, batch: batch, Refused: Refused, fromStroops: fromStroops };
+  return { reclaim: reclaim, batch: batch, kind: kind, Refused: Refused, fromStroops: fromStroops };
 });

@@ -34,7 +34,8 @@ type Server struct {
 	tools map[string]Tool
 	names []string
 
-	drafter Drafter
+	drafter  Drafter
+	holdings Holdings
 }
 
 // callContext is what a tool is given.
@@ -54,8 +55,9 @@ type callContext struct {
 	// makes can say which agent made it.
 	token int64
 
-	store   *store.Store
-	drafter Drafter
+	store    *store.Store
+	drafter  Drafter
+	holdings Holdings
 }
 
 // NewServer returns a Server exposing the read-tier tools.
@@ -206,7 +208,7 @@ func (s *Server) call(ctx context.Context, token store.MCPToken, req request) re
 	result, err := tool.Run(callContext{
 		ctx: ctx, org: token.Org, tier: token.Tier,
 		args: args, raw: params.Arguments, token: token.ID,
-		store: s.store, drafter: s.drafter,
+		store: s.store, drafter: s.drafter, holdings: s.holdings,
 	})
 	if err != nil {
 		// A tool failure is reported to the agent as a tool result rather than

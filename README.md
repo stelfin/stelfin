@@ -3,8 +3,8 @@
 **A non-custodial DAO treasury bot on Stellar, run from Telegram and Discord.**
 
 stelfin lets a DAO act on-chain from the group chat it already lives in: payments,
-payroll, contract calls, and the proposals that carry them to the treasury's
-signers. `/pay 250 to G…` opens a proposal; a sentence like "send 5 to mum" is turned
+payroll, trustlines, swaps and contract calls, each a proposal that goes to the
+treasury's signers. `/pay 250 to G…` opens a proposal; a sentence like "send 5 to mum" is turned
 into a structured instruction and checked against the sender's own words. Either
 way a human confirms it in a browser that re-derives the transaction from the XDR
 before signing it.
@@ -25,10 +25,10 @@ browser re-derives what it signs, what was accepted on purpose — are in
 [docs/architecture.md](docs/architecture.md).
 
 > **Status: testnet.** The path from a chat message to a multisig payment on chain
-> works and is exercised end to end by `make e2e`. What is not built is listed in
-> [docs/architecture.md](docs/architecture.md): treasury trustlines, swaps and
-> contract-held treasuries are the next three. Nothing here is on mainnet, and
-> the server refuses to start there unless told to in so many words.
+> works and is exercised end to end by `make e2e`, as are trustlines and swaps.
+> What is not built is listed in [docs/architecture.md](docs/architecture.md):
+> contract-held treasuries are next. Nothing here is on mainnet, and the server
+> refuses to start there unless told to in so many words.
 
 ---
 

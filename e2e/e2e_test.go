@@ -720,6 +720,72 @@ func TestTreasuryPaymentEndToEnd(t *testing.T) {
 		t.Fatalf("after the contract call the recipient holds %s USDC, want %s", got, want)
 	}
 
+	// ---- What the treasury holds, and what it can be asked to hold or
+	// exchange. Each is a proposal like a payment: built here, signed by the
+	// treasury's own signers, and settled on the network.
+
+	reply = chat.ask(adaID, "ada", "/balance")
+	mustContain(t, reply, "USDC")
+	mustContain(t, reply, treasury.Address())
+	mustContain(t, reply, "Read from the network just now")
+
+	// A second asset, issued for this run. The treasury cannot be given it
+	// until it has a trustline, and is told so before anybody signs anything.
+	eurc := txnbuild.CreditAsset{Code: "EURC", Issuer: issuer.Address()}
+	mustContain(t, chat.ask(adaID, "ada", "/swap 10 USDC to EURC:"+issuer.Address()), "/trust")
+	// A bare code names nothing yet: anybody can issue an asset called EURC.
+	mustContain(t, chat.ask(adaID, "ada", "/trust EURC"), "name its issuer")
+
+	approveAndExecute := func(reply string) {
+		t.Helper()
+		token := linkToken(t, reply, base, "approve")
+		call(t, "GET", base+"/v1/proposal", token, nil, http.StatusOK, &proposal)
+		call(t, "POST", base+"/v1/proposal/approve", token,
+			map[string]string{"signed_xdr": sign(t, proposal.XDR, ada, ben)}, http.StatusOK, &proposal)
+		mustContain(t, chat.ask(benID, "ben", "/execute"), "on chain")
+	}
+
+	reply = chat.ask(adaID, "ada", "/trust EURC:"+issuer.Address())
+	mustContain(t, reply, "0.5 XLM")
+	approveAndExecute(reply)
+	if got := balance(t, horizon, treasury.Address(), eurc); got != "0.0000000" {
+		t.Fatalf("after /trust the treasury holds %q EURC, want an empty trustline", got)
+	}
+	// Twice is not a second proposal.
+	mustContain(t, chat.ask(adaID, "ada", "/trust EURC:"+issuer.Address()), "already has a trustline")
+
+	// Nobody is offering EURC for USDC, and that is the answer: no price is
+	// made up, and nothing is proposed.
+	mustContain(t, chat.ask(adaID, "ada", "/swap 10 USDC to EURC"), "Nobody on this network is offering")
+
+	// Somebody places an order: 100 EURC for sale at 2 USDC each.
+	submit(t, horizon, issuer, []txnbuild.Operation{&txnbuild.ManageSellOffer{
+		Selling: eurc, Buying: usdc, Amount: "100", Price: xdr.Price{N: 2, D: 1},
+	}}, issuer)
+
+	// Asked with no floor, the market's answer and no proposal.
+	usdcBefore := balance(t, horizon, treasury.Address(), usdc)
+	reply = chat.ask(adaID, "ada", "/swap 10 USDC to EURC")
+	mustContain(t, reply, "about 5.00 EURC")
+	mustContain(t, reply, "Nothing has been proposed")
+	// A floor above what the market offers would fail on the ledger, and is
+	// refused before it can.
+	mustContain(t, chat.ask(adaID, "ada", "/swap 10 USDC to EURC min:6"), "will not take less than 6.00")
+
+	reply = chat.ask(adaID, "ada", "/swap 10 USDC to EURC slippage:1%")
+	mustContain(t, reply, "at least 4.95 EURC")
+	approveAndExecute(reply)
+	if got := balance(t, horizon, treasury.Address(), eurc); got != "5.0000000" {
+		t.Fatalf("after the swap the treasury holds %s EURC, want 5", got)
+	}
+	if got, want := balance(t, horizon, treasury.Address(), usdc), plus(t, usdcBefore, -10); got != want {
+		t.Fatalf("after the swap the treasury holds %s USDC, want %s", got, want)
+	}
+	mustContain(t, chat.ask(adaID, "ada", "/balance"), "5.00 EURC:"+issuer.Address())
+
+	// A trustline is closed only empty.
+	mustContain(t, chat.ask(adaID, "ada", "/untrust EURC"), "still holds 5.00")
+
 	// ---- A proposal can be taken back. One account holds one open proposal,
 	// so a mistyped /pay would otherwise block every later one until its
 	// window ran out.

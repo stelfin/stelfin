@@ -31,6 +31,14 @@ type signerHorizon struct {
 	data       map[string]string
 	sponsoring uint32
 	submitted  []*txnbuild.Transaction
+	// market is what the network's path finder offers for a strict-send, as
+	// the amount of the destination asset each path would deliver. Empty means
+	// nobody is offering the exchange. quoted counts how often it was asked.
+	market []string
+	quoted int
+	// held overrides the balances of one account, for a test about what a
+	// particular treasury does and does not hold.
+	held map[string][]horizon.Balance
 	// refuse makes the next submission come back as Horizon refusing the
 	// transaction with these result codes: the transaction-level one first,
 	// then any per-operation ones.
@@ -86,6 +94,8 @@ func (h *signerHorizon) AccountDetail(req horizonclient.AccountRequest) (horizon
 	}
 	balances := h.balances
 	switch {
+	case h.held[req.AccountID] != nil:
+		balances = h.held[req.AccountID]
 	case h.bare[req.AccountID]:
 		balances = receivable()[:1]
 	case balances == nil:
@@ -100,6 +110,19 @@ func (h *signerHorizon) AccountDetail(req horizonclient.AccountRequest) (horizon
 		Data:          h.data,
 		NumSponsoring: h.sponsoring,
 	}, nil
+}
+
+// StrictSendPaths answers with whatever market the test set, best last, so that
+// a caller relying on the order rather than the amounts would pick the worst.
+func (h *signerHorizon) StrictSendPaths(req horizonclient.StrictSendPathsRequest) (horizon.PathsPage, error) {
+	h.quoted++
+	var page horizon.PathsPage
+	for _, amount := range h.market {
+		page.Embedded.Records = append(page.Embedded.Records, horizon.Path{
+			SourceAmount: req.SourceAmount, DestinationAmount: amount,
+		})
+	}
+	return page, nil
 }
 
 // treasuryFixture is a service whose Horizon reports a treasury's signers.

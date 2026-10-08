@@ -1,9 +1,11 @@
 package mcp
 
 import (
+	"context"
 	"fmt"
 	"time"
 
+	"github.com/stelfin/stelfin/ledger"
 	"github.com/stelfin/stelfin/ledger/store"
 )
 
@@ -23,7 +25,8 @@ func readTools() []Tool {
 	return []Tool{
 		{
 			Name: "stelfin_balances",
-			Description: "The workspace's balances, per account and asset. " +
+			Description: "What the workspace's treasuries hold, per account and asset, " +
+				"read from the network at the moment of the call. " +
 				"Amounts are exact decimal strings, never numbers.",
 			InputSchema: schema(nil, nil),
 			Tier:        store.TierRead,
@@ -96,7 +99,46 @@ type balanceRow struct {
 	Amount  string `json:"amount"`
 }
 
+// BalanceLine is one asset in one of a workspace's treasuries.
+type BalanceLine struct {
+	// Account is what the workspace calls the treasury, or its address.
+	Account string
+	// Asset is XLM, the deployment's asset by code, or CODE:ISSUER.
+	Asset  string
+	Amount string
+}
+
+// Holdings reads what a workspace's treasuries hold from the network. The api
+// package implements it; it is behind an interface for the reason Drafter is.
+type Holdings interface {
+	TreasuryHoldings(ctx context.Context, org ledger.OrgID) ([]BalanceLine, error)
+}
+
+// WithHoldings makes the balances tool read the network.
+//
+// Without it the tool falls back to the ledger's own snapshot, which is an
+// index of what this deployment has ingested and was, for a treasury, always
+// empty: treasury accounts are not ones it books. An agent asking what a
+// treasury holds was told nothing and had no way to know that was not the
+// answer.
+func (s *Server) WithHoldings(h Holdings) *Server {
+	s.holdings = h
+	return s
+}
+
 func balances(c callContext) (any, error) {
+	if c.holdings != nil {
+		lines, err := c.holdings.TreasuryHoldings(c.ctx, c.org)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]balanceRow, 0, len(lines))
+		for _, line := range lines {
+			out = append(out, balanceRow{Account: line.Account, Asset: line.Asset, Amount: line.Amount})
+		}
+		return map[string]any{"balances": out}, nil
+	}
+
 	lines, err := c.store.TreasurySnapshot(c.ctx, c.org)
 	if err != nil {
 		return nil, err

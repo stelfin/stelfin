@@ -42,10 +42,12 @@ func TestMain(m *testing.M) {
 
 type fixture struct {
 	server *httptest.Server
-	store  *store.Store
-	org    store.Org
-	read   string
-	other  string
+	// mcp is the server itself, for a test that attaches something to it.
+	mcp   *Server
+	store *store.Store
+	org   store.Org
+	read  string
+	other string
 }
 
 var slugSeq int
@@ -89,7 +91,7 @@ func newFixture(t *testing.T) *fixture {
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 
-	return &fixture{server: srv, store: db, org: org, read: read, other: other}
+	return &fixture{server: srv, mcp: s, store: db, org: org, read: read, other: other}
 }
 
 // rpc makes one call and returns the decoded reply.
@@ -275,6 +277,54 @@ func TestEveryAmountCrossesAsAString(t *testing.T) {
 	// a float by whatever reads it next.
 	if strings.Contains(text, `: 900719925.4740993`) {
 		t.Error("an amount crossed as a JSON number")
+	}
+}
+
+// holdingsOf answers for one workspace and records who was asked about.
+type holdingsOf struct {
+	org   ledger.OrgID
+	lines []BalanceLine
+	asked []ledger.OrgID
+}
+
+func (h *holdingsOf) TreasuryHoldings(_ context.Context, org ledger.OrgID) ([]BalanceLine, error) {
+	h.asked = append(h.asked, org)
+	if org != h.org {
+		return nil, nil
+	}
+	return h.lines, nil
+}
+
+// TestBalancesAreWhatTheNetworkSaysNow: the tool used to read the ledger's own
+// snapshot, which for a treasury was always empty, since treasury accounts are
+// not ones this deployment books. An agent asking what a treasury holds was
+// told nothing, with no way to know that was not the answer.
+func TestBalancesAreWhatTheNetworkSaysNow(t *testing.T) {
+	f := newFixture(t)
+	live := &holdingsOf{org: f.org.ID, lines: []BalanceLine{
+		{Account: "main", Asset: "USDC", Amount: "900719925.4740993"},
+		{Account: "main", Asset: "XLM", Amount: "12.5000000"},
+	}}
+	f.mcp.WithHoldings(live)
+
+	text, isErr := f.callTool(t, f.read, "stelfin_balances", nil)
+	if isErr {
+		t.Fatalf("balances failed: %s", text)
+	}
+	for _, want := range []string{`"main"`, `"USDC"`, `"900719925.4740993"`, `"XLM"`, `"12.5000000"`} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the answer does not carry %s:\n%s", want, text)
+		}
+	}
+
+	// The org is the token's, here as everywhere: another workspace's token
+	// asks about another workspace, and is not told this one's holdings.
+	text, isErr = f.callTool(t, f.other, "stelfin_balances", nil)
+	if isErr || strings.Contains(text, "900719925") {
+		t.Fatalf("another workspace's token was answered with this one's holdings:\n%s", text)
+	}
+	if len(live.asked) != 2 || live.asked[0] != f.org.ID || live.asked[1] == f.org.ID {
+		t.Errorf("asked about %v, want each token's own workspace", live.asked)
 	}
 }
 

@@ -12,6 +12,8 @@ import (
 	"github.com/stellar/go-stellar-sdk/network"
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 	"github.com/stellar/go-stellar-sdk/xdr"
+
+	"github.com/stelfin/stelfin/internal/money"
 )
 
 // The golden corpus.
@@ -68,6 +70,18 @@ func buildGolden(t *testing.T, memo txnbuild.Memo, ops ...txnbuild.Operation) *t
 		t.Fatalf("build: %v", err)
 	}
 	return tx
+}
+
+// mustOps unwraps what an operation builder returns, for a corpus case that is
+// built the way the product builds it.
+func mustOps(t *testing.T) func([]txnbuild.Operation, error) []txnbuild.Operation {
+	return func(ops []txnbuild.Operation, err error) []txnbuild.Operation {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("build operations: %v", err)
+		}
+		return ops
+	}
 }
 
 func usdc() txnbuild.CreditAsset {
@@ -152,6 +166,33 @@ func goldenCases(t *testing.T) map[string]*txnbuild.Transaction {
 		}),
 
 		"account_merge": buildGolden(t, nil, &txnbuild.AccountMerge{Destination: goldenDest}),
+
+		// What a treasury is asked to sign for /trust, /untrust and /swap,
+		// built by the same functions that build them for a proposal. The
+		// cases above describe these operations in general; these pin the
+		// exact shapes the product puts in front of signers, so the page that
+		// checks them and the server that builds them cannot come to describe
+		// them differently.
+		"treasury_trustline_open": buildGolden(t, nil, mustOps(t)(Trust(TrustRequest{
+			Account: goldenSource, Asset: usdc(),
+		}))...),
+		"treasury_trustline_close": buildGolden(t, nil, mustOps(t)(Untrust(goldenSource, usdc()))...),
+		// A swap is a payment the treasury makes to itself. Direct, and through
+		// two assets on the way.
+		"treasury_swap_direct": buildGolden(t, nil, mustOps(t)(Swap(SwapRequest{
+			From: goldenSource, To: goldenSource,
+			SendAsset: txnbuild.NativeAsset{}, DestAsset: usdc(),
+			SendAmount: money.MustParse("100"), MinimumReceived: money.MustParse("12.2166"),
+		}))...),
+		"treasury_swap_two_hop": buildGolden(t, nil, mustOps(t)(Swap(SwapRequest{
+			From: goldenSource, To: goldenSource,
+			SendAsset: usdc(), DestAsset: txnbuild.CreditAsset{Code: "EURC", Issuer: goldenSigner},
+			SendAmount: money.MustParse("250.5"), MinimumReceived: money.MustParse("0.0000001"),
+			Path: []txnbuild.Asset{
+				txnbuild.NativeAsset{},
+				txnbuild.CreditAsset{Code: "LONGERCODE12", Issuer: goldenIssuer},
+			},
+		}))...),
 
 		"manage_data": buildGolden(t, nil, &txnbuild.ManageData{
 			Name: "config", Value: []byte{0x00, 0xff, 0x10},

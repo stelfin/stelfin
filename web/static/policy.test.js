@@ -216,3 +216,49 @@ test("the batch corpus case would catch a float implementation", () => {
     "these amounts add up the same in floating point, so the corpus case is not testing exactness"
   );
 });
+
+// ---- What a treasury's envelope is called.
+const fs = require("node:fs");
+const path = require("node:path");
+
+const corpusCase = (name) =>
+  JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "settlement", "testdata", "describe", name + ".json"), "utf8"));
+const described = (name) => {
+  const c = corpusCase(name);
+  return require("./describe.js").describeTx(c.xdr, c.network);
+};
+
+test("an envelope is called what its shape is, and only that", () => {
+  for (const [name, want] of Object.entries({
+    payment: "payment",
+    payment_native_with_memo: "payment",
+    payroll_batch: "batch",
+    treasury_trustline_open: "trustline-open",
+    treasury_trustline_close: "trustline-close",
+    change_trust_removal: "trustline-close",
+    treasury_swap_direct: "swap",
+    treasury_swap_two_hop: "swap",
+    // A path payment that delivers to somebody else is a payment to them in
+    // another asset, which is a different thing to agree to.
+    path_payment_strict_send: "other",
+    account_merge: "other",
+    set_options_multisig: "other",
+    sponsored_creation: "other",
+    manage_sell_offer: "other",
+  })) {
+    assert.equal(policy.kind(described(name)), want, name);
+  }
+});
+
+test("a swap with no floor is not called a swap", () => {
+  const d = described("treasury_swap_direct");
+  const floor = d.operations[0].fields.find((f) => f.label === "minimum received");
+  floor.value = "0.0000000";
+  assert.equal(policy.kind(d), "other", "a swap that accepts any price was given a reassuring name");
+});
+
+test("an operation sourced by another account is never given a name", () => {
+  const d = described("treasury_trustline_open");
+  d.operations[0].source = "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U";
+  assert.equal(policy.kind(d), "other");
+});

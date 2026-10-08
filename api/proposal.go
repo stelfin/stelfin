@@ -145,15 +145,34 @@ func (s *Service) ProposePayment(
 			treasury.Address)
 	}
 
+	return s.openProposal(ctx, scope, org, treasury, "payment", []txnbuild.Operation{&txnbuild.Payment{
+		Destination: p.Destination,
+		Amount:      p.Amount.String(),
+		Asset:       s.cfg.Asset,
+	}}, p.Memo, p.Amount, p.CreatedBy)
+}
+
+// openProposal builds the envelope for ops, sourced by the treasury, and
+// records it as that treasury's open proposal.
+//
+// Everything a proposal of any kind has in common. What differs between a
+// payment, a trustline and a swap is the operations and what had to be checked
+// before building them; what a proposal is — an unsigned envelope, described
+// from itself, stored with the hash that names it and the sequence number it
+// reserves — does not differ at all, and should not be written out once per
+// kind to drift.
+//
+// amount is what the proposal moves out of the treasury in the deployment's
+// asset, for the spend ceilings. Zero for one that moves none of it.
+func (s *Service) openProposal(
+	ctx context.Context, scope Scope, org store.Org, treasury store.Treasury,
+	kind string, ops []txnbuild.Operation, memo string, amount money.Stroops, by store.MemberID,
+) (*ProposalView, error) {
 	tx, err := s.settle.Build(ctx, settlement.BuildRequest{
-		Source: treasury.Address,
-		Operations: []txnbuild.Operation{&txnbuild.Payment{
-			Destination: p.Destination,
-			Amount:      p.Amount.String(),
-			Asset:       s.cfg.Asset,
-		}},
-		Memo:    memoOf(p.Memo),
-		Timeout: org.ProposalTTL,
+		Source:     treasury.Address,
+		Operations: ops,
+		Memo:       memoOf(memo),
+		Timeout:    org.ProposalTTL,
 	})
 	if err != nil {
 		return nil, err
@@ -180,7 +199,7 @@ func (s *Service) ProposePayment(
 	proposal, err := s.store.CreateProposal(ctx, store.CreateProposalParams{
 		Org:      scope.Org,
 		Treasury: treasury.ID,
-		Kind:     "payment",
+		Kind:     kind,
 		XDR:      envelope,
 		Hash:     hash,
 		// SourceSeq is the sequence the envelope reserves: the account was at
@@ -188,8 +207,8 @@ func (s *Service) ProposePayment(
 		SourceSeq:   tx.SequenceNumber(),
 		Description: canonical,
 		Digest:      digest[:],
-		Amount:      p.Amount,
-		CreatedBy:   p.CreatedBy,
+		Amount:      amount,
+		CreatedBy:   by,
 		ExpiresAt:   time.Unix(tx.Timebounds().MaxTime, 0).UTC(),
 	})
 	if err != nil {
@@ -484,6 +503,14 @@ func (s *Service) ExecuteProposal(
 			return nil, fmt.Errorf("%w (%s)", ErrContractCallFailed, result.Hash)
 		}
 	} else {
+		if view.Proposal.Kind == "dex" {
+			// Asked now, with the signatures already collected, because this is
+			// the moment the answer matters: a swap that cannot meet its
+			// minimum fails on the ledger and takes those signatures with it.
+			if err := s.stillDelivers(ctx, signed); err != nil {
+				return nil, err
+			}
+		}
 		if result, err = s.settle.Submit(ctx, signed); err != nil {
 			var rejected *settlement.Rejection
 			if errors.As(err, &rejected) {
