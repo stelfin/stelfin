@@ -439,7 +439,7 @@ func TestRowsAreReadAsAPayrollOnlyWhenTheyAreOne(t *testing.T) {
 
 	positional, err := draftFromRows(connector.Observation{Rows: []cell{
 		cellsOf("GABC", "100", "march"), cellsOf("", ""), cellsOf("GDEF", "5"),
-	}})
+	}}, "USDC")
 	if err != nil {
 		t.Fatalf("positional: %v", err)
 	}
@@ -453,7 +453,7 @@ func TestRowsAreReadAsAPayrollOnlyWhenTheyAreOne(t *testing.T) {
 		"first row": {Rows: []cell{cellsOf("Name", "Amount", "Wallet"), cellsOf("Ada", "100", "GABC")}},
 		"columns":   {Columns: cellsOf("name", "AMOUNT", "address"), Rows: []cell{cellsOf("Ada", "100", "GABC")}},
 	} {
-		d, err := draftFromRows(seen)
+		d, err := draftFromRows(seen, "USDC")
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -464,10 +464,22 @@ func TestRowsAreReadAsAPayrollOnlyWhenTheyAreOne(t *testing.T) {
 
 	if _, err := draftFromRows(connector.Observation{
 		Columns: cellsOf("employee id", "start date"), Rows: []cell{cellsOf("17", "2026-01-01")},
-	}); !errors.Is(err, ErrNotTabular) {
+	}, "USDC"); !errors.Is(err, ErrNotTabular) {
 		t.Errorf("unknown headings: %v", err)
 	}
-	if _, err := draftFromRows(connector.Observation{Rows: []cell{cellsOf("", "")}}); !errors.Is(err, ErrBatchEmpty) {
+
+	// The deployment's own asset names an amount column, and somebody else's
+	// does not: a sheet headed "EURC" is a payroll on a EURC deployment and a
+	// table of something else on this one.
+	headed := connector.Observation{Columns: cellsOf("wallet", "eurc"), Rows: []cell{cellsOf("GABC", "100")}}
+	if d, err := draftFromRows(headed, "EURC"); err != nil || len(d.Rows) != 1 || d.Rows[0].AmountText.Unwrap() != "100" {
+		t.Errorf("a column headed with the deployment's asset: %+v, %v", d.Rows, err)
+	}
+	if _, err := draftFromRows(headed, "USDC"); !errors.Is(err, ErrNotTabular) {
+		t.Errorf("a column headed with another asset was read as an amount: %v", err)
+	}
+
+	if _, err := draftFromRows(connector.Observation{Rows: []cell{cellsOf("", "")}}, "USDC"); !errors.Is(err, ErrBatchEmpty) {
 		t.Errorf("no rows: %v", err)
 	}
 }

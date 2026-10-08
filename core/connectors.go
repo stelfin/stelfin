@@ -431,6 +431,29 @@ func describeDraft(d store.Draft) string {
 		if row.Label != "" && row.Label != row.Destination {
 			fmt.Fprintf(&b, " (%s)", row.Label)
 		}
+		if row.Memo != "" {
+			fmt.Fprintf(&b, " — note: %q", row.Memo)
+		}
+	}
+
+	noted := 0
+	for _, row := range d.Rows {
+		if row.Memo != "" {
+			noted++
+		}
+	}
+	if noted > 0 {
+		// Said, because the sheet has a column called "memo" and nothing else
+		// would tell whoever filled it in that it goes nowhere. A payroll is
+		// one transaction and a transaction has one memo; a row's own was read,
+		// checked, and left off the envelope without a word.
+		fmt.Fprintf(&b, "\n\n%d row(s) carry a note of their own. Those are kept with this draft "+
+			"and are not sent: a payroll is one transaction, and the only memo that goes on chain "+
+			"is the payroll's", noted)
+		if d.Memo == "" {
+			b.WriteString(" — which this one does not have. Add it with memo:… when you read the sheet")
+		}
+		b.WriteString(".")
 	}
 	return b.String()
 }

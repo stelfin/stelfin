@@ -163,11 +163,11 @@ func TestHandleSendExplainsFailures(t *testing.T) {
 	}{
 		"unknown recipient": {
 			message: "send 5,000 to landlord",
-			want:    "don't have that person saved",
+			want:    "don't have anyone saved under that name",
 		},
 		"undecodable": {
 			message: "hello there",
-			want:    "didn't catch that",
+			want:    "didn't find a payment in that",
 		},
 	}
 
@@ -248,6 +248,117 @@ func TestHandleSendOffersEnrollmentBeforeAnAccountExists(t *testing.T) {
 	}
 	if strings.Contains(body, "confirm#") {
 		t.Errorf("an owner with no account was offered a payment confirmation:\n%s", body)
+	}
+}
+
+// TestAMessageThatIsNotAnInstructionIsNotAFault: "hello" is read correctly when
+// the model finds nothing in it to act on. That used to fall through to the
+// reply for an internal failure — an apology, and a suggestion to try again, as
+// if saying hello twice would help.
+func TestAMessageThatIsNotAnInstructionIsNotAFault(t *testing.T) {
+	actor := actorFor(t)
+	f := newFixtureFor(t, sendDecoded(), actor.Ref())
+	f.svc.decoder = fixedDecoder{err: fmt.Errorf("%w: no action identified", intent.ErrUndecodable)}
+	out := &fakeReplier{}
+
+	msg := inboundIn(actor, f.space, "telegram:hello", "hello there")
+	if err := f.svc.HandleSend(t.Context(), f.scope, msg, out, stubLinker{}); err != nil {
+		t.Fatalf("HandleSend: %v", err)
+	}
+	body := out.only(t).Text
+	if body != notAnInstructionReply {
+		t.Errorf("reply:\n%s", body)
+	}
+	if strings.Contains(body, "went wrong") {
+		t.Errorf("a greeting was answered as a fault:\n%s", body)
+	}
+}
+
+// TestNoReplyAsksAQuestionItCannotHearTheAnswerTo: each message is read on its
+// own. "Which one did you mean?" invites an answer that arrives as a new
+// message with no instruction in it, and gets "I didn't catch that".
+func TestNoReplyAsksAQuestionItCannotHearTheAnswerTo(t *testing.T) {
+	actor := actorFor(t)
+	f := newFixtureFor(t, sendDecoded(), actor.Ref())
+
+	for name, cause := range map[string]error{
+		"ambiguous name":     &intent.AmbiguousError{Candidates: []string{"Ada", "Ade"}},
+		"unknown name":       intent.ErrDestinationNotFound,
+		"bad address":        intent.ErrDestinationInvalid,
+		"unreadable amount":  intent.ErrAmountUnreadable,
+		"not an instruction": intent.ErrUndecodable,
+	} {
+		t.Run(name, func(t *testing.T) {
+			out := &fakeReplier{}
+			msg := inboundIn(actor, f.space, "telegram:q-"+name, "whatever")
+			if err := f.svc.replyWithProblem(t.Context(), out, msg, cause); err != nil {
+				t.Fatalf("replyWithProblem: %v", err)
+			}
+			if body := out.only(t).Text; strings.Contains(body, "?") {
+				t.Errorf("the reply asks a question nothing will hear the answer to:\n%s", body)
+			}
+		})
+	}
+}
+
+// TestSomeoneTooNewIsToldWhenNotHandedALink: the limiter refuses anybody first
+// seen in the last ten minutes. It used to do so on the page, after they had
+// been sent a link that said "it only takes a moment", had opened it, and had a
+// key generated for a wallet they were not going to get.
+func TestSomeoneTooNewIsToldWhenNotHandedALink(t *testing.T) {
+	ctx := context.Background()
+	actor := actorFor(t)
+	settle, err := settlement.NewWith(&fakeHorizon{sequence: 1}, settlement.Config{
+		HorizonURL:        "https://horizon-testnet.stellar.org",
+		NetworkPassphrase: network.TestNetworkPassphrase,
+	})
+	if err != nil {
+		t.Fatalf("settlement client: %v", err)
+	}
+	svc, err := NewService(testPool, fixedDecoder{decoded: sendDecoded()},
+		intent.NewResolver(testPool), settle,
+		Config{Asset: txnbuild.CreditAsset{Code: "USDC", Issuer: testIssuer}, AssetCode: "USDC"})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	org := orgFor(t, "/too-new")
+	scope := Scope{Org: org.ID, OwnerRef: actor.Ref()}
+	// Provisioning on, the workspace old enough, and this person seen just now.
+	openProvisioning(t, scope)
+	if _, err := testPool.Exec(ctx,
+		`UPDATE user_identities SET linked_at = now() WHERE org_id = $1`, int64(org.ID)); err != nil {
+		t.Fatalf("make the identity new: %v", err)
+	}
+
+	out := &fakeReplier{}
+	msg := inboundIn(actor, spaceFor(org), "telegram:too-new", sendMessage)
+	if err := svc.HandleSend(ctx, scope, msg, out, stubLinker{}); err != nil {
+		t.Fatalf("HandleSend: %v", err)
+	}
+	body := out.only(t).Text
+	if strings.Contains(body, "/enroll#") {
+		t.Fatalf("somebody the limiter will refuse was handed a link:\n%s", body)
+	}
+	for _, want := range []string{"in about 10 minutes", "/link"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("reply does not mention %q:\n%s", want, body)
+		}
+	}
+
+	// Ten minutes on, the link.
+	if _, err := testPool.Exec(ctx,
+		`UPDATE user_identities SET linked_at = now() - interval '11 minutes' WHERE org_id = $1`,
+		int64(org.ID)); err != nil {
+		t.Fatalf("age the identity: %v", err)
+	}
+	out = &fakeReplier{}
+	msg = inboundIn(actor, spaceFor(org), "telegram:old-enough", sendMessage)
+	if err := svc.HandleSend(ctx, scope, msg, out, stubLinker{}); err != nil {
+		t.Fatalf("HandleSend: %v", err)
+	}
+	if body := out.only(t).Text; !strings.Contains(body, "/enroll#") {
+		t.Fatalf("somebody old enough was not handed a link:\n%s", body)
 	}
 }
 

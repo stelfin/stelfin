@@ -729,11 +729,15 @@ func (s *Service) ReadConnector(
 // Nothing is interpreted here. Every cell goes on as untrusted text, and the
 // amounts and addresses are read once, by the code that reads them for every
 // other payment.
-func draftFromRows(seen connector.Observation) (connector.Draft, error) {
+func draftFromRows(seen connector.Observation, assetCode string) (connector.Draft, error) {
+	// The deployment's own asset names an amount column, whatever it is: a
+	// sheet headed "EURC" is as ordinary on a EURC deployment as "USDC" is on
+	// this one.
+	asset := strings.ToLower(strings.TrimSpace(assetCode))
 	header := seen.Columns
 	rows := seen.Rows
 	firstLine := 1
-	if len(header) == 0 && len(rows) > 0 && looksLikeHeader(rows[0]) {
+	if len(header) == 0 && len(rows) > 0 && looksLikeHeader(rows[0], asset) {
 		header, rows, firstLine = rows[0], rows[1:], 2
 	}
 
@@ -746,7 +750,7 @@ func draftFromRows(seen connector.Observation) (connector.Draft, error) {
 				if to == -1 {
 					to = i
 				}
-			case "amount", "pay", "payment", "usdc", "total":
+			case "amount", "pay", "payment", "total", asset:
 				if amount == -1 {
 					amount = i
 				}
@@ -791,12 +795,12 @@ func draftFromRows(seen connector.Observation) (connector.Draft, error) {
 }
 
 // looksLikeHeader reports a first row that names columns and is not a payment.
-func looksLikeHeader(row []connector.Untrusted[string]) bool {
+func looksLikeHeader(row []connector.Untrusted[string], asset string) bool {
 	named := 0
 	for _, cell := range row {
 		switch strings.ToLower(strings.TrimSpace(cell.Unwrap())) {
 		case "to", "address", "destination", "recipient", "wallet", "account",
-			"amount", "pay", "payment", "usdc", "total":
+			"amount", "pay", "payment", "total", asset:
 			named++
 		}
 	}
@@ -820,7 +824,7 @@ func (s *Service) DraftPayroll(
 			"%w: there are more rows than were read, and a payroll cut short pays some people and not others",
 			ErrBatchTooLarge)
 	}
-	draft, err := draftFromRows(seen)
+	draft, err := draftFromRows(seen, s.cfg.AssetCode)
 	if err != nil {
 		return store.Draft{}, err
 	}

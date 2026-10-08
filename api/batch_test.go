@@ -170,8 +170,15 @@ func TestALabelMustMatchExactly(t *testing.T) {
 // wrong place.
 func TestAMistypedAddressIsSaidPrecisely(t *testing.T) {
 	f := newBatchFixture(t, "batch bad address")
+	// One character changed, to something it was not. Always "A" would leave
+	// one address in thirty-two exactly as it was, and this test failing for a
+	// valid address being accepted.
 	broken := keypair.MustRandom().Address()
-	broken = broken[:len(broken)-1] + "A"
+	last := byte('A')
+	if broken[len(broken)-1] == last {
+		last = 'B'
+	}
+	broken = broken[:len(broken)-1] + string(last)
 
 	_, err := f.svc.ResolveBatch(context.Background(), f.scope, connector.Draft{
 		Rows: []connector.DraftRow{draftRow(2, "250", broken, "")},

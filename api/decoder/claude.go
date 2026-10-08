@@ -37,7 +37,10 @@ const DefaultMaxTokens int64 = 4096
 // ErrUndecodable reports a conversation the model could not read as a
 // supported instruction. It is a normal outcome, not a failure: the caller
 // asks the user rather than guessing.
-var ErrUndecodable = errors.New("decoder: conversation is not a recognised instruction")
+//
+// The same value as intent.ErrUndecodable, which is where a caller that does
+// not otherwise depend on this package checks for it.
+var ErrUndecodable = intent.ErrUndecodable
 
 // messagesAPI is the slice of the Anthropic client this package uses.
 // Narrowing it keeps the prompt and parsing testable without a network or an

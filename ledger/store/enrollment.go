@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/stelfin/stelfin/chat"
 	"github.com/stelfin/stelfin/internal/money"
 	"github.com/stelfin/stelfin/ledger"
 )
@@ -336,4 +337,52 @@ func (s *Store) SetEnrollmentPolicy(
 		return fmt.Errorf("%w: %d", ErrOrgNotFound, org)
 	}
 	return nil
+}
+
+// ProvisioningWait reports how much longer somebody has to wait before a wallet
+// can be set up for them, on account of how recently they or their workspace
+// were first seen. Zero means not at all.
+//
+// It answers the question GrantEnrollment's two age checks answer, early and
+// without committing anything, so that a person who cannot be given a wallet
+// yet is told so in chat and told when. The alternative was to hand them a link
+// that said "it only takes a moment", let them open it, generate a key, and be
+// refused by a page that could not say why.
+//
+// It decides nothing. GrantEnrollment is still what stands between the operator
+// and paying for an account, and it asks again, of the same rows, in the
+// transaction that commits to the payment.
+func (s *Store) ProvisioningWait(
+	ctx context.Context, org ledger.OrgID, channel chat.Channel, channelUserID string,
+) (time.Duration, error) {
+	var created time.Time
+	var seen *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT o.created_at,
+		       (SELECT i.linked_at FROM user_identities i
+		         WHERE i.org_id = o.id AND i.channel = $2 AND i.channel_user_id = $3)
+		  FROM orgs o WHERE o.id = $1`,
+		int64(org), string(channel), channelUserID,
+	).Scan(&created, &seen)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, fmt.Errorf("%w: %d", ErrOrgNotFound, org)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("store: read provisioning ages: %w", err)
+	}
+
+	wait := MinSpaceAge - time.Since(created)
+	// Somebody never seen before has the whole of the identity wait ahead of
+	// them, starting now.
+	identityWait := MinIdentityAge
+	if seen != nil {
+		identityWait = MinIdentityAge - time.Since(*seen)
+	}
+	if identityWait > wait {
+		wait = identityWait
+	}
+	if wait < 0 {
+		wait = 0
+	}
+	return wait, nil
 }

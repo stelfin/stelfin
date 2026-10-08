@@ -186,9 +186,12 @@ func (s *Service) resolveRow(
 		return BatchRow{}, err
 	}
 
+	// A row's memo is a note kept with the draft, for whoever reviews it. It
+	// does not go on chain: a payroll is one transaction and a transaction has
+	// one memo, which is the payroll's. The draft says so wherever it is shown.
 	memo := strings.TrimSpace(row.MemoText.Unwrap())
 	if len([]rune(memo)) > 28 {
-		// Truncating would put a different note on chain than the sheet says.
+		// Truncating would keep a different note than the sheet says.
 		return BatchRow{}, fmt.Errorf(
 			"the memo is %d characters and a Stellar memo holds 28", len([]rune(memo)))
 	}

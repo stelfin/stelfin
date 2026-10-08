@@ -62,6 +62,17 @@ func (s *Service) HandleSend(
 		case err != nil:
 			return err
 		}
+		// Asked now, before a link exists. The limiter refuses somebody first
+		// seen minutes ago, and it used to do so only after they had been
+		// handed a link, opened it, and had a key generated for a wallet they
+		// were not going to get.
+		wait, err := s.store.ProvisioningWait(ctx, scope.Org, m.Actor.Channel, m.Actor.UserID)
+		if err != nil {
+			return err
+		}
+		if wait > 0 {
+			return s.reply(ctx, out, m, tooNewReply(wait))
+		}
 		return s.replyWithEnrollLink(ctx, out, links, m, scope)
 	}
 
@@ -107,6 +118,25 @@ const provisioningOffReply = "To send in your own words I need a wallet to send 
 	"members, with /provisioning on, once a treasury is linked. " +
 	"To pay from the treasury instead, use /pay."
 
+// tooNewReply tells somebody a wallet cannot be set up for them quite yet, and
+// when it can.
+//
+// The reason is given, because a wait with no reason reads as a fault, and
+// because it is not about them: a wallet costs the operator a reserve, and
+// making anybody who has just appeared wait is what stops a script from adding
+// itself to a group and asking for one after another.
+func tooNewReply(wait time.Duration) string {
+	minutes := int(wait.Round(time.Minute) / time.Minute)
+	when := "in about a minute"
+	if minutes > 1 {
+		when = fmt.Sprintf("in about %d minutes", minutes)
+	}
+	return "I can set a wallet up for you, but not quite yet: I wait a little after first " +
+		"meeting someone, and after a workspace is created, before paying for one. " +
+		"Message me again " + when + " and I'll send you the link.\n\n" +
+		"If you already have a Stellar wallet you don't need to wait — /link it and I'll use that."
+}
+
 // replyWithEnrollLink sends a not-yet-enrolled user the link that creates their
 // account.
 func (s *Service) replyWithEnrollLink(
@@ -117,9 +147,10 @@ func (s *Service) replyWithEnrollLink(
 		return err
 	}
 	body := fmt.Sprintf(
-		"Let's get your wallet set up first — it only takes a moment. Tap the link below:\n%s\n\n"+
+		"Let's get your wallet set up first. Open this within %d minutes, on the device "+
+			"you'll pay from — the key is made there and stays there:\n%s\n\n"+
 			"Once that's done, message me again with what you'd like to send.",
-		link,
+		int(enrollLinkLifetime.Minutes()), link,
 	)
 	return s.reply(ctx, out, m, body)
 }
@@ -157,14 +188,19 @@ func (s *Service) replyWithProblem(ctx context.Context, out Replier, m chat.Inbo
 	var body string
 	switch {
 	case errors.As(cause, &ambiguous):
-		body = fmt.Sprintf("Which one did you mean? I have %s saved.",
+		// None of these is a question. Each message is read on its own, so an
+		// answer to "which one did you mean?" would arrive as a new message
+		// with no instruction in it. They say what to send again instead.
+		body = fmt.Sprintf("More than one saved name matches that: %s. "+
+			"Send the whole instruction again with the one you mean.",
 			strings.Join(ambiguous.Candidates, ", "))
 	case errors.Is(cause, intent.ErrDestinationNotFound):
-		body = "I don't have that person saved. Send me their wallet address and I'll use that."
+		body = "I don't have anyone saved under that name. Send it again with their wallet " +
+			"address — send 5 to G… — or save the name first with /save."
 	case errors.Is(cause, intent.ErrDestinationInvalid):
-		body = "That doesn't look like a valid wallet address. Can you check it?"
+		body = "That doesn't look like a valid wallet address. Check it and send the instruction again."
 	case errors.Is(cause, intent.ErrAmountUnreadable), errors.Is(cause, intent.ErrAmountAmbiguous):
-		body = "How much would you like to send? A number works best, like 5000."
+		body = "I couldn't tell how much. Send it again with the amount as a number, like: send 50 to G…"
 	case sourceMissing(cause):
 		body = "Your wallet doesn't exist on this network yet, so there's nothing to send from. " +
 			"It needs to be funded, and to hold the asset, before I can build a payment from it."
@@ -172,13 +208,16 @@ func (s *Service) replyWithProblem(ctx context.Context, out Replier, m chat.Inbo
 		body = "stelfin is in read-only mode right now, so I can't start a payment. " +
 			"Nothing was sent — try again once it's back."
 	case errors.Is(cause, ErrNoAccount):
-		body = "Your wallet isn't set up yet. Give me a moment and try again."
+		body = "You don't have a wallet here to send from yet. Message me what you'd like " +
+			"to send and I'll walk you through setting one up, or /link one you already have."
 	case errors.Is(cause, ErrNotASend), errors.Is(cause, intent.ErrSpanMismatch),
 		errors.Is(cause, intent.ErrSpanOutOfRange), errors.Is(cause, intent.ErrUnknownAction),
-		errors.Is(cause, intent.ErrMissingField):
-		// Includes the case where the decode could not be grounded. The user
-		// gets a question rather than a guess.
-		body = "I didn't catch that. Try something like: send 5000 to brother"
+		errors.Is(cause, intent.ErrMissingField), errors.Is(cause, intent.ErrUndecodable):
+		// Includes the case where the decode could not be grounded, and the
+		// one where the model read the message and found no instruction in it
+		// — "hello", or a question. That last is the model working, not
+		// failing, and used to be answered with an apology for a fault.
+		body = notAnInstructionReply
 	default:
 		// Anything unrecognised is ours, not theirs.
 		body = "Something went wrong on my side. Nothing was sent — please try again in a moment."
@@ -189,6 +228,14 @@ func (s *Service) replyWithProblem(ctx context.Context, out Replier, m chat.Inbo
 	}
 	return nil
 }
+
+// notAnInstructionReply answers a message that is not something to act on.
+//
+// It says what a sentence here can do and where everything else is, because the
+// person who wrote "what's our balance?" was not making a mistake.
+const notAnInstructionReply = "I didn't find a payment in that. In your own words I can do one " +
+	"thing: send from your wallet — for example, send 5 to G… or send 5 to mum once you've saved " +
+	"mum with /save. For everything else there are commands: /help lists them."
 
 // sourceMissing reports a payment that could not be built because the account
 // it would come from is not on the network. A linked wallet is only an address

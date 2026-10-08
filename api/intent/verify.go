@@ -100,6 +100,12 @@ var (
 
 	// ErrUnknownAction reports a span that does not contain a verb we act on.
 	ErrUnknownAction = errors.New("intent: no recognised action in span")
+	// ErrUndecodable reports a message a decoder read and found no instruction
+	// in: a greeting, a question, something said to somebody else. A normal
+	// outcome and not a failure, so it is declared here, beside the other
+	// things a message can turn out to be, rather than in whichever decoder
+	// happened to notice.
+	ErrUndecodable = errors.New("intent: the message is not a recognised instruction")
 
 	// ErrMissingField reports a required field the model did not provide.
 	ErrMissingField = errors.New("intent: required field is missing")
