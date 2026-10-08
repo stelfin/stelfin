@@ -133,6 +133,18 @@ func (c *Client) DescribeTx(tx *txnbuild.Transaction) (*TxDescription, error) {
 	}
 	d.Operations = make([]OpDescription, 0, len(ops))
 	for i, op := range ops {
+		// A restore's footprint is on the transaction, not the operation, and
+		// the SDK does not carry it back onto the operation when an envelope
+		// is parsed. Read it from the envelope, so that a proposal described
+		// again from storage is described the same as when it was built.
+		if restore, ok := op.(*txnbuild.RestoreFootprint); ok && restore.Ext.SorobanData == nil {
+			envelope := tx.ToXDR()
+			if envelope.V1 != nil {
+				withFootprint := *restore
+				withFootprint.Ext = envelope.V1.Tx.Ext
+				op = &withFootprint
+			}
+		}
 		described, err := describeOp(i, op, d.Source)
 		if err != nil {
 			return nil, err
@@ -405,6 +417,16 @@ func describeOp(index int, op txnbuild.Operation, txSource string) (*OpDescripti
 				{Label: "value", Kind: KindRaw, Value: hexOf(o.Value)},
 			}
 		}
+
+	case *txnbuild.RestoreFootprint:
+		d.Type = "restore_footprint"
+		d.setSource(o.SourceAccount, txSource)
+		fields, summary, err := describeRestore(o)
+		if err != nil {
+			return nil, fmt.Errorf("operation %d: %w", index, err)
+		}
+		d.Fields = fields
+		d.Summary = summary
 
 	case *txnbuild.InvokeHostFunction:
 		d.Type = "invoke_contract"

@@ -211,6 +211,11 @@ func goldenCases(t *testing.T) map[string]*txnbuild.Transaction {
 			scVec(scMap(scSymbol("inner"), scVec(scI32(-1), scU32(1))), scVoid()),
 		)),
 
+		// Archived contract state being brought back: a token balance and the
+		// code a contract runs. The footprint is the whole of what a restore
+		// does, so every entry has to reach the description.
+		"restore_footprint": buildGolden(t, nil, goldenRestore(t)),
+
 		// A call somebody else is being asked to authorise. Left out of the
 		// description, this would look like a call that moves nothing.
 		"invoke_contract_with_auth": buildGolden(t, nil, goldenInvoke(t,
@@ -537,4 +542,35 @@ func TestTimeBoundsAreDescribed(t *testing.T) {
 	if d.MinTime != "1700000000" {
 		t.Errorf("min_time = %q", d.MinTime)
 	}
+}
+
+// goldenRestore is a RestoreFootprint over two archived entries.
+func goldenRestore(t *testing.T) *txnbuild.RestoreFootprint {
+	t.Helper()
+	var contract xdr.ContractId
+	copy(contract[:], []byte("an asset contract, for a restore"))
+	holder, err := xdr.AddressToAccountId(goldenDest)
+	if err != nil {
+		t.Fatalf("holder: %v", err)
+	}
+	balance := scVec(scSymbol("Balance"), xdr.ScVal{
+		Type:    xdr.ScValTypeScvAddress,
+		Address: &xdr.ScAddress{Type: xdr.ScAddressTypeScAddressTypeAccount, AccountId: &holder},
+	})
+	var code xdr.Hash
+	copy(code[:], []byte("the code a contract runs, hashed"))
+
+	return &txnbuild.RestoreFootprint{Ext: xdr.TransactionExt{V: 1, SorobanData: &xdr.SorobanTransactionData{
+		ResourceFee: 123_456,
+		Resources: xdr.SorobanResources{Footprint: xdr.LedgerFootprint{
+			ReadWrite: []xdr.LedgerKey{
+				{Type: xdr.LedgerEntryTypeContractData, ContractData: &xdr.LedgerKeyContractData{
+					Contract:   xdr.ScAddress{Type: xdr.ScAddressTypeScAddressTypeContract, ContractId: &contract},
+					Key:        balance,
+					Durability: xdr.ContractDataDurabilityPersistent,
+				}},
+				{Type: xdr.LedgerEntryTypeContractCode, ContractCode: &xdr.LedgerKeyContractCode{Hash: code}},
+			},
+		}},
+	}}}
 }

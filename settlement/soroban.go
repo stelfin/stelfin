@@ -172,8 +172,10 @@ func (c *Client) Simulate(ctx context.Context, tx *txnbuild.Transaction) (*Simul
 	// and its own description, so this refuses rather than quietly doing it —
 	// a caller who wanted a restore can ask for one.
 	if resp.RestorePreamble != nil {
-		return nil, fmt.Errorf("%w (restoring would cost %s)",
-			ErrArchivedState, money.Stroops(resp.RestorePreamble.MinResourceFee))
+		return nil, &ArchivedStateError{
+			TransactionData: resp.RestorePreamble.TransactionDataXDR,
+			MinResourceFee:  money.Stroops(resp.RestorePreamble.MinResourceFee),
+		}
 	}
 
 	fee := money.Stroops(resp.MinResourceFee)
@@ -360,4 +362,47 @@ func describeCoreError(resultXDR string) string {
 		return "undecodable result"
 	}
 	return result.Result.Code.String()
+}
+
+// ArchivedStateError reports a call that needs archived state restored first,
+// and carries what simulation said the restore would take.
+//
+// It is an error and not a step taken quietly: restoring costs money and is a
+// transaction of its own, which somebody has to decide to propose and the
+// treasury's signers have to sign. BuildRestore turns it into that transaction.
+type ArchivedStateError struct {
+	// TransactionData is the footprint and resources of the restore, as XDR.
+	TransactionData string
+	// MinResourceFee is what the restore bids for resources.
+	MinResourceFee money.Stroops
+}
+
+func (e *ArchivedStateError) Error() string {
+	return fmt.Sprintf("%s (restoring would cost %s)", ErrArchivedState, e.MinResourceFee)
+}
+
+func (e *ArchivedStateError) Unwrap() error { return ErrArchivedState }
+
+// BuildRestore builds the transaction that restores what a call found
+// archived, from source, with the footprint simulation gave for it.
+func (c *Client) BuildRestore(
+	ctx context.Context, source string, archived *ArchivedStateError, timeout time.Duration,
+) (*txnbuild.Transaction, error) {
+	if archived == nil || archived.TransactionData == "" {
+		return nil, errors.New("settlement: nothing to restore")
+	}
+	var data xdr.SorobanTransactionData
+	if err := xdr.SafeUnmarshalBase64(archived.TransactionData, &data); err != nil {
+		return nil, fmt.Errorf("settlement: decode restore footprint: %w", err)
+	}
+	if fee := int64(data.ResourceFee); fee > int64(MaxResourceFee) {
+		return nil, fmt.Errorf("%w: the restore bids %d stroops", ErrResourceFeeTooHigh, fee)
+	}
+	return c.Build(ctx, BuildRequest{
+		Source: source,
+		Operations: []txnbuild.Operation{&txnbuild.RestoreFootprint{
+			Ext: xdr.TransactionExt{V: 1, SorobanData: &data},
+		}},
+		Timeout: timeout,
+	})
 }

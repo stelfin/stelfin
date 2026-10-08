@@ -67,7 +67,7 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewWith(&horizonclient.Client{HorizonURL: cfg.HorizonURL}, cfg2)
+	return NewWith(&horizonclient.Client{HorizonURL: cfg.HorizonURL, HTTP: horizonHTTP()}, cfg2)
 }
 
 // NewWith returns a Client backed by a caller-supplied Horizon transport.
@@ -122,6 +122,20 @@ type Result struct {
 // ErrNotFound reports that a transaction is not on the ledger.
 var ErrNotFound = errors.New("settlement: transaction not found")
 
+// ErrNoEffect reports a classic transaction whose operations did not happen.
+//
+// The one submission failure that is a fact rather than a question: Horizon
+// answered with result codes, so nothing the transaction asked for took effect
+// and nothing will. Every other failure leaves the outcome open, and a caller
+// that has set something aside for the transaction may release it on this
+// error only.
+//
+// Not ErrRejected, which is the Soroban path's "refused before inclusion". A
+// classic transaction that reaches a ledger and fails there still spent its fee
+// and its sequence number; what this promises is only that its operations did
+// nothing.
+var ErrNoEffect = errors.New("settlement: transaction had no effect")
+
 // LoadAccount fetches an account's current state, primarily for its sequence
 // number.
 func (c *Client) LoadAccount(ctx context.Context, address string) (*horizon.Account, error) {
@@ -175,7 +189,7 @@ func (c *Client) SubmitFeeBump(ctx context.Context, tx *txnbuild.FeeBumpTransact
 // only authority that can settle it.
 func (c *Client) resolveAmbiguous(ctx context.Context, hash string, submitErr error) (Result, error) {
 	if isDefiniteRejection(submitErr) {
-		return Result{}, fmt.Errorf("settlement: transaction %s rejected: %w", hash, submitErr)
+		return Result{}, fmt.Errorf("%w: %s rejected: %w", ErrNoEffect, hash, submitErr)
 	}
 
 	found, lookupErr := c.LookupTransaction(ctx, hash)
