@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"time"
 
@@ -483,4 +484,79 @@ func (c *Client) BuildRestore(
 		}},
 		Timeout: timeout,
 	})
+}
+
+// FeeBumpSoroban wraps a signed contract call so that feeAccount pays for it.
+//
+// Built by hand, and that is not a preference. The SDK's builder compares the
+// bump's base fee with the inner transaction's, and for a transaction read
+// back from XDR — which a call signed in somebody's browser always is — it
+// works the inner one out as the whole fee divided by the operations, resource
+// fee included. A contract call's resource fee is hundreds of times its
+// inclusion fee, so the comparison fails for every call there is, or is
+// satisfied only by bidding several times the resource fee for inclusion.
+//
+// What the network actually requires is narrower and is what is computed here:
+// the resource fee exactly as the inner transaction declares it, plus an
+// inclusion bid per operation — the bump counts as one more — no lower than the
+// inner transaction's own. Nothing about the inner transaction is touched, so
+// the signature on it still covers exactly what its signer saw.
+func (c *Client) FeeBumpSoroban(
+	inner *txnbuild.Transaction, feeAccount string,
+) (*txnbuild.FeeBumpTransaction, error) {
+	if _, err := sorobanOp(inner); err != nil {
+		return nil, err
+	}
+	envelope := inner.ToXDR()
+	if envelope.Type != xdr.EnvelopeTypeEnvelopeTypeTx || envelope.V1 == nil ||
+		envelope.V1.Tx.Ext.SorobanData == nil {
+		return nil, fmt.Errorf("%w: it carries no footprint", ErrNotSoroban)
+	}
+
+	resource := int64(envelope.V1.Tx.Ext.SorobanData.ResourceFee)
+	// The ceiling again, on the number that will be paid by an account that is
+	// not the signer's. A call built here was held to it when it was built;
+	// this is what stops that being the only place it is checked.
+	if resource < 0 || resource > int64(MaxResourceFee) {
+		return nil, fmt.Errorf("%w: the call bids %d stroops", ErrResourceFeeTooHigh, resource)
+	}
+	inclusion := int64(envelope.V1.Tx.Fee) - resource
+	if inclusion < int64(c.baseFee) {
+		inclusion = int64(c.baseFee)
+	}
+	operations := int64(len(envelope.V1.Tx.Operations)) + 1
+	if inclusion > (math.MaxInt64-resource)/operations {
+		return nil, errors.New("settlement: that fee does not fit")
+	}
+
+	var source xdr.MuxedAccount
+	if err := source.SetAddress(feeAccount); err != nil {
+		return nil, fmt.Errorf("settlement: build fee-bump for %s: %w", feeAccount, err)
+	}
+	bump := xdr.TransactionEnvelope{
+		Type: xdr.EnvelopeTypeEnvelopeTypeTxFeeBump,
+		FeeBump: &xdr.FeeBumpTransactionEnvelope{
+			Tx: xdr.FeeBumpTransaction{
+				FeeSource: source,
+				Fee:       xdr.Int64(resource + inclusion*operations),
+				InnerTx: xdr.FeeBumpTransactionInnerTx{
+					Type: xdr.EnvelopeTypeEnvelopeTypeTx,
+					V1:   envelope.V1,
+				},
+			},
+		},
+	}
+	encoded, err := xdr.MarshalBase64(bump)
+	if err != nil {
+		return nil, fmt.Errorf("settlement: encode fee-bump: %w", err)
+	}
+	parsed, err := txnbuild.TransactionFromXDR(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("settlement: read back fee-bump: %w", err)
+	}
+	out, ok := parsed.FeeBump()
+	if !ok {
+		return nil, errors.New("settlement: the fee-bump did not come back as one")
+	}
+	return out, nil
 }

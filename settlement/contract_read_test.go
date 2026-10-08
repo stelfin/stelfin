@@ -179,6 +179,98 @@ func TestASubmittedCallReportsWhatItReturned(t *testing.T) {
 	}
 }
 
+// signedCall is a contract call as it comes back from a member's browser: with
+// its footprint and resource fee, signed, and read out of XDR — which is the
+// form the SDK's own fee-bump builder cannot wrap.
+func signedCall(t *testing.T, c *Client, member *keypair.Full, resourceFee int64) *txnbuild.Transaction {
+	t.Helper()
+	var contract xdr.ContractId
+	invoke := &txnbuild.InvokeHostFunction{
+		HostFunction: xdr.HostFunction{
+			Type: xdr.HostFunctionTypeHostFunctionTypeInvokeContract,
+			InvokeContract: &xdr.InvokeContractArgs{
+				ContractAddress: xdr.ScAddress{Type: xdr.ScAddressTypeScAddressTypeContract, ContractId: &contract},
+				FunctionName:    "vote",
+			},
+		},
+		Ext: xdr.TransactionExt{V: 1, SorobanData: &xdr.SorobanTransactionData{ResourceFee: xdr.Int64(resourceFee)}},
+	}
+	built, err := txnbuild.NewTransaction(txnbuild.TransactionParams{
+		SourceAccount:        &txnbuild.SimpleAccount{AccountID: member.Address(), Sequence: 9},
+		IncrementSequenceNum: true,
+		BaseFee:              txnbuild.MinBaseFee,
+		Preconditions:        txnbuild.Preconditions{TimeBounds: txnbuild.NewTimebounds(0, 1_700_000_000)},
+		Operations:           []txnbuild.Operation{invoke},
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	signed, err := built.Sign(c.Network(), member)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	wire, err := signed.Base64()
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	parsed, err := txnbuild.TransactionFromXDR(wire)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	tx, ok := parsed.Transaction()
+	if !ok {
+		t.Fatal("not a transaction")
+	}
+	return tx
+}
+
+// A call somebody signed in a browser is wrapped for exactly what the network
+// asks: its own resource fee, and an inclusion bid for it and for the wrapper.
+//
+// The SDK's builder cannot do this at all for a call read out of XDR, and the
+// premise below is that it still cannot: the day it can, this function can go.
+func TestAFeeBumpAroundASignedCallBidsWhatTheNetworkAsks(t *testing.T) {
+	member, payer := keypair.MustRandom(), keypair.MustRandom()
+	c := sorobanClient(t, nil)
+	const resource = 482_113
+	inner := signedCall(t, c, member, resource)
+
+	if _, err := c.FeeBump(inner, payer.Address()); err == nil {
+		t.Log("the SDK now wraps a parsed contract call; FeeBumpSoroban may no longer be needed")
+	}
+
+	bump, err := c.FeeBumpSoroban(inner, payer.Address())
+	if err != nil {
+		t.Fatalf("FeeBumpSoroban: %v", err)
+	}
+	// One base fee for the call and one for the wrapper, at this client's own
+	// rate: the call was built bidding less, and the bump may not bid under it.
+	if got, want := bump.MaxFee(), resource+2*c.baseFee; got != want {
+		t.Errorf("bids %d stroops, want the resource fee and two base fees: %d", got, want)
+	}
+	if bump.FeeAccount() != payer.Address() {
+		t.Errorf("paid by %s", bump.FeeAccount())
+	}
+
+	// What is inside is the member's transaction, to the byte, signature and
+	// all.
+	before, _ := inner.Base64()
+	after, _ := bump.InnerTransaction().Base64()
+	if before != after {
+		t.Error("wrapping the call changed it")
+	}
+	signed, err := bump.Sign(c.Network(), payer)
+	if err != nil || len(signed.Signatures()) != 1 {
+		t.Fatalf("the payer could not sign it: %v", err)
+	}
+
+	// The payer is not the signer, so the ceiling is checked again here.
+	greedy := signedCall(t, c, member, int64(MaxResourceFee)+1)
+	if _, err := c.FeeBumpSoroban(greedy, payer.Address()); !errors.Is(err, ErrResourceFeeTooHigh) {
+		t.Errorf("a call bidding past the ceiling: %v", err)
+	}
+}
+
 // A call somebody else signed goes out inside the envelope that pays for it,
 // and what is looked up afterwards is that envelope's hash, not theirs.
 func TestAFeeBumpedCallIsSentWholeAndFoundByItsOuterHash(t *testing.T) {
@@ -186,14 +278,10 @@ func TestAFeeBumpedCallIsSentWholeAndFoundByItsOuterHash(t *testing.T) {
 	payer := keypair.MustRandom()
 	c := sorobanClient(t, nil)
 
-	inner := contractCall(t)
-	inner, err := inner.Sign(c.Network(), member)
+	inner := signedCall(t, c, member, 40_000)
+	bump, err := c.FeeBumpSoroban(inner, payer.Address())
 	if err != nil {
-		t.Fatalf("sign inner: %v", err)
-	}
-	bump, err := c.FeeBump(inner, payer.Address())
-	if err != nil {
-		t.Fatalf("FeeBump: %v", err)
+		t.Fatalf("FeeBumpSoroban: %v", err)
 	}
 	bump, err = bump.Sign(c.Network(), payer)
 	if err != nil {
@@ -242,6 +330,9 @@ func TestAFeeBumpAroundAnythingElseIsRefused(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("build: %v", err)
+	}
+	if _, err := c.FeeBumpSoroban(plain, payer.Address()); !errors.Is(err, ErrNotSoroban) {
+		t.Errorf("wrapping a payment: %v, want ErrNotSoroban", err)
 	}
 	bump, err := c.FeeBump(plain, payer.Address())
 	if err != nil {
