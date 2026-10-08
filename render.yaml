@@ -96,7 +96,8 @@ services:
 
       # Telegram. Both or neither. The secret is echoed back on every
       # delivery and is the only thing authenticating it, since Telegram does
-      # not sign — openssl rand -hex 32, and pass the same value to setWebhook.
+      # not sign — openssl rand -hex 32. stelfin gives it to Telegram itself
+      # at start, along with where to deliver, so there is no setWebhook to run.
       - key: STELFIN_TELEGRAM_BOT_TOKEN
         sync: false
       - key: STELFIN_TELEGRAM_WEBHOOK_SECRET

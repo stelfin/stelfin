@@ -161,6 +161,7 @@ func Run(log *slog.Logger) error {
 			Token:         cfg.TelegramBotToken,
 			WebhookSecret: cfg.TelegramWebhookSecret,
 			APIURL:        cfg.TelegramAPIURL,
+			WebhookURL:    telegramWebhookURL(cfg.BaseURL),
 		})
 		if err != nil {
 			return err
@@ -272,18 +273,6 @@ func Run(log *slog.Logger) error {
 		return err
 	}
 
-	// Published to every configured platform. Idempotent, so it runs on each
-	// start rather than being a deploy step someone has to remember.
-	//
-	// A failure here is logged rather than fatal. The command list is a menu
-	// affordance — the check that decides what anyone may actually do happens
-	// in Go, on every invocation — so a platform being briefly unreachable
-	// should not stop a payments server from coming up.
-	if err := transports.RegisterCommands(ctx, router.Commands()); err != nil {
-		log.Warn("could not publish the command list; the bot still works, "+
-			"but autocomplete may be stale", "error", err)
-	}
-
 	server, err := api.NewServer(svc, tokens, enrollTokens, linkTokens, api.ServerConfig{
 		BaseURL:         cfg.BaseURL,
 		Handler:         router,
@@ -373,6 +362,16 @@ func Run(log *slog.Logger) error {
 	go func() {
 		defer ingesting.Done()
 		sweepProposals(ctx, db.ExpireProposals, proposalSweepInterval, log)
+	}()
+	// And telling each chat platform what it needs telling: where to deliver,
+	// and what the commands are. Idempotent, so it happens on every start
+	// rather than being a deploy step someone has to remember, and beside the
+	// server rather than before it, so that somebody else's API being slow
+	// does not hold up this one's.
+	ingesting.Add(1)
+	go func() {
+		defer ingesting.Done()
+		prepareTransports(ctx, transports, router.Commands(), prepareBackoffMin, log)
 	}()
 	go func() {
 		ingesting.Wait()

@@ -55,6 +55,18 @@ type Transport interface {
 	RegisterCommands(ctx context.Context, cmds []Command) error
 }
 
+// Starter is a transport with something to do once before it can serve.
+//
+// Optional, because not every platform has such a thing. Telegram does: a bot
+// has to ask who it is before it can tell a message addressed to it from one
+// that merely arrived, and it has to tell Telegram where to deliver. Discord is
+// told both in its developer portal.
+type Starter interface {
+	// Start prepares the transport. It may be called again after a failure,
+	// and again after a success: everything it does is idempotent.
+	Start(ctx context.Context) error
+}
+
 // ErrLinkInPublic reports an attempt to post an authority-carrying link
 // somewhere more than the actor can read it.
 //
@@ -113,6 +125,24 @@ func (r *Registry) Channels() []Channel {
 		out = append(out, c)
 	}
 	return out
+}
+
+// Start prepares every transport that needs preparing.
+//
+// All of them are attempted, and the errors joined: one platform being
+// unreachable is not a reason to leave another unprepared.
+func (r *Registry) Start(ctx context.Context) error {
+	var errs []error
+	for c, t := range r.byChannel {
+		starter, ok := t.(Starter)
+		if !ok {
+			continue
+		}
+		if err := starter.Start(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("chat: start %s: %w", c, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // RegisterCommands publishes cmds to every transport.

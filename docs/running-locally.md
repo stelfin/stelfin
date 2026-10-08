@@ -109,8 +109,8 @@ deployment. It takes effect on the next message. To stop everything at once, set
 A webhook needs a public https URL, so this needs a tunnel to your machine.
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) and copy its token.
-   In BotFather, turn **group privacy off** for it, or it only ever sees
-   commands addressed to it by name.
+   Leave **group privacy on**, which is how BotFather creates it. stelfin does
+   not want a group's conversation, only what is said to it.
 2. Start a tunnel to port 8080 and note its https URL.
 3. In `.env`:
 
@@ -120,18 +120,24 @@ A webhook needs a public https URL, so this needs a tunnel to your machine.
    STELFIN_TELEGRAM_WEBHOOK_SECRET=<openssl rand -hex 32>
    ```
 
-4. `make dev`, then point Telegram at it, passing the same secret:
-
-   ```bash
-   curl "https://api.telegram.org/bot<token>/setWebhook" \
-     -d url="https://<your-tunnel>/webhook/telegram" \
-     -d secret_token="<the secret>"
-   ```
-
+4. `make dev`. At start stelfin asks Telegram who the bot is, tells it to
+   deliver to `<STELFIN_BASE_URL>/webhook/telegram` with that secret, and
+   publishes the command menu, then logs `chat platforms ready`. There is no
+   `setWebhook` to run by hand, and none to forget when the secret is rotated.
+   It is skipped when the base URL is not https, since Telegram could not
+   reach it.
 5. Add the bot to a group. **Every member who will use it must open a private
    chat with the bot and press Start once.** Telegram has no private replies in
    a group, so stelfin answers in a direct message, and a bot cannot message
-   someone who has never started a chat with it.
+   someone who has never started a chat with it. Pressing Start gets an
+   introduction, not silence.
+
+In a group, stelfin acts on a slash command, and on words only when they are
+said to it: a reply to one of its messages, or a message that opens with its
+`@name`. Anything else is other people's conversation and is not read. With
+privacy on, Telegram delivers commands and replies to the bot; whether it
+delivers a bare `@name` message depends on the group, so `/send 5 to mum` is
+the way that always works.
 
 ## Connect a real Discord application
 

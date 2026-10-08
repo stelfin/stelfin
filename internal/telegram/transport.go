@@ -25,7 +25,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+	"unicode/utf16"
 
 	"github.com/stelfin/stelfin/chat"
 )
@@ -58,16 +60,25 @@ type Config struct {
 	WebhookSecret string
 	// APIURL overrides the Bot API root, for tests. Empty uses DefaultAPIURL.
 	APIURL string
+	// WebhookURL is where Telegram should deliver updates: this deployment's
+	// own /webhook/telegram, as the internet reaches it. When set, Start tells
+	// Telegram so. Empty leaves the webhook as it is, which is right for a
+	// server Telegram cannot reach — a laptop, a test.
+	WebhookURL string
 	// HTTPClient overrides the client used for outbound calls.
 	HTTPClient *http.Client
 }
 
 // Transport implements chat.Transport for Telegram.
 type Transport struct {
-	token  string
-	secret []byte
-	apiURL string
-	http   *http.Client
+	token      string
+	secret     []byte
+	apiURL     string
+	webhookURL string
+	http       *http.Client
+
+	// me is who this bot is, once Start has asked. Nil until then.
+	me atomic.Pointer[botIdentity]
 
 	mu    sync.Mutex
 	admin map[string]adminAnswer
@@ -98,12 +109,69 @@ func New(cfg Config) (*Transport, error) {
 		client = &http.Client{Timeout: callTimeout}
 	}
 	return &Transport{
-		token:  cfg.Token,
-		secret: []byte(cfg.WebhookSecret),
-		apiURL: strings.TrimSuffix(apiURL, "/"),
-		http:   client,
-		admin:  make(map[string]adminAnswer),
+		token:      cfg.Token,
+		secret:     []byte(cfg.WebhookSecret),
+		apiURL:     strings.TrimSuffix(apiURL, "/"),
+		webhookURL: strings.TrimSpace(cfg.WebhookURL),
+		http:       client,
+		admin:      make(map[string]adminAnswer),
 	}, nil
+}
+
+// botIdentity is what getMe says about this bot.
+type botIdentity struct {
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
+}
+
+type setWebhookRequest struct {
+	URL         string `json:"url"`
+	SecretToken string `json:"secret_token"`
+	// AllowedUpdates names the only kind of update this transport reads.
+	// Anything else Telegram would send is a delivery acknowledged and thrown
+	// away.
+	AllowedUpdates []string `json:"allowed_updates"`
+}
+
+// Start asks Telegram who this bot is, and tells it where to deliver.
+//
+// Who it is comes first and matters more. Until the bot knows its own name it
+// cannot tell "@stelfinbot send 5 to ada" from two people talking about lunch,
+// or "/help@stelfinbot" from "/help@someotherbot", and Parse declines to guess:
+// see addressed.
+//
+// The webhook is set on every start rather than once by hand. It is idempotent,
+// and doing it here means the secret Telegram echoes back is always the one
+// this process is checking against. Set by hand, the two drift the first time
+// somebody rotates one and forgets the other, and every delivery is refused
+// with nothing to say why.
+func (t *Transport) Start(ctx context.Context) error {
+	var me botIdentity
+	if err := t.call(ctx, "getMe", struct{}{}, &me); err != nil {
+		return err
+	}
+	if me.ID == 0 || me.Username == "" {
+		return errors.New("telegram: getMe did not say who this bot is")
+	}
+	t.me.Store(&me)
+
+	if t.webhookURL == "" {
+		return nil
+	}
+	return t.call(ctx, "setWebhook", setWebhookRequest{
+		URL:            t.webhookURL,
+		SecretToken:    string(t.secret),
+		AllowedUpdates: []string{"message"},
+	}, nil)
+}
+
+// Username is this bot's @name without the @, or "" before Start has
+// succeeded.
+func (t *Transport) Username() string {
+	if me := t.me.Load(); me != nil {
+		return me.Username
+	}
+	return ""
 }
 
 func (t *Transport) Channel() chat.Channel { return chat.Telegram }
@@ -190,13 +258,33 @@ func (t *Transport) Parse(body []byte) (chat.Delivery, error) {
 	// message that produced it is a confusing authority model, and the original
 	// delivery has already been claimed.
 
-	cmd, args, _ := splitCommand(m.Text, m.Entities)
+	cmd, args, isCommand := splitCommand(m.Text, m.Entities)
+	private := m.Chat.Type == "private"
+	me := t.me.Load()
+
+	switch {
+	case isCommand:
+		// "/help@someotherbot", in a group with several bots. Telegram delivers
+		// it to all of them when it can, and it is none of this one's business.
+		if target := commandTarget(m.Text, m.Entities); target != "" &&
+			me != nil && !strings.EqualFold(target, me.Username) {
+			return ack, nil
+		}
+	case !private:
+		// Words in a group, with no command. Only an instruction if they were
+		// said to the bot.
+		rest, ok := addressed(m, me)
+		if !ok {
+			return ack, nil
+		}
+		args = rest
+	}
 
 	conv := chat.Conversation{
 		Channel:   chat.Telegram,
 		SpaceID:   strconv.FormatInt(m.Chat.ID, 10),
 		MessageID: strconv.FormatInt(m.MessageID, 10),
-		IsDM:      m.Chat.Type == "private",
+		IsDM:      private,
 	}
 	if m.MessageThreadID != 0 {
 		conv.ThreadID = strconv.FormatInt(m.MessageThreadID, 10)
@@ -234,6 +322,78 @@ func (t *Transport) Parse(body []byte) (chat.Delivery, error) {
 		ReceivedAt:   time.Now(),
 	}}
 	return ack, nil
+}
+
+// addressed reports whether a message in a group, with no command in it, was
+// said to this bot, and returns the text with the bot's name taken off.
+//
+// A group is other people's conversation. With privacy mode off, or with the
+// bot made an administrator, Telegram delivers all of it, and every message
+// used to be read as a possible payment: a model call for each line of
+// somebody's chat, and for anyone without a wallet a private message from a bot
+// they had not spoken to, telling them how to get one.
+//
+// So words count as an instruction only when they are plainly for the bot:
+//
+//   - the message replies to one of the bot's own; or
+//   - it opens with the bot's @name. "@stelfinbot send 5 to ada" is; "ask
+//     @stelfinbot about it" is not, for the same reason "he said /pay 5000
+//     yesterday" is not a command.
+//
+// The name is removed from what is returned. That text is tokenized and shown
+// back to the member as what they asked for, and "@stelfinbot" is not part of
+// what they asked for.
+//
+// Before the bot knows its own name nothing in a group is addressed to it. That
+// is the safe direction to be wrong in: somebody repeats themselves, as against
+// the bot answering a room.
+func addressed(m *message, me *botIdentity) (string, bool) {
+	if me == nil {
+		return m.Text, false
+	}
+	if m.ReplyTo != nil && m.ReplyTo.From != nil && m.ReplyTo.From.ID == me.ID {
+		return m.Text, true
+	}
+
+	units := utf16.Encode([]rune(m.Text))
+	for _, e := range m.Entities {
+		if e.Type != "mention" || e.Offset < 0 || e.Length <= 0 || e.Offset+e.Length > len(units) {
+			continue
+		}
+		name := string(utf16.Decode(units[e.Offset : e.Offset+e.Length]))
+		if !strings.EqualFold(name, "@"+me.Username) {
+			continue
+		}
+		if !leads(units[:e.Offset], nil, e.Offset) {
+			continue
+		}
+		rest := string(utf16.Decode(units[e.Offset+e.Length:]))
+		rest = strings.TrimLeft(rest, " \t\n,:;—-")
+		if strings.TrimSpace(rest) == "" {
+			// Only the name. There is nothing to act on, and a bare mention
+			// is how people point at a bot, not how they instruct one.
+			return m.Text, false
+		}
+		return rest, true
+	}
+	return m.Text, false
+}
+
+// commandTarget returns the bot a leading command names, as in
+// "/help@somebot", or "" when it names none.
+func commandTarget(text string, entities []entity) string {
+	units := utf16.Encode([]rune(text))
+	for _, e := range entities {
+		if e.Type != "bot_command" || e.Offset < 0 || e.Length <= 0 || e.Offset+e.Length > len(units) {
+			continue
+		}
+		raw := string(utf16.Decode(units[e.Offset : e.Offset+e.Length]))
+		if _, target, ok := strings.Cut(raw, "@"); ok {
+			return target
+		}
+		return ""
+	}
+	return ""
 }
 
 // pickedUser returns the id of the person a message points at, or "".
@@ -405,9 +565,22 @@ func (t *Transport) RegisterCommands(ctx context.Context, cmds []chat.Command) e
 		return err
 	}
 	// Administrators see the general set as well, so send both.
-	return t.call(ctx, "setMyCommands", setMyCommandsRequest{
+	if err := t.call(ctx, "setMyCommands", setMyCommandsRequest{
 		Commands: append(append([]botCommand(nil), all...), admin...),
 		Scope:    map[string]any{"type": "all_chat_administrators"},
+	}, nil); err != nil {
+		return err
+	}
+	// A private chat is where the bot sends people and where nothing but an
+	// introduction happens, so its menu offers the two things that get one.
+	// Listing the workspace commands there would be a menu of things that
+	// answer "not here".
+	return t.call(ctx, "setMyCommands", setMyCommandsRequest{
+		Commands: []botCommand{
+			{Command: "start", Description: "What stelfin is, and how to begin"},
+			{Command: "help", Description: "What stelfin is, and how to begin"},
+		},
+		Scope: map[string]any{"type": "all_private_chats"},
 	}, nil)
 }
 

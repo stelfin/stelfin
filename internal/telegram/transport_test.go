@@ -98,6 +98,53 @@ func newTransport(t *testing.T, api *stubAPI) *Transport {
 	return tr
 }
 
+// The bot the stub API says this is.
+const (
+	botID   = 9000
+	botName = "stelfin_test_bot"
+)
+
+// started returns a transport that has asked who it is and been told.
+func started(t *testing.T, api *stubAPI) *Transport {
+	t.Helper()
+	api.respond("getMe", `{"ok":true,"result":{"id":9000,"is_bot":true,"username":"stelfin_test_bot"}}`, http.StatusOK)
+	tr := newTransport(t, api)
+	if err := tr.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	return tr
+}
+
+// groupUpdate is a message in a supergroup, with whatever entities Telegram
+// would have annotated and, when replyTo is not zero, as a reply to a message
+// from that user.
+func groupUpdate(updateID int64, text string, entities []map[string]any, replyTo int64) []byte {
+	if entities == nil {
+		entities = []map[string]any{}
+	}
+	message := map[string]any{
+		"message_id": 100,
+		"from":       map[string]any{"id": 42, "is_bot": false, "username": "ada"},
+		"chat":       map[string]any{"id": -1001234567890, "type": "supergroup"},
+		"text":       text,
+		"entities":   entities,
+	}
+	if replyTo != 0 {
+		message["reply_to_message"] = map[string]any{
+			"from": map[string]any{"id": replyTo, "is_bot": replyTo == botID},
+		}
+	}
+	body, _ := json.Marshal(map[string]any{"update_id": updateID, "message": message})
+	return body
+}
+
+// mention annotates text[offset:offset+length] the way Telegram does an @name.
+// The offsets are UTF-16 code units, which for the ASCII these tests use are
+// the same as bytes.
+func mention(offset, length int) map[string]any {
+	return map[string]any{"type": "mention", "offset": offset, "length": length}
+}
+
 func signedRequest(t testing.TB, body []byte) *http.Request {
 	t.Helper()
 	r := httptest.NewRequest(http.MethodPost, "/webhook/telegram", bytes.NewReader(body))
@@ -161,8 +208,10 @@ func TestVerify(t *testing.T) {
 }
 
 func TestParseTextMessage(t *testing.T) {
-	tr := newTransport(t, newStubAPI(t))
-	body := textUpdate(77, 42, -1001234567890, "supergroup", "send 5000 to ada")
+	tr := started(t, newStubAPI(t))
+	// Words in a group are an instruction only when said to the bot; see
+	// TestGroupTextIsReadOnlyWhenAddressed. A reply to one of its messages is.
+	body := groupUpdate(77, "send 5000 to ada", nil, botID)
 
 	d, err := tr.Parse(body)
 	if err != nil {
@@ -396,8 +445,26 @@ func TestRegisterCommandsScopesTheAdminSubset(t *testing.T) {
 	}
 
 	calls := api.callsTo("setMyCommands")
-	if len(calls) != 2 {
-		t.Fatalf("made %d setMyCommands calls, want 2", len(calls))
+	if len(calls) != 3 {
+		t.Fatalf("made %d setMyCommands calls, want 3", len(calls))
+	}
+
+	// A private chat is where the bot sends people and where only an
+	// introduction happens. Its menu offers what gets one, and none of the
+	// workspace commands, which would all answer "not here".
+	private := string(calls[2].Body)
+	if !strings.Contains(private, `"all_private_chats"`) {
+		t.Errorf("third call is not scoped to private chats: %s", private)
+	}
+	for _, want := range []string{`"start"`, `"help"`} {
+		if !strings.Contains(private, want) {
+			t.Errorf("a private chat is not offered %s: %s", want, private)
+		}
+	}
+	for _, not := range []string{`"balance"`, `"policy"`} {
+		if strings.Contains(private, not) {
+			t.Errorf("a private chat is offered %s, which does nothing there: %s", not, private)
+		}
 	}
 
 	groups := string(calls[0].Body)
@@ -438,6 +505,10 @@ func TestRegisterCommandsPublishesNamesTelegramAccepts(t *testing.T) {
 		body := string(call.Body)
 		if strings.Contains(body, "link-") {
 			t.Errorf("published a hyphenated command name: %s", body)
+		}
+		if strings.Contains(body, `"all_private_chats"`) {
+			// The private-chat menu carries no workspace commands at all.
+			continue
 		}
 		if !strings.Contains(body, `"link_code"`) {
 			t.Errorf("link-code was not published as link_code: %s", body)
@@ -563,5 +634,198 @@ func TestParsePicksAPersonByIDNeverByHandle(t *testing.T) {
 		if got := d.Messages[0].Options["user"]; got != tc.want {
 			t.Errorf("%s: picked %q, want %q", name, got, tc.want)
 		}
+	}
+}
+
+// TestGroupTextIsReadOnlyWhenAddressed: a group is other people's conversation.
+// With privacy mode off, or the bot made an administrator, Telegram delivers
+// all of it, and every line used to be read as a possible payment — a model
+// call each, and for anyone without a wallet a private message from a bot they
+// had not spoken to.
+func TestGroupTextIsReadOnlyWhenAddressed(t *testing.T) {
+	at := "@" + botName
+	cases := map[string]struct {
+		text     string
+		entities []map[string]any
+		replyTo  int64
+		want     string // the text handed on, or "" for nothing at all
+	}{
+		"two people talking":           {text: "lunch at one?"},
+		"a payment said to the room":   {text: "send 5000 to ada"},
+		"opens with the bot's name":    {text: at + " send 5 to ada", entities: []map[string]any{mention(0, len(at))}, want: "send 5 to ada"},
+		"name, then a comma":           {text: at + ", send 5 to ada", entities: []map[string]any{mention(0, len(at))}, want: "send 5 to ada"},
+		"the name in another case":     {text: "@Stelfin_Test_Bot send 5 to ada", entities: []map[string]any{mention(0, len(at))}, want: "send 5 to ada"},
+		"a reply to the bot":           {text: "send 5 to ada", replyTo: botID, want: "send 5 to ada"},
+		"a reply to somebody else":     {text: "send 5 to ada", replyTo: 77},
+		"the bot mentioned in passing": {text: "ask " + at + " about it", entities: []map[string]any{mention(4, len(at))}},
+		"somebody else mentioned":      {text: "@ada send 5 to bo", entities: []map[string]any{mention(0, 4)}},
+		"only the name":                {text: at, entities: []map[string]any{mention(0, len(at))}},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			tr := started(t, newStubAPI(t))
+			d, err := tr.Parse(groupUpdate(500, c.text, c.entities, c.replyTo))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if c.want == "" {
+				if len(d.Messages) != 0 {
+					t.Fatalf("handed on %q, which nobody said to the bot", d.Messages[0].Args)
+				}
+				// Not an error either: the delivery is acknowledged, or
+				// Telegram retries every line of the conversation.
+				if d.Ack.Status != http.StatusOK {
+					t.Fatalf("ack = %d, want 200", d.Ack.Status)
+				}
+				return
+			}
+			if len(d.Messages) != 1 {
+				t.Fatalf("got %d messages, want 1", len(d.Messages))
+			}
+			// The name is not part of what they asked for. This text is
+			// tokenized and shown back to them as their own words.
+			if got := d.Messages[0].Args; got != c.want {
+				t.Errorf("Args = %q, want %q", got, c.want)
+			}
+			if d.Messages[0].Command != "" {
+				t.Errorf("Command = %q, want free text", d.Messages[0].Command)
+			}
+		})
+	}
+}
+
+// TestAPrivateChatNeedsNoAddressing: nobody else is there.
+func TestAPrivateChatNeedsNoAddressing(t *testing.T) {
+	tr := started(t, newStubAPI(t))
+	d, err := tr.Parse(textUpdate(501, 42, 42, "private", "send 5 to ada"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(d.Messages) != 1 || d.Messages[0].Args != "send 5 to ada" || !d.Messages[0].Conversation.IsDM {
+		t.Fatalf("messages = %+v", d.Messages)
+	}
+}
+
+// TestBeforeTheBotKnowsItsNameNothingInAGroupIsForIt: the safe direction to be
+// wrong in. Somebody repeats themselves, as against the bot answering a room.
+// Commands are unaffected: a command is addressed by being one.
+func TestBeforeTheBotKnowsItsNameNothingInAGroupIsForIt(t *testing.T) {
+	tr := newTransport(t, newStubAPI(t)) // never started
+	at := "@" + botName
+
+	d, err := tr.Parse(groupUpdate(502, at+" send 5 to ada", []map[string]any{mention(0, len(at))}, 0))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(d.Messages) != 0 {
+		t.Fatalf("read group text before knowing who the bot is: %+v", d.Messages)
+	}
+
+	d, err = tr.Parse(groupUpdate(503, "/whoami",
+		[]map[string]any{{"type": "bot_command", "offset": 0, "length": 7}}, 0))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(d.Messages) != 1 || d.Messages[0].Command != "whoami" {
+		t.Fatalf("a command was dropped before Start: %+v", d.Messages)
+	}
+}
+
+// TestACommandForAnotherBotIsNotOurs: in a group with several bots Telegram
+// delivers "/help@someotherbot" to all of them when it can.
+func TestACommandForAnotherBotIsNotOurs(t *testing.T) {
+	tr := started(t, newStubAPI(t))
+	command := func(text string) []map[string]any {
+		return []map[string]any{{"type": "bot_command", "offset": 0, "length": len(strings.Fields(text)[0])}}
+	}
+
+	for text, ours := range map[string]bool{
+		"/help":                     true,
+		"/help@" + botName:          true,
+		"/help@STELFIN_TEST_BOT":    true,
+		"/help@someotherbot":        false,
+		"/pay@someotherbot 5 to me": false,
+	} {
+		d, err := tr.Parse(groupUpdate(504, text, command(text), 0))
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", text, err)
+		}
+		if got := len(d.Messages) == 1; got != ours {
+			t.Errorf("%q: handed on = %v, want %v", text, got, ours)
+		}
+	}
+}
+
+// TestStartAsksWhoItIsAndSaysWhereToDeliver: the webhook is set on every start
+// so that the secret Telegram echoes back is always the one this process is
+// checking against. Set by hand, the two drift the first time somebody rotates
+// one, and every delivery is refused with nothing to say why.
+func TestStartAsksWhoItIsAndSaysWhereToDeliver(t *testing.T) {
+	api := newStubAPI(t)
+	api.respond("getMe", `{"ok":true,"result":{"id":9000,"is_bot":true,"username":"stelfin_test_bot"}}`, http.StatusOK)
+	tr, err := New(Config{
+		Token: "12345:TEST-TOKEN", WebhookSecret: testSecret,
+		APIURL: api.server.URL, HTTPClient: api.server.Client(),
+		WebhookURL: "https://stelfin.example/webhook/telegram",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if tr.Username() != "" {
+		t.Fatalf("knew its name before asking: %q", tr.Username())
+	}
+	if err := tr.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if tr.Username() != botName {
+		t.Errorf("Username = %q, want %q", tr.Username(), botName)
+	}
+
+	calls := api.callsTo("setWebhook")
+	if len(calls) != 1 {
+		t.Fatalf("made %d setWebhook calls, want 1", len(calls))
+	}
+	var sent struct {
+		URL            string   `json:"url"`
+		SecretToken    string   `json:"secret_token"`
+		AllowedUpdates []string `json:"allowed_updates"`
+	}
+	if err := json.Unmarshal(calls[0].Body, &sent); err != nil {
+		t.Fatalf("decode setWebhook: %v", err)
+	}
+	if sent.URL != "https://stelfin.example/webhook/telegram" {
+		t.Errorf("url = %q", sent.URL)
+	}
+	if sent.SecretToken != testSecret {
+		t.Error("the secret given to Telegram is not the one deliveries are checked against")
+	}
+	// Only what the transport reads. Anything else is a delivery acknowledged
+	// and thrown away.
+	if len(sent.AllowedUpdates) != 1 || sent.AllowedUpdates[0] != "message" {
+		t.Errorf("allowed_updates = %v, want [message]", sent.AllowedUpdates)
+	}
+}
+
+// TestStartLeavesTheWebhookAloneWithoutAnAddress: a laptop sharing a bot token
+// with a deployment must not take the deployment's deliveries by starting.
+func TestStartLeavesTheWebhookAloneWithoutAnAddress(t *testing.T) {
+	api := newStubAPI(t)
+	started(t, api)
+	if calls := api.callsTo("setWebhook"); len(calls) != 0 {
+		t.Fatalf("set a webhook with no address to set: %s", calls[0].Body)
+	}
+}
+
+// TestStartFailsRatherThanGuessWhoItIs: a bot that took a missing answer for an
+// empty name would treat every "@" as its own.
+func TestStartFailsRatherThanGuessWhoItIs(t *testing.T) {
+	api := newStubAPI(t)
+	api.respond("getMe", `{"ok":true,"result":{}}`, http.StatusOK)
+	tr := newTransport(t, api)
+	if err := tr.Start(context.Background()); err == nil {
+		t.Fatal("Start accepted a getMe with nobody in it")
+	}
+	if tr.Username() != "" {
+		t.Errorf("Username = %q after a failed Start", tr.Username())
 	}
 }

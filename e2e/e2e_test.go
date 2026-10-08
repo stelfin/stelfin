@@ -65,9 +65,13 @@ import (
 )
 
 const (
-	horizonURL    = "https://horizon-testnet.stellar.org"
-	sorobanURL    = "https://soroban-testnet.stellar.org"
-	botToken      = "100200300:e2e-token"
+	horizonURL = "https://horizon-testnet.stellar.org"
+	sorobanURL = "https://soroban-testnet.stellar.org"
+	botToken   = "100200300:e2e-token"
+	// Who the stand-in Bot API says the bot is. The transport asks at start,
+	// and reads words in a group only when they are said to this name.
+	botID         = 100200300
+	botUsername   = "stelfin_e2e_bot"
 	webhookSecret = "e2e-webhook-secret-0123456789abcdef-0123456789"
 	confirmSecret = "e2e-confirm-secret-0123456789abcdef-0123456789"
 
@@ -185,7 +189,7 @@ func TestTreasuryPaymentEndToEnd(t *testing.T) {
 	// ---- A space nobody set up. Conversation there gets no answer at all;
 	// somebody who types a command at the bot is told what has to come first.
 
-	chat.say(benID, "ben", "lunch at one?")
+	chat.overheard(benID, "ben", "lunch at one?")
 	telegram.expectSilence(t, benID, 2*time.Second)
 	mustContain(t, chat.ask(benID, "ben", "/whoami"), "isn't set up with stelfin yet")
 
@@ -1002,12 +1006,15 @@ func newFakeDiscord(t *testing.T) *fakeDiscord {
 
 func (f *fakeDiscord) published(t *testing.T) []string {
 	t.Helper()
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if len(f.commands) == 0 {
+	names := settled(func() []string {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return append([]string(nil), f.commands...)
+	})
+	if len(names) == 0 {
 		t.Error("no command menu was published to Discord")
 	}
-	return append([]string(nil), f.commands...)
+	return names
 }
 
 func (f *fakeDiscord) next(t *testing.T) string {
@@ -1288,9 +1295,37 @@ func (g *group) say(userID int64, handle, text string) {
 	}
 }
 
+// overheard posts words that were not said to the bot: two people talking in
+// a group it happens to be in.
+func (g *group) overheard(userID int64, handle, text string) {
+	g.t.Helper()
+	if code := g.post(userID, handle, text, nil, webhookSecret, 0); code != http.StatusOK {
+		g.t.Fatalf("webhook answered %d to %q", code, text)
+	}
+}
+
 // deliver posts one update the way Telegram would, annotating the leading
 // command by Telegram's own rule: letters, digits and underscores only.
+//
+// Words with no command are said to the bot the way a person in a group says
+// them, by opening with its name. Without that they are other people's
+// conversation; see overheard.
 func (g *group) deliver(userID int64, handle, text, secret string, updateID int64) int {
+	g.t.Helper()
+	var entities []map[string]any
+	if cmd := regexp.MustCompile(`^/[A-Za-z0-9_]+`).FindString(text); cmd != "" {
+		entities = []map[string]any{{"type": "bot_command", "offset": 0, "length": len(cmd)}}
+	} else {
+		at := "@" + botUsername
+		text = at + " " + text
+		entities = []map[string]any{{"type": "mention", "offset": 0, "length": len(at)}}
+	}
+	return g.post(userID, handle, text, entities, secret, updateID)
+}
+
+func (g *group) post(
+	userID int64, handle, text string, entities []map[string]any, secret string, updateID int64,
+) int {
 	g.t.Helper()
 	if updateID == 0 {
 		updateID = g.nextUpdate()
@@ -1301,8 +1336,8 @@ func (g *group) deliver(userID int64, handle, text, secret string, updateID int6
 		"chat":       map[string]any{"id": groupID, "type": "supergroup"},
 		"text":       text,
 	}
-	if cmd := regexp.MustCompile(`^/[A-Za-z0-9_]+`).FindString(text); cmd != "" {
-		message["entities"] = []map[string]any{{"type": "bot_command", "offset": 0, "length": len(cmd)}}
+	if entities != nil {
+		message["entities"] = entities
 	}
 	body, _ := json.Marshal(map[string]any{"update_id": updateID, "message": message})
 
@@ -1338,6 +1373,13 @@ func newFakeTelegram(t *testing.T) *fakeTelegram {
 		w.Header().Set("Content-Type", "application/json")
 
 		switch strings.TrimPrefix(r.URL.Path, prefix) {
+		case "getMe":
+			fmt.Fprintf(w, `{"ok":true,"result":{"id":%d,"is_bot":true,"username":%q}}`, botID, botUsername)
+		case "setWebhook":
+			// Never called here: the server is on localhost, where Telegram
+			// could not reach it, and it knows not to ask.
+			t.Errorf("the server pointed Telegram at a webhook it cannot reach: %s", raw)
+			io.WriteString(w, `{"ok":true,"result":true}`)
 		case "sendMessage":
 			var m struct {
 				ChatID string `json:"chat_id"`
@@ -1415,12 +1457,36 @@ func (f *fakeTelegram) expectSilence(t *testing.T, userID int64, wait time.Durat
 
 func (f *fakeTelegram) published(t *testing.T) []string {
 	t.Helper()
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if len(f.commands) == 0 {
+	names := settled(func() []string {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return append([]string(nil), f.commands...)
+	})
+	if len(names) == 0 {
 		t.Error("no command menu was published to Telegram")
 	}
-	return append([]string(nil), f.commands...)
+	return names
+}
+
+// settled waits for a list the server fills in after it has started to stop
+// growing, and returns it.
+//
+// The platforms are told their commands beside the server coming up, not
+// before it, so that somebody else's API being slow does not hold up this one.
+// A test that looked the moment the server answered would be racing that.
+func settled(read func() []string) []string {
+	deadline := time.Now().Add(30 * time.Second)
+	last, since := -1, time.Now()
+	for time.Now().Before(deadline) {
+		n := len(read())
+		if n != last {
+			last, since = n, time.Now()
+		} else if n > 0 && time.Since(since) > time.Second {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return read()
 }
 
 // ---- The server process.
