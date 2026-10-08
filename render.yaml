@@ -133,10 +133,12 @@ services:
       - key: STELFIN_READONLY_FILE
         value: /tmp/stelfin-readonly
 
-      # Calling allowed third-party contracts. Off: contract calls are not
-      # bounded by the spend ceilings.
+      # Calling allowed third-party contracts. On, because this blueprint is
+      # pinned to testnet above and a call there moves nothing of value. Contract
+      # calls are not bounded by the spend ceilings, so a deployment on the
+      # public network turns this on deliberately or not at all.
       - key: STELFIN_CONTRACT_CALLS
-        value: "false"
+        value: "true"
 
       # Deployment-wide ceilings on treasury proposals, in whole units of the
       # asset. Optional on testnet; the server refuses to start on the public
