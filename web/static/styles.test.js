@@ -1,6 +1,6 @@
 // Every page carries the rules that keep it usable and readable.
 //
-// These five pages have no shared stylesheet. The content security policy in
+// These pages have no shared stylesheet. The content security policy in
 // web/embed.go allows inline style and nothing else, so each page carries its
 // own near-copy of the same block, and near-copies drift. They had: confirm and
 // enroll, the two pages most people actually reach, were the only two with no
@@ -104,7 +104,7 @@ test("every page carries the rules that keep it usable", () => {
 // page. A page added to this directory and forgotten is the same failure this
 // file exists to prevent, one level up.
 test("every page this directory serves is checked", () => {
-  const served = ["approve.html", "confirm.html", "enroll.html", "link.html", "reclaim.html"];
+  const served = ["approve.html", "call.html", "confirm.html", "enroll.html", "link.html", "reclaim.html"];
   assert.deepStrictEqual(
     pages,
     served,

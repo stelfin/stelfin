@@ -56,7 +56,7 @@ e2e-browser: ## The same flow, with every signing page walked in headless Chrome
 
 .PHONY: test-js
 test-js: ## Check the browser's renderer against the Go corpus, and its shape rules
-	@cd web/static && $(NODE) --test describe.test.js policy.test.js pages.test.js styles.test.js devicekey.test.js linktoken.test.js chain.test.js clipboard.test.js wallet.test.js
+	@cd web/static && $(NODE) --test describe.test.js policy.test.js pages.test.js styles.test.js devicekey.test.js linktoken.test.js chain.test.js clipboard.test.js wallet.test.js treasury.test.js
 
 .PHONY: check-web
 check-web: ## Typecheck, lint and build the marketing site

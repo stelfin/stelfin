@@ -39,6 +39,12 @@ const NEEDS = {
   "confirm.js": ["linktoken.js", "stellar-sdk.min.js", "devicekey.js", "chain.js", "clipboard.js", "wallet.js"],
   "enroll.js": ["linktoken.js", "stellar-sdk.min.js"],
   "link.js": ["linktoken.js", "stellar-sdk.min.js", "devicekey.js", "chain.js", "clipboard.js", "wallet.js"],
+  // Reads a call to a treasury contract out of its description, or refuses.
+  "treasury.js": ["stellar-sdk.min.js"],
+  "call.js": [
+    "linktoken.js", "stellar-sdk.min.js", "describe.js", "policy.js", "treasury.js",
+    "devicekey.js", "chain.js", "clipboard.js", "wallet.js",
+  ],
 };
 
 function scriptsIn(html) {

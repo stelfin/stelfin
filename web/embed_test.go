@@ -17,7 +17,7 @@ func get(t *testing.T, path string) *httptest.ResponseRecorder {
 // TestEveryPageIsServedWithItsHeaders: the headers are the pages' security
 // posture, set here so that a deployment change cannot lose them.
 func TestEveryPageIsServedWithItsHeaders(t *testing.T) {
-	for _, path := range []string{"/confirm", "/enroll", "/link", "/approve", "/reclaim"} {
+	for _, path := range []string{"/confirm", "/enroll", "/link", "/approve", "/reclaim", "/call"} {
 		rec := get(t, path)
 		if rec.Code != http.StatusOK {
 			t.Errorf("GET %s = %d", path, rec.Code)
@@ -62,7 +62,7 @@ func TestEveryPageIsServedWithItsHeaders(t *testing.T) {
 // TestEveryScriptAPageNamesIsServed: a page that names a script this handler
 // will not serve throws rather than refusing to sign.
 func TestEveryScriptAPageNamesIsServed(t *testing.T) {
-	for _, page := range []string{"/confirm", "/enroll", "/link", "/approve", "/reclaim"} {
+	for _, page := range []string{"/confirm", "/enroll", "/link", "/approve", "/reclaim", "/call"} {
 		body := get(t, page).Body.String()
 		rest := body
 		found := 0
