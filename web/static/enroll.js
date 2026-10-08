@@ -12,7 +12,18 @@
     el.setAttribute("aria-busy", String(on));
   };
 
+  // Two places a key can be, because a key has two states and they must not
+  // be confused.
+  //
+  // KEY holds the key of a wallet that exists. PENDING holds one that was
+  // generated here for a wallet that has not been created yet. There used to
+  // be only the first, written the moment the page opened, and a page that
+  // found anything in it refused to go on — so a link that expired, a request
+  // that failed, or a tab closed before pressing the button left a key behind
+  // for a wallet nobody had, and every later link on this device stopped at
+  // "this device already has a wallet", with nothing anywhere to clear it.
   const KEY = "stelfin.key";
+  const PENDING = "stelfin.key.pending";
 
   function fail(title, detail) {
     const box = $("alert");
@@ -35,8 +46,7 @@
   // reaches the server as part of a URL, and stripping it from the address
   // bar means a screenshot or shoulder-surf of the URL does not carry
   // enrollment authority.
-  const token = location.hash.replace(/^#/, "");
-  history.replaceState(null, "", location.pathname);
+  const token = StelfinLink.token();
 
   if (!token) {
     fail("This link is incomplete.", "Open the link from your chat message again.");
@@ -95,20 +105,64 @@
   }
 
   (async () => {
-    // An existing key means this device already has a wallet. Overwriting it
-    // silently would orphan whatever account it belongs to — the user needs
-    // to know, not have it replaced underneath them.
+    // A key for a wallet that exists means this device already has one.
+    // Overwriting it silently would orphan the account it belongs to — the
+    // person needs to know, not have it replaced underneath them.
     if (localStorage.getItem(KEY)) {
       fail("This device already has a wallet.",
-        "If you meant to start over, clear this device's saved key first — otherwise your existing wallet stays as it is.");
+        "It stays as it is. To replace it, hand it back first: send /reclaim to stelfin in your chat, and this device can then be given a new one.");
       return;
     }
 
-    const keypair = StellarSdk.Keypair.random();
-    // Persisted immediately, before any network call: if the tab closes or
-    // the connection drops mid-flow, the key that was shown is the key that
-    // exists, rather than one that only ever lived in memory.
-    localStorage.setItem(KEY, keypair.secret());
+    // A key from an attempt that did not finish is the one to carry on with.
+    // The address somebody was shown last time is the address they are shown
+    // now, and whatever stopped them — the link running out, the connection,
+    // the tab — costs them nothing but asking for another link.
+    let keypair = null;
+    try {
+      const unfinished = localStorage.getItem(PENDING);
+      if (unfinished) keypair = StellarSdk.Keypair.fromSecret(unfinished);
+    } catch (_) {
+      keypair = null;
+    }
+    if (!keypair) {
+      keypair = StellarSdk.Keypair.random();
+      // Persisted immediately, before any network call: if the tab closes or
+      // the connection drops mid-flow, the key that was shown is the key that
+      // exists, rather than one that only ever lived in memory.
+      localStorage.setItem(PENDING, keypair.secret());
+    }
+
+    // The wallet exists: its key moves to where the other pages look for it.
+    const keep = () => {
+      localStorage.setItem(KEY, keypair.secret());
+      localStorage.removeItem(PENDING);
+    };
+
+    // The one moment a copy of the key can be taken. It is shown only when
+    // asked for, because the usual place to open this page is a phone held
+    // where other people can see it; and it is offered at all because a key
+    // that exists in one browser's storage and nowhere else is a wallet that
+    // clearing that browser's data destroys. stelfin cannot help afterwards.
+    // It never had the key, which is the point of all of this.
+    $("reveal").addEventListener("click", () => {
+      $("secret").textContent = keypair.secret();
+      $("backup").hidden = false;
+      $("reveal").hidden = true;
+      $("reveal").setAttribute("aria-expanded", "true");
+      $("secret").focus();
+    });
+    $("copySecret").addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(keypair.secret());
+        $("copied").hidden = false;
+      } catch (_) {
+        // No clipboard here — an in-app browser, or permission refused. The
+        // key is on screen and selects whole when tapped.
+        $("copied").textContent = "Copying is not available in this browser. Select the key above and copy it by hand.";
+        $("copied").hidden = false;
+      }
+    });
 
     $("address").textContent = keypair.publicKey();
     // Held closed until there is something behind it. The button is on screen
@@ -123,11 +177,21 @@
       built = await api("/v1/enroll", { address: keypair.publicKey() });
     } catch (err) {
       if (err.status === 409) {
-        fail("This number already has a wallet.", "Message stelfin again — you should be able to send already.");
+        fail("You already have a wallet.",
+          "Go back to your chat and send — if it was set up on this device, its key is still here. If it was set up on another device, that is the one that signs.");
       } else if (err.status === 401) {
-        fail("This link has expired.", "Message stelfin again to get a new one.");
+        fail("This link has expired.", "Message stelfin again to get a new one. The address above will be the same.");
+      } else if (err.status === 403) {
+        fail("This workspace is not setting wallets up.",
+          "An admin there can turn it on. Nothing was created.");
+      } else if (err.status === 425) {
+        fail("It is a little too soon.",
+          "stelfin waits a few minutes after first meeting someone before setting a wallet up. Nothing was created — message it again shortly.");
+      } else if (err.status === 429) {
+        fail("No more wallets can be set up right now.",
+          "A limit for today has been reached. Nothing was created — try again tomorrow, or link a wallet you already have.");
       } else {
-        fail("Something went wrong.", "Nothing was created. Please try again in a moment.");
+        fail("Something went wrong.", "Nothing was created. Message stelfin again for a new link.");
       }
       return;
     }
@@ -148,12 +212,17 @@
       try {
         verified.tx.sign(keypair);
         await api("/v1/enroll/submit", { signed_xdr: verified.tx.toXDR() });
+        keep();
         $("pending").hidden = true;
         $("done").hidden = false;
       } catch (err) {
         button.disabled = false;
         button.textContent = "Create wallet";
         if (err.status === 409) {
+          // Already submitted: this very transaction went through before,
+          // and only the answer was lost. The wallet exists and this is its
+          // key.
+          keep();
           fail("This wallet has already been created.", "You can close this page and go back to your chat.");
         } else if (err.status === 410) {
           fail("This request expired before it was sent.", "Message stelfin again to start over.");

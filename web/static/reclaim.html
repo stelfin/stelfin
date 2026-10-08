@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
 <!--
   Hand a provisioned account back.
 
@@ -127,6 +128,8 @@
     button { transition: none; }
     button:active:not([disabled]) { transform: none; }
   }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:hover { text-decoration-thickness: 2px; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -172,10 +175,14 @@
 
     <h2>Or sign in your own wallet</h2>
     <p class="note flush" id="envelopeNote">
-      Copy the envelope, sign it, and paste it back.
+      Copy the envelope, sign it in your wallet, and paste it back. Any wallet
+      that signs a transaction given as XDR will do; <a href="https://lab.stellar.org/transaction/sign" target="_blank" rel="noopener noreferrer">Stellar Lab</a> is one, under
+      Sign transaction.
     </p>
     <textarea id="envelope" translate="no" spellcheck="false" readonly aria-label="Envelope to sign"
               aria-describedby="envelopeNote"></textarea>
+    <button id="copyEnvelope" type="button" class="secondary spaced">Copy it</button>
+    <p id="copiedEnvelope" class="note" role="status" aria-live="polite" hidden></p>
     <h2>Signed envelope</h2>
     <textarea id="signed" translate="no" spellcheck="false" placeholder="Paste the signed XDR here…" aria-label="Signed envelope"
               aria-describedby="envelopeNote"></textarea>
@@ -185,15 +192,20 @@
   <section id="done" hidden>
     <h1>Handed back</h1>
     <p class="lede" id="doneLede">You can close this page and go back to your chat.</p>
+    <p class="note"><a id="explorer" hidden>See it on stellar.expert</a></p>
   </section>
 </main>
 
+<script src="/static/linktoken.js"></script>
 <script src="/static/stellar-sdk.min.js"></script>
 <!-- scval.js first: describe.js reads the global it defines, and a
      contract call would otherwise fail to render rather than refuse. -->
 <script src="/static/scval.js"></script>
 <script src="/static/describe.js"></script>
 <script src="/static/policy.js"></script>
+<script src="/static/devicekey.js"></script>
+<script src="/static/chain.js"></script>
+<script src="/static/clipboard.js"></script>
 <script src="/static/reclaim.js"></script>
 </body>
 </html>

@@ -12,8 +12,6 @@
     el.setAttribute("aria-busy", String(on));
   };
 
-  const KEY = "stelfin.key";
-
   const MEMBER = "link_member";
   const TREASURY = "link_treasury";
   const GRANT = "grant_connector";
@@ -60,8 +58,7 @@
   // never reaches the server as part of a URL, and stripping it from the
   // address bar means a screenshot or a shoulder-surf of the URL does not carry
   // the authority to complete someone's link.
-  const token = location.hash.replace(/^#/, "");
-  history.replaceState(null, "", location.pathname);
+  const token = StelfinLink.token();
 
   if (!token) {
     fail("This link is incomplete.", "Open the link from your chat message again.");
@@ -121,15 +118,6 @@
     return tx;
   }
 
-  function loadDeviceKey() {
-    const seed = localStorage.getItem(KEY);
-    if (!seed) return null;
-    try {
-      return StellarSdk.Keypair.fromSecret(seed);
-    } catch {
-      return null;
-    }
-  }
 
   // What each purpose calls itself. Kept in one place so a heading and the
   // message under it cannot drift apart.
@@ -447,12 +435,13 @@
     // and none of it is markup.
     $("address").textContent = data.address;
     $("sequence").textContent = String(tx.sequence);
-    $("network").textContent = data.network_passphrase;
+    $("network").textContent = StelfinChain.name(data.network_passphrase);
     $("challenge").value = data.xdr;
+    StelfinClipboard.wire($("copyChallenge"), $("challenge"), $("copiedChallenge"));
     $("pending").hidden = false;
 
-    const key = loadDeviceKey();
-    if (key && key.publicKey() === data.address) {
+    const key = StelfinDeviceKey.keyFor(data.address);
+    if (key) {
       $("device").hidden = false;
       $("sign").addEventListener("click", async () => {
         busy($("sign"), true);
@@ -463,8 +452,12 @@
           );
           signed.sign(key);
           await submit(signed.toXDR(), purpose);
-        } catch (err) {
-          fail("Could not sign on this device.", err.message);
+        } catch (_) {
+          // The form stays: the other way to sign is right below it, and
+          // taking the page away would leave somebody with neither.
+          busy($("sign"), false);
+          correctable("This device could not sign.",
+            "Nothing was sent. Try once more, or sign in your own wallet below.");
         }
       });
     }
@@ -472,7 +465,10 @@
     $("submit").addEventListener("click", async () => {
       const pasted = $("signed").value.trim();
       if (!pasted) {
-        fail("Nothing to submit.", "Paste the signed challenge first.");
+        // An empty box is a slip, not a refusal. Taking the form away for it
+        // turned pressing a button too early into having to ask for a new
+        // link.
+        correctable("Nothing to submit.", "Paste the signed challenge first.");
         return;
       }
       // Check what was pasted before sending it: a signature over something

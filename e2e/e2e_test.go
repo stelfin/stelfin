@@ -356,6 +356,18 @@ func TestTreasuryPaymentEndToEnd(t *testing.T) {
 	mustContain(t, chat.ask(carolID, "carol", "/provisioning on"), "needs the admin role")
 	mustContain(t, chat.ask(adaID, "ada", "/provisioning on 5"), "5 wallets a day")
 
+	// Carol was first seen a minute ago, in a workspace made a few minutes ago.
+	// The operator does not pay for accounts on that acquaintance — and she is
+	// told so in chat, and when to come back, rather than handed a link to a
+	// page that could only refuse her.
+	reply = chat.ask(carolID, "carol", plain)
+	mustContain(t, reply, "not quite yet")
+	if strings.Contains(reply, "/enroll#") {
+		t.Fatalf("somebody the limiter will refuse was handed a link:\n%s", reply)
+	}
+
+	// Only time makes something old, so the test supplies the time.
+	age(t, db)
 	token = linkToken(t, chat.ask(carolID, "carol", plain), base, "enroll")
 	carol := keypair.MustRandom() // generated on her device; never leaves it
 	var provision struct {
@@ -366,15 +378,17 @@ func TestTreasuryPaymentEndToEnd(t *testing.T) {
 		http.StatusOK, &provision)
 	signedProvision := sign(t, provision.XDR, carol)
 
-	// Carol was first seen a minute ago, in a workspace made a few minutes ago.
-	// The operator does not pay for accounts on that acquaintance.
+	// What she was told in chat was a courtesy. The limiter is what decides,
+	// in the step that commits the operator to paying, and it asks again: the
+	// test takes the time back, and the same signed request is refused with
+	// nothing created.
+	youth(t, db)
 	call(t, "POST", base+"/v1/enroll/submit", token,
 		map[string]string{"signed_xdr": signedProvision}, http.StatusTooEarly, nil)
 	if _, err := horizon.AccountDetail(horizonclient.AccountRequest{AccountID: carol.Address()}); !horizonclient.IsNotFoundError(err) {
 		t.Fatalf("a refused enrolment created the account anyway (lookup: %v)", err)
 	}
 
-	// Only time makes something old, so the test supplies the time.
 	age(t, db)
 	call(t, "POST", base+"/v1/enroll/submit", token,
 		map[string]string{"signed_xdr": signedProvision}, http.StatusOK, nil)
@@ -868,6 +882,19 @@ func age(t *testing.T, db *pgtest.DB) {
 	for _, stmt := range []string{
 		`UPDATE orgs SET created_at = now() - interval '2 hours'`,
 		`UPDATE user_identities SET linked_at = now() - interval '1 hour'`,
+	} {
+		if _, err := db.Pool.Exec(context.Background(), stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+}
+
+// youth undoes age: everybody and every workspace was first seen just now.
+func youth(t *testing.T, db *pgtest.DB) {
+	t.Helper()
+	for _, stmt := range []string{
+		`UPDATE orgs SET created_at = now()`,
+		`UPDATE user_identities SET linked_at = now()`,
 	} {
 		if _, err := db.Pool.Exec(context.Background(), stmt); err != nil {
 			t.Fatalf("%s: %v", stmt, err)

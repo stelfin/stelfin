@@ -150,5 +150,5 @@
     return whole.toString() + "." + fraction;
   }
 
-  return { reclaim: reclaim, batch: batch, Refused: Refused };
+  return { reclaim: reclaim, batch: batch, Refused: Refused, fromStroops: fromStroops };
 });

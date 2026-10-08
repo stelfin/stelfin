@@ -12,8 +12,6 @@
     el.setAttribute("aria-busy", String(on));
   };
 
-  const KEY = "stelfin.key";
-
   function fail(title, detail) {
     const box = $("alert");
     box.innerHTML = "";
@@ -31,11 +29,30 @@
     $("done").hidden = true;
   }
 
+  // A mistake the person can put right on this page. It is an error and reads
+  // as one, but it leaves the form where it is: hiding the box somebody just
+  // mistyped into would turn a typo into a dead end, and on this page the way
+  // back from a dead end is asking for another link to delete an account.
+  function correctable(title, detail) {
+    const box = $("alert");
+    box.innerHTML = "";
+    const strong = document.createElement("strong");
+    strong.textContent = title;
+    box.appendChild(strong);
+    box.appendChild(document.createTextNode(detail));
+    box.setAttribute("role", "alert");
+    box.hidden = false;
+    box.focus();
+  }
+
+  // Which network the account is on, once the server has said. Kept for the
+  // link to the transaction, which is made after the form has left the screen.
+  let passphrase = "";
+
   // Fragment-borne, stripped from the address bar immediately: this token
   // authorises deleting an account, and a screenshot of the URL should not
   // carry it.
-  const token = location.hash.replace(/^#/, "");
-  history.replaceState(null, "", location.pathname);
+  const token = StelfinLink.token();
 
   if (!token) {
     fail("This link is incomplete.", "Open the link from your chat message again.");
@@ -117,15 +134,6 @@
     }
   }
 
-  function loadDeviceKey() {
-    const seed = localStorage.getItem(KEY);
-    if (!seed) return null;
-    try {
-      return StellarSdk.Keypair.fromSecret(seed);
-    } catch {
-      return null;
-    }
-  }
 
   async function submit(signedXDR) {
     try {
@@ -136,6 +144,11 @@
       $("alert").hidden = true;
       $("reclaim").hidden = true;
       $("done").hidden = false;
+      // The account is gone, so its key opens nothing. Left on this device it
+      // is also what makes the page that sets a wallet up say there already
+      // is one, to somebody who has just handed theirs back.
+      StelfinDeviceKey.forget(res.address);
+      StelfinChain.point($("explorer"), passphrase, res.hash);
       return true;
     } catch (err) {
       const [title, detail] = explain(err);
@@ -164,8 +177,10 @@
 
     $("address").textContent = data.address;
     $("destination").textContent = data.destination;
-    $("network").textContent = data.network_passphrase;
+    $("network").textContent = StelfinChain.name(data.network_passphrase);
     $("envelope").value = data.xdr;
+    StelfinClipboard.wire($("copyEnvelope"), $("envelope"), $("copiedEnvelope"));
+    passphrase = data.network_passphrase;
     renderOperations(d);
 
     // Typing the account's tail is deliberate friction. Everything else on this
@@ -175,8 +190,8 @@
     const tail = data.address.slice(-6);
     $("tail").textContent = tail;
 
-    const key = loadDeviceKey();
-    $("device").hidden = !(key && key.publicKey() === data.address);
+    const key = StelfinDeviceKey.keyFor(data.address);
+    $("device").hidden = !key;
 
     const gate = () => {
       const armed = $("confirm").value.trim().toUpperCase() === tail;
@@ -197,15 +212,17 @@
         );
         tx.sign(key);
         await submit(tx.toXDR());
-      } catch (err) {
-        fail("Could not sign on this device.", err.message);
+      } catch (_) {
+        busy($("sign"), false);
+        correctable("This device could not sign.",
+          "Nothing was sent. Try once more, or sign in your own wallet below.");
       }
     });
 
     $("submit").addEventListener("click", async () => {
       const pasted = $("signed").value.trim();
       if (!pasted) {
-        fail("Nothing to submit.", "Paste the signed envelope first.");
+        correctable("Nothing to submit.", "Paste the signed envelope first.");
         return;
       }
       // Check what was pasted before sending it. A signature over something
@@ -213,8 +230,11 @@
       // than as a bare rejection.
       try {
         derive({ ...data, xdr: pasted });
-      } catch (err) {
-        fail("That is not this envelope.", err.message);
+      } catch (_) {
+        // The envelope shown above is still the one to sign, and the box is
+        // still where its signature goes.
+        correctable("That is not this envelope.",
+          "What you pasted is not the signed form of the transaction shown here. Sign that one, and paste the whole result.");
         return;
       }
       busy($("submit"), true);

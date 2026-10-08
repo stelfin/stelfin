@@ -38,8 +38,7 @@
   // a URL, and so it stays out of access logs and Referer headers. Strip it
   // from the address bar immediately: a screenshot or shoulder-surf of the URL
   // should not carry payment authority.
-  const token = location.hash.replace(/^#/, "");
-  history.replaceState(null, "", location.pathname);
+  const token = StelfinLink.token();
 
   if (!token) {
     fail("This link is incomplete.", "Open the link from your chat message again.");
@@ -90,15 +89,6 @@
     return Number(stripped) === Number(envelopeAmount);
   }
 
-  function loadSigningKey() {
-    const seed = localStorage.getItem("stelfin.key");
-    if (!seed) return null;
-    try {
-      return StellarSdk.Keypair.fromSecret(seed);
-    } catch {
-      return null;
-    }
-  }
 
   (async () => {
     let data;
@@ -166,6 +156,7 @@
         $("own").hidden = true;
         $("paymentNote").textContent =
           "Sent. Reference " + short(result.hash) + ". You can close this page.";
+        StelfinChain.point($("explorer"), data.network_passphrase, result.hash);
       } catch (err) {
         busy(button, false);
         button.textContent = idle;
@@ -188,8 +179,8 @@
     // payment comes from. Having *a* key is not enough: one for a different
     // wallet would sign without complaint, and the first sign of trouble would
     // be the network refusing the payment after the page had said "Sending".
-    const key = loadSigningKey();
-    if (key && key.publicKey() === data.from_address) {
+    const key = StelfinDeviceKey.keyFor(data.from_address);
+    if (key) {
       $("device").hidden = false;
       $("confirm").addEventListener("click", () => {
         envelope.tx.sign(key);
@@ -203,6 +194,7 @@
     // over exactly the transaction it just verified and takes back the same
     // one, signed.
     $("envelope").value = data.xdr;
+    StelfinClipboard.wire($("copyEnvelope"), $("envelope"), $("copiedEnvelope"));
     $("own").hidden = false;
     const wanted = envelope.tx.hash().toString("hex");
 

@@ -64,6 +64,21 @@ func Handler() http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Cache-Control", "no-store")
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		// A link to one of these pages carries authority in its fragment, and
+		// a browser that will fetch the page over plain http once has been
+		// given a chance to have it read. Ignored by a browser when the
+		// response did not arrive over TLS, so it costs a developer on
+		// localhost nothing.
+		h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+
+		// The suites that test these modules live beside them, and embedding
+		// the directory embeds them too. They are not secret, and they are not
+		// something a deployment should be handing out: nothing a page loads
+		// is ever named like this.
+		if strings.HasSuffix(r.URL.Path, ".test.js") {
+			http.NotFound(w, r)
+			return
+		}
 
 		// /confirm, /enroll, /link, /approve and /reclaim are pages; /static/ is a prefix over the same
 		// root Static() already sits at, so it must be stripped rather than

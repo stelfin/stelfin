@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
 <!--
   Create a wallet.
 
@@ -63,6 +64,14 @@
      green outline around a red warning reads as a control to press. */
   .alert:focus-visible { outline-color: var(--danger); }
   .note { font-size: var(--t-sm); color: var(--muted); margin-top: 0.85rem; }
+  button.secondary { color: var(--fg); background: transparent; border: 1px solid var(--line); }
+  button.spaced { margin-top: 0.75rem; }
+  h2 { font-size: var(--t-md); font-weight: 600; margin: 1.5rem 0 0.5rem; }
+  .secret {
+    display: block; margin-top: 0.75rem; padding: 0.65rem 0.75rem;
+    border: 1px solid var(--line); border-radius: 10px;
+    word-break: break-all; user-select: all;
+  }
   .note.center { text-align: center; }
   .alert {
     background: var(--danger-bg); border: 1px solid var(--danger); color: var(--danger);
@@ -103,9 +112,27 @@
   <section id="done" hidden>
     <h1>Your wallet is ready</h1>
     <p class="lede">You can close this page and go back to your chat.</p>
+
+    <h2>Keep a copy of its key</h2>
+    <p class="note">
+      The key exists only in this browser. Clearing this browser's data, or
+      losing this device, loses the wallet, and stelfin cannot get it back: it
+      never had the key.
+    </p>
+    <button id="reveal" type="button" class="secondary spaced" aria-expanded="false" aria-controls="backup">Show the secret key</button>
+    <div id="backup" hidden>
+      <code id="secret" class="secret" translate="no" tabindex="0" aria-label="Secret key"></code>
+      <button id="copySecret" type="button" class="secondary spaced">Copy it</button>
+      <p id="copied" class="note" role="status" aria-live="polite" hidden>Copied. Put it somewhere only you can reach.</p>
+      <p class="note">
+        Whoever has this can spend from the wallet. Never send it to anyone.
+        stelfin will never ask for it.
+      </p>
+    </div>
   </section>
 </main>
 
+<script src="/static/linktoken.js"></script>
 <script src="/static/stellar-sdk.min.js"></script>
 <script src="/static/enroll.js"></script>
 </body>

@@ -117,6 +117,21 @@ await enroll.until(`${shown("pending")} || ${refused}`, "the new wallet");
 const wallet = await enroll.text("address");
 check("enroll page generated a wallet on the device", /^G[A-Z2-7]{55}$/.test(wallet), wallet);
 check("the token is gone from the address bar", !(await enroll.run("return location.href")).includes("#"));
+
+// Reloading is what a person does when a page looks stuck. It used to come back
+// as "This link is incomplete", and — because the key was stored as if the
+// wallet already existed — as "this device already has a wallet" on every link
+// after it. The page has to come back as the same page, for the same wallet.
+check("a key made for a wallet that does not exist yet is filed as unfinished",
+  await enroll.run(`return localStorage.getItem("stelfin.key") === null && localStorage.getItem("stelfin.key.pending") !== null`));
+await enroll.run(`setTimeout(() => location.reload(), 0)`);
+await sleep(1500);
+await enroll.until(`${shown("pending")} || ${refused}`, "the page to come back after a reload");
+check("a reloaded page still has its link", !(await enroll.run(`return ${refused}`)),
+  (await enroll.run(`return ${refused}`)) ? (await enroll.text("alert")).replace(/\s+/g, " ") : "");
+check("a reloaded page carries on with the same wallet", (await enroll.text("address")) === wallet, await enroll.text("address"));
+check("the token is still out of the address bar after a reload", !(await enroll.run("return location.href")).includes("#"));
+
 await enroll.until(`!document.getElementById("create").disabled || ${refused}`, "the page to verify its transaction");
 check("enroll page verified the transaction it was sent", !(await enroll.run(`return ${refused}`)),
   (await enroll.run(`return ${refused}`)) ? (await enroll.text("alert")).replace(/\s+/g, " ") : "");
@@ -124,6 +139,15 @@ await enroll.run(`document.getElementById("create").click()`);
 await enroll.until(`${shown("done")} || ${refused}`, "the account to be created");
 const enrolled = await enroll.run(`return ${shown("done")}`);
 check("enroll page created the account", enrolled, await outcome(enroll, "done"));
+check("once the wallet exists its key is filed where the other pages look",
+  await enroll.run(`return localStorage.getItem("stelfin.key.pending") === null &&
+    StellarSdk.Keypair.fromSecret(localStorage.getItem("stelfin.key")).publicKey() === ${JSON.stringify(wallet)}`));
+// The one moment a copy of the key can be taken. Not shown until asked for.
+check("the secret key is not on screen until asked for", !(await enroll.run(`return ${shown("backup")}`)));
+await enroll.run(`document.getElementById("reveal").click()`);
+check("the secret key can be shown for a backup, and is this wallet's",
+  await enroll.run(`const s = document.getElementById("secret").textContent;
+    return ${shown("backup")} && /^S[A-Z2-7]{55}$/.test(s) && StellarSdk.Keypair.fromSecret(s).publicKey() === ${JSON.stringify(wallet)}`));
 
 // ---- Confirm, for a wallet whose key is not on this device.
 //
@@ -176,6 +200,14 @@ await ben.until(`${shown("ready")} || ${refused}`, "the execute button");
 await ben.run(`document.getElementById("execute").click()`);
 await ben.until(`${shown("done")} || ${refused}`, "execution");
 check("approve page executed the proposal", await ben.run(`return ${shown("done")}`), await outcome(ben, "done"));
+check("the executed transaction can be looked up",
+  await ben.run(`const a = document.getElementById("explorer");
+    const at = "https://stellar.expert/explorer/testnet/tx/";
+    return !a.hidden && a.href.startsWith(at) && a.href.length === at.length + 64 && a.rel === "noopener noreferrer"`),
+  await ben.run(`return document.getElementById("explorer").href`));
+check("the envelope can be copied with a button, and the fee is in XLM",
+  await ada.run(`return Boolean(document.getElementById("copyEnvelope")) && /XLM$/.test(document.getElementById("fee").textContent)`),
+  await ada.text("fee"));
 
 // ---- Link a wallet, and prove a treasury with two signatures.
 
@@ -277,6 +309,13 @@ if (!enrolled) {
   await reclaim.run(`document.getElementById("sign").click()`);
   await reclaim.until(`${shown("done")} || ${refused}`, "the account to be handed back");
   check("reclaim page handed the account back", await reclaim.run(`return ${shown("done")}`), await outcome(reclaim, "done"));
+  // The account is gone, so its key opens nothing. Left behind it is what made
+  // the page that sets a wallet up say there already was one, to somebody who
+  // had just handed theirs back.
+  check("a handed-back wallet's key is not left on the device",
+    await reclaim.run(`return localStorage.getItem("stelfin.key") === null && localStorage.getItem("stelfin.key.pending") === null`));
+  check("the hand-back can be looked up",
+    await reclaim.run(`const a = document.getElementById("explorer"); return !a.hidden && a.href.includes("/explorer/testnet/tx/")`));
 }
 
 check("no page threw", pageErrors.length === 0, pageErrors.join(" | "));

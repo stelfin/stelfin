@@ -22,11 +22,19 @@ const NEEDS = {
   "describe.js": ["stellar-sdk.min.js", "scval.js"],
   "scval.js": ["stellar-sdk.min.js"],
   "policy.js": [],
-  "approve.js": ["stellar-sdk.min.js", "describe.js", "policy.js"],
-  "reclaim.js": ["stellar-sdk.min.js", "describe.js", "policy.js"],
-  "confirm.js": ["stellar-sdk.min.js"],
-  "enroll.js": ["stellar-sdk.min.js"],
-  "link.js": ["stellar-sdk.min.js"],
+  // Reads the link's token and keeps it for the tab, so a page can be reloaded.
+  "linktoken.js": [],
+  // Names a network for people, and links a transaction on it.
+  "chain.js": [],
+  // The button that copies what a text box holds.
+  "clipboard.js": [],
+  // Finds the key this device holds for a wallet, by the wallet's address.
+  "devicekey.js": ["stellar-sdk.min.js"],
+  "approve.js": ["linktoken.js", "stellar-sdk.min.js", "describe.js", "policy.js", "chain.js", "clipboard.js"],
+  "reclaim.js": ["linktoken.js", "stellar-sdk.min.js", "describe.js", "policy.js", "devicekey.js", "chain.js", "clipboard.js"],
+  "confirm.js": ["linktoken.js", "stellar-sdk.min.js", "devicekey.js", "chain.js", "clipboard.js"],
+  "enroll.js": ["linktoken.js", "stellar-sdk.min.js"],
+  "link.js": ["linktoken.js", "stellar-sdk.min.js", "devicekey.js", "chain.js", "clipboard.js"],
 };
 
 function scriptsIn(html) {

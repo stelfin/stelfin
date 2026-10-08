@@ -41,8 +41,7 @@
   // The token lives in the fragment so it never reaches the server as part of a
   // URL, and so it stays out of access logs and Referer headers. Stripped from
   // the address bar immediately.
-  const token = location.hash.replace(/^#/, "");
-  history.replaceState(null, "", location.pathname);
+  const token = StelfinLink.token();
 
   if (!token) {
     fail("This link is incomplete.", "Open the link from your chat message again.");
@@ -84,6 +83,11 @@
         return [
           "That signature is not for this proposal.",
           "Sign the envelope shown here, not a copy from an earlier message.",
+        ];
+      case 422:
+        return [
+          "The network refused this transaction.",
+          "Ask stelfin in your chat: /execute there says what the network objected to, and whether the proposal is still open.",
         ];
       case 503:
         return ["Approvals are not available.", "This deployment has not enabled them."];
@@ -223,7 +227,20 @@
     }
   }
 
+  // Which network this proposal is on, once the server has said. Kept for the
+  // link to the transaction, which is made after the proposal has left the
+  // screen.
+  let passphrase = "";
+
+  // xlm writes an amount of stroops as XLM, exactly and without the zeros
+  // nobody reads: 100 is 0.00001, not 0.0000100.
+  function xlm(stroops) {
+    const text = StelfinPolicy.fromStroops(BigInt(stroops));
+    return text.replace(/\.?0+$/, "");
+  }
+
   function render(data) {
+    passphrase = data.network_passphrase;
     let d;
     try {
       d = derive(data);
@@ -239,7 +256,10 @@
       data.treasury_label ? data.treasury_label + " · " + data.treasury : data.treasury;
     $("weight").textContent = data.have + " of " + data.need;
     $("expires").textContent = new Date(data.expires_at).toLocaleString();
-    $("fee").textContent = d.fee + " stroops";
+    // In XLM, which is what a fee is paid in and what anybody has heard of.
+    // A stroop is a ten-millionth of one, and "100 stroops" on a screen where
+    // somebody is checking an amount reads as a hundred of something.
+    $("fee").textContent = xlm(d.fee) + " XLM";
     $("memo").textContent = d.memo_type === "none" ? "none" : d.memo_type + ": " + d.memo;
     $("sequence").textContent = d.sequence;
 
@@ -285,6 +305,8 @@
       busy($("submit"), false);
     });
 
+    StelfinClipboard.wire($("copyEnvelope"), $("envelope"), $("copiedEnvelope"));
+
     $("execute").addEventListener("click", async () => {
       busy($("execute"), true);
       try {
@@ -293,6 +315,7 @@
         $("doneLede").textContent =
           "Transaction " + res.hash + ", in ledger " + res.ledger +
           ". You can close this page and go back to your chat.";
+        StelfinChain.point($("explorer"), passphrase, res.hash);
         $("alert").hidden = true;
         $("proposal").hidden = true;
         $("done").hidden = false;

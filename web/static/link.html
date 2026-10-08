@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
 <!--
   Prove you control a Stellar address.
 
@@ -105,6 +106,8 @@
     button { transition: none; }
     button:active:not([disabled]) { transform: none; }
   }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:hover { text-decoration-thickness: 2px; }
   [hidden] { display: none !important; }
   textarea {
     width: 100%; min-height: 6.5rem; padding: 0.7rem; font: inherit;
@@ -173,10 +176,13 @@
     <h2 id="pasteHeading">Or sign in your own wallet</h2>
     <p class="note flush" id="pasteNote">
       Copy the challenge below, sign it in your wallet, and paste the signed
-      result back.
+      result back. Any wallet that signs a transaction given as XDR will do;
+      <a href="https://lab.stellar.org/transaction/sign" target="_blank" rel="noopener noreferrer">Stellar Lab</a> is one, under Sign transaction.
     </p>
     <textarea id="challenge" translate="no" spellcheck="false" readonly aria-label="Challenge to sign"
               aria-describedby="pasteNote"></textarea>
+    <button id="copyChallenge" type="button" class="secondary spaced">Copy it</button>
+    <p id="copiedChallenge" class="note" role="status" aria-live="polite" hidden></p>
     <h2>Signed challenge</h2>
     <textarea id="signed" translate="no" spellcheck="false" placeholder="Paste the signed XDR here…" aria-label="Signed challenge"
               aria-describedby="pasteNote"></textarea>
@@ -225,7 +231,11 @@
   </section>
 </main>
 
+<script src="/static/linktoken.js"></script>
 <script src="/static/stellar-sdk.min.js"></script>
+<script src="/static/devicekey.js"></script>
+<script src="/static/chain.js"></script>
+<script src="/static/clipboard.js"></script>
 <script src="/static/link.js"></script>
 </body>
 </html>

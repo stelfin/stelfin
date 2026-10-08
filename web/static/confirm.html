@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
 <!--
   Confirm a payment.
 
@@ -93,6 +94,8 @@
     button { transition: none; }
     button:active:not([disabled]) { transform: none; }
   }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:hover { text-decoration-thickness: 2px; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -124,10 +127,14 @@
       <h2>Sign in your own wallet</h2>
       <p class="note flush" id="ownNote">
         This payment comes from a wallet whose key is not on this device. Copy
-        the transaction, sign it in that wallet, and paste the result back.
+        the transaction, sign it in that wallet, and paste the result back. Any
+        wallet that signs a transaction given as XDR will do; <a href="https://lab.stellar.org/transaction/sign" target="_blank" rel="noopener noreferrer">Stellar Lab</a> is one,
+        under Sign transaction.
       </p>
       <textarea id="envelope" translate="no" spellcheck="false" readonly aria-label="Transaction to sign"
                 aria-describedby="ownNote"></textarea>
+      <button id="copyEnvelope" type="button" class="secondary spaced">Copy it</button>
+      <p id="copiedEnvelope" class="note" role="status" aria-live="polite" hidden></p>
       <h2>Signed transaction</h2>
       <textarea id="signed" translate="no" spellcheck="false" placeholder="Paste the signed XDR here…"
                 aria-label="Signed transaction" aria-describedby="ownNote"></textarea>
@@ -135,10 +142,15 @@
     </div>
 
     <p class="note center" id="paymentNote">Check the amount and recipient before sending. Payments cannot be reversed.</p>
+    <p class="note center"><a id="explorer" hidden>See it on stellar.expert</a></p>
   </section>
 </main>
 
+<script src="/static/linktoken.js"></script>
 <script src="/static/stellar-sdk.min.js"></script>
+<script src="/static/devicekey.js"></script>
+<script src="/static/chain.js"></script>
+<script src="/static/clipboard.js"></script>
 <script src="/static/confirm.js"></script>
 </body>
 </html>

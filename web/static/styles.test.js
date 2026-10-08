@@ -23,6 +23,11 @@ const path = require("node:path");
 // a page that was skipped, not to police how a rule is written.
 const REQUIRED = [
   {
+    name: "declares that it has no icon",
+    needle: '<link rel="icon" href="data:,">',
+    why: "a browser asks for /favicon.ico on every load of a page that does not say, there is no such route, and each of these pages then logs a failed request on a screen where a failed request means something",
+  },
+  {
     name: "hides [hidden] against any display rule",
     needle: "[hidden] { display: none !important; }",
     why: "the scripts show and hide every section by toggling .hidden, and a page whose flex or grid rule outranks it would reveal a section that is meant to be closed",
