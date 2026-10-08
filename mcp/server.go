@@ -33,6 +33,8 @@ type Server struct {
 
 	tools map[string]Tool
 	names []string
+
+	drafter Drafter
 }
 
 // callContext is what a tool is given.
@@ -45,8 +47,15 @@ type callContext struct {
 	org  ledger.OrgID
 	tier string
 	args map[string]any
+	// raw is the arguments as they arrived. A tool that takes amounts reads
+	// these and not args, because args went through a float on the way in.
+	raw json.RawMessage
+	// token is the token the call was made with, so that anything a tool
+	// makes can say which agent made it.
+	token int64
 
-	store *store.Store
+	store   *store.Store
+	drafter Drafter
 }
 
 // NewServer returns a Server exposing the read-tier tools.
@@ -174,11 +183,17 @@ func allows(tokenTier, toolTier string) bool {
 
 func (s *Server) call(ctx context.Context, token store.MCPToken, req request) response {
 	var params struct {
-		Name      string         `json:"name"`
-		Arguments map[string]any `json:"arguments"`
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
 	}
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return fail(req.ID, codeInvalidParams, "malformed parameters")
+	}
+	var args map[string]any
+	if len(params.Arguments) > 0 && string(params.Arguments) != "null" {
+		if err := json.Unmarshal(params.Arguments, &args); err != nil {
+			return fail(req.ID, codeInvalidParams, "arguments must be an object")
+		}
 	}
 
 	tool, known := s.tools[params.Name]
@@ -190,7 +205,8 @@ func (s *Server) call(ctx context.Context, token store.MCPToken, req request) re
 
 	result, err := tool.Run(callContext{
 		ctx: ctx, org: token.Org, tier: token.Tier,
-		args: params.Arguments, store: s.store,
+		args: args, raw: params.Arguments, token: token.ID,
+		store: s.store, drafter: s.drafter,
 	})
 	if err != nil {
 		// A tool failure is reported to the agent as a tool result rather than
