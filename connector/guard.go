@@ -79,7 +79,7 @@ type Guard struct {
 	grants Grants
 	now    Clock
 
-	limiter *rateLimiter
+	limiter Limiter
 }
 
 // NewGuard returns a Guard.
@@ -90,7 +90,7 @@ func NewGuard(grants Grants, now Clock) (*Guard, error) {
 	if now == nil {
 		now = time.Now
 	}
-	return &Guard{grants: grants, now: now, limiter: newRateLimiter()}, nil
+	return &Guard{grants: grants, now: now, limiter: localLimiter{newRateLimiter()}}, nil
 }
 
 // Read runs a Reader behind the guard.
@@ -119,6 +119,33 @@ func (g *Guard) Propose(
 		return Draft{}, err
 	}
 	return proposer.Propose(ctx, bound(request))
+}
+
+// Limiter counts calls against a grant's hourly allowance.
+//
+// The guard's own is in this process, which is right for one instance and
+// wrong for two: each would allow the full rate. A deployment running more than
+// one gives the guard a limiter they share — one that counts in the database,
+// at the cost of a round trip on every call.
+type Limiter interface {
+	// Allow reports whether one more call is within perHour, and if so
+	// counts it. Zero means never.
+	Allow(ctx context.Context, org int64, connector string, perHour int, now time.Time) (bool, error)
+}
+
+// WithLimiter replaces the guard's in-process limiter.
+func (g *Guard) WithLimiter(l Limiter) *Guard {
+	if l != nil {
+		g.limiter = l
+	}
+	return g
+}
+
+// localLimiter adapts the in-process limiter to Limiter.
+type localLimiter struct{ r *rateLimiter }
+
+func (l localLimiter) Allow(_ context.Context, org int64, connector string, perHour int, now time.Time) (bool, error) {
+	return l.r.allow(org, connector, perHour, now), nil
 }
 
 // MaxRows bounds any single call.
@@ -170,7 +197,12 @@ func (g *Guard) authorise(
 
 	// Spent last, so a call that was never going to be allowed does not consume
 	// an allowance on its way to being refused.
-	if !g.limiter.allow(org, descriptor.ID, grant.PerHour, g.now()) {
+	allowed, err := g.limiter.Allow(ctx, org, descriptor.ID, grant.PerHour, g.now())
+	if err != nil {
+		// A limit that cannot be checked is not a limit that was met.
+		return fmt.Errorf("%w: %s: the rate limit could not be checked", ErrRateExceeded, descriptor.ID)
+	}
+	if !allowed {
 		return fmt.Errorf("%w: %s is limited to %d calls an hour here",
 			ErrRateExceeded, descriptor.ID, grant.PerHour)
 	}
