@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/stelfin/stelfin/internal/money"
 	"github.com/stelfin/stelfin/ledger"
 )
 
@@ -95,6 +96,12 @@ type CreateProposalParams struct {
 	Description string
 	Digest      []byte
 
+	// Amount is what the proposal moves out of its treasury, in the
+	// deployment's asset. Zero for one that moves nothing out. It is what the
+	// spend ceilings sum, so it comes from the envelope's own description and
+	// never from what somebody typed.
+	Amount money.Stroops
+
 	CreatedBy MemberID
 	ExpiresAt time.Time
 }
@@ -127,11 +134,12 @@ func (s *Store) CreateProposal(ctx context.Context, p CreateProposalParams) (Pro
 	out, err := scanProposal(tx.QueryRow(ctx, `
 		INSERT INTO proposals (
 			org_id, treasury_id, kind, base_xdr, tx_hash, source_seq,
-			description_canonical, description_digest, created_by, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			description_canonical, description_digest, created_by, expires_at,
+			amount_stroops)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($11::bigint, 0))
 		RETURNING `+proposalColumns,
 		int64(p.Org), int64(p.Treasury), p.Kind, p.XDR, p.Hash, p.SourceSeq,
-		p.Description, p.Digest, int64(p.CreatedBy), p.ExpiresAt,
+		p.Description, p.Digest, int64(p.CreatedBy), p.ExpiresAt, int64(p.Amount),
 	))
 	if isUniqueViolation(err) {
 		// Either this treasury already has an open proposal, or this exact

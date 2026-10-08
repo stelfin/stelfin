@@ -265,6 +265,60 @@ func (s *Store) ReclaimGrant(ctx context.Context, org ledger.OrgID, address stri
 	return nil
 }
 
+// ReleaseGrant removes a grant whose account was never created.
+//
+// Only for a provisioning transaction the network refused outright. A grant is
+// one per member, for ever, so one left behind by a transaction that did not
+// happen would lock that member out of an account they never received. Not for
+// a reclaimed grant: that one records reserve that really was spent and really
+// was returned.
+func (s *Store) ReleaseGrant(ctx context.Context, org ledger.OrgID, address string) error {
+	_, err := s.pool.Exec(ctx, `
+		DELETE FROM enrollment_grants
+		 WHERE org_id = $1 AND address = $2 AND reclaimed_at IS NULL`,
+		int64(org), address)
+	if err != nil {
+		return fmt.Errorf("store: release grant: %w", err)
+	}
+	return nil
+}
+
+// EnrollmentPolicy is what an org has decided about provisioning.
+type EnrollmentPolicy struct {
+	// Budget is zero while provisioning is off, which is where every org
+	// starts.
+	Budget   money.Stroops
+	DailyCap int
+	// HasTreasury reports a proved treasury. Provisioning needs one whatever
+	// the budget says: it is the gate a drive-by install cannot pass.
+	HasTreasury bool
+}
+
+// On reports whether this org will currently pay for accounts at all. The
+// rate limits are a separate question, answered by GrantEnrollment.
+func (p EnrollmentPolicy) On() bool { return p.Budget > 0 && p.DailyCap > 0 && p.HasTreasury }
+
+// EnrollmentPolicyOf reads an org's provisioning policy.
+func (s *Store) EnrollmentPolicyOf(ctx context.Context, org ledger.OrgID) (EnrollmentPolicy, error) {
+	var (
+		p      EnrollmentPolicy
+		budget int64
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT o.enroll_budget_stroops, o.enroll_daily_cap,
+		       EXISTS (SELECT 1 FROM org_treasuries t WHERE t.org_id = o.id)
+		  FROM orgs o WHERE o.id = $1`, int64(org),
+	).Scan(&budget, &p.DailyCap, &p.HasTreasury)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return EnrollmentPolicy{}, fmt.Errorf("%w: %d", ErrOrgNotFound, org)
+	}
+	if err != nil {
+		return EnrollmentPolicy{}, fmt.Errorf("store: read enrolment policy: %w", err)
+	}
+	p.Budget = money.Stroops(budget)
+	return p, nil
+}
+
 // SetEnrollmentPolicy turns provisioning on or off for an org.
 func (s *Store) SetEnrollmentPolicy(
 	ctx context.Context, org ledger.OrgID, budget money.Stroops, dailyCap int,

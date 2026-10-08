@@ -337,3 +337,126 @@ func parseRole(name string) chat.Role {
 		return chat.RoleNone
 	}
 }
+
+// ErrLastAdmin reports a role change that would leave an org with no admin.
+//
+// A workspace nobody can administer cannot be repaired from chat: there is no
+// one left who may grant the role back. Refused in the same transaction that
+// would have caused it, so two admins demoting each other at the same moment
+// cannot both succeed.
+var ErrLastAdmin = errors.New("store: an org must keep at least one admin")
+
+// SetRole makes role the one org role a member holds, replacing whatever they
+// held. chat.RoleNone removes every role.
+//
+// Replace rather than add: EffectiveRole reports the highest role held, so
+// "granting" observer to an approver would otherwise change nothing while
+// reading as a demotion.
+func (s *Store) SetRole(
+	ctx context.Context, org ledger.OrgID, id MemberID, role chat.Role, by MemberID,
+) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// The org row is the lock. Without it two concurrent demotions each see
+	// the other's admin still standing.
+	var locked int64
+	if err := tx.QueryRow(ctx,
+		`SELECT id FROM orgs WHERE id = $1 FOR UPDATE`, int64(org)).Scan(&locked); err != nil {
+		return fmt.Errorf("store: lock org %d: %w", org, err)
+	}
+
+	var exists bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM members WHERE org_id = $1 AND id = $2)`,
+		int64(org), int64(id)).Scan(&exists); err != nil {
+		return fmt.Errorf("store: member %d: %w", id, err)
+	}
+	if !exists {
+		// Also the answer for a member of a different org: which it was is not
+		// something a caller in this one should learn.
+		return fmt.Errorf("%w: %d", ErrMemberNotFound, id)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM member_roles WHERE org_id = $1 AND member_id = $2`,
+		int64(org), int64(id)); err != nil {
+		return fmt.Errorf("store: clear roles: %w", err)
+	}
+	if role != chat.RoleNone {
+		var grantedBy *int64
+		if by != 0 {
+			v := int64(by)
+			grantedBy = &v
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO member_roles (org_id, member_id, role, granted_by)
+			VALUES ($1, $2, $3, $4)`,
+			int64(org), int64(id), role.String(), grantedBy); err != nil {
+			return fmt.Errorf("store: grant %s: %w", role, err)
+		}
+	}
+
+	var admins int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM member_roles WHERE org_id = $1 AND role = 'admin'`,
+		int64(org)).Scan(&admins); err != nil {
+		return fmt.Errorf("store: count admins: %w", err)
+	}
+	if admins == 0 {
+		return ErrLastAdmin
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit role change: %w", err)
+	}
+	return nil
+}
+
+// MemberRole is one member and the role granted to them directly.
+type MemberRole struct {
+	Member Member
+	// Role is the highest role granted to this member by name. A role conferred
+	// by a platform role binding is not included: that depends on what the
+	// platform reports for them at the moment they speak.
+	Role chat.Role
+}
+
+// Members lists an org's members, oldest first.
+func (s *Store) Members(ctx context.Context, org ledger.OrgID, limit int) ([]MemberRole, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+memberColumns+`,
+		       COALESCE((SELECT array_agg(r.role) FROM member_roles r
+		                  WHERE r.org_id = m.org_id AND r.member_id = m.id), '{}')
+		  FROM members m
+		 WHERE m.org_id = $1
+		 ORDER BY m.id
+		 LIMIT $2`, int64(org), limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list members: %w", err)
+	}
+	defer rows.Close()
+
+	var out []MemberRole
+	for rows.Next() {
+		var (
+			m     Member
+			roles []string
+		)
+		if err := rows.Scan(&m.ID, &m.Org, &m.DisplayName, &m.Address,
+			&m.AddressSource, &m.VerifiedAt, &m.Status, &roles); err != nil {
+			return nil, fmt.Errorf("store: scan member: %w", err)
+		}
+		best := chat.RoleNone
+		for _, name := range roles {
+			if r := parseRole(name); r > best {
+				best = r
+			}
+		}
+		out = append(out, MemberRole{Member: m, Role: best})
+	}
+	return out, rows.Err()
+}
