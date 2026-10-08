@@ -54,6 +54,25 @@ func TestSplitCommand(t *testing.T) {
 			},
 			cmd: "pay", args: "5000", ok: true,
 		},
+		"hyphenated, as the replies spell it": {
+			// Telegram annotates only "/link"; the rest arrives as text.
+			text:     "/link-treasury GABC",
+			entities: []entity{{Type: "bot_command", Offset: 0, Length: 5}},
+			cmd:      "link-treasury", args: "GABC", ok: true,
+		},
+		"underscored, as the menu offers it": {
+			text:     "/link_treasury GABC",
+			entities: []entity{{Type: "bot_command", Offset: 0, Length: 14}},
+			cmd:      "link-treasury", args: "GABC", ok: true,
+		},
+		"a negative argument is not a command suffix": {
+			text: "/pay -5", entities: entitiesFor("/pay -5", 4),
+			cmd: "pay", args: "-5", ok: true,
+		},
+		"a bare hyphen is left alone": {
+			text: "/link- GABC", entities: entitiesFor("/link- GABC", 5),
+			cmd: "link", args: "- GABC", ok: true,
+		},
 		"leading whitespace": {
 			text:     "  /balance",
 			entities: []entity{{Type: "bot_command", Offset: 2, Length: 8}},

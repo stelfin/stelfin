@@ -11,6 +11,8 @@ type entity struct {
 	Type   string `json:"type"`
 	Offset int    `json:"offset"`
 	Length int    `json:"length"`
+	// User is set on a text_mention: the person linked, by id.
+	User *user `json:"user,omitempty"`
 }
 
 // splitCommand separates a leading bot command from its arguments.
@@ -68,11 +70,21 @@ func splitCommand(text string, entities []entity) (cmd, args string, ok bool) {
 		if at := strings.IndexByte(name, '@'); at >= 0 {
 			// "/pay@stelfinbot", in a group where several bots are present.
 			name = name[:at]
+		} else {
+			// Telegram's idea of a command stops at the first character that
+			// is not a letter, a digit or an underscore, so "/link-treasury G…"
+			// arrives annotated as "/link" with "-treasury G…" left over. Every
+			// reply this bot sends spells the command with the hyphen, and a
+			// person who types what they were told to type must not land in a
+			// different command.
+			tail := hyphenTail(rest)
+			name += tail
+			rest = rest[len(tail):]
 		}
 		if name == "" {
 			return "", text, false
 		}
-		return strings.ToLower(name), strings.TrimSpace(rest), true
+		return canonicalName(name), strings.TrimSpace(rest), true
 	}
 	return "", text, false
 }
@@ -102,4 +114,46 @@ func leads(prefix []uint16, entities []entity, commandOffset int) bool {
 		}
 	}
 	return true
+}
+
+// hyphenTail returns the part of rest that continues a hyphenated command name:
+// one or more "-word" groups sitting directly against the annotated command,
+// with no space between.
+//
+// The no-space rule is what keeps this from eating an argument. "/pay -5" has a
+// space, so its "-5" stays an argument; only "/link-code", typed as one word,
+// is one word.
+func hyphenTail(rest string) string {
+	end := 0
+	for end < len(rest) && rest[end] == '-' {
+		i := end + 1
+		for i < len(rest) && isCommandByte(rest[i]) {
+			i++
+		}
+		if i == end+1 {
+			break
+		}
+		end = i
+	}
+	return rest[:end]
+}
+
+func isCommandByte(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_'
+}
+
+// canonicalName maps what Telegram delivers onto the name a command is
+// declared under.
+//
+// Commands are declared once, for every platform, and some are hyphenated.
+// Telegram permits only lowercase letters, digits and underscores in a command,
+// so wireName publishes "link-treasury" as "link_treasury" and this is its
+// inverse — which is why no command may be declared with an underscore.
+func canonicalName(name string) string {
+	return strings.ReplaceAll(strings.ToLower(name), "_", "-")
+}
+
+// wireName is the spelling of a command Telegram will accept in setMyCommands.
+func wireName(name string) string {
+	return strings.ReplaceAll(strings.ToLower(name), "-", "_")
 }

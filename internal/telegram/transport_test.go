@@ -337,6 +337,23 @@ func TestSendExplainsAClosedDM(t *testing.T) {
 	if !strings.Contains(err.Error(), "never") {
 		t.Errorf("error does not explain the cause: %v", err)
 	}
+
+	// The error reaches a log. The person who can fix it is in the group, and
+	// has to be told there — in words that repeat nothing of the reply.
+	calls := api.callsTo("sendMessage")
+	if len(calls) != 2 {
+		t.Fatalf("made %d sendMessage calls, want the private attempt and a notice", len(calls))
+	}
+	notice := string(calls[1].Body)
+	if !strings.Contains(notice, `"chat_id":"-100"`) {
+		t.Errorf("the notice did not go to the group: %s", notice)
+	}
+	if !strings.Contains(notice, "Start") {
+		t.Errorf("the notice does not say what to do: %s", notice)
+	}
+	if strings.Contains(notice, "confirm here") {
+		t.Errorf("the notice repeats the private reply where the room can read it: %s", notice)
+	}
 }
 
 // TestErrorsNeverCarryTheBotToken: the token is in the API URL path, and net/http
@@ -399,6 +416,31 @@ func TestRegisterCommandsScopesTheAdminSubset(t *testing.T) {
 	for _, want := range []string{`"policy"`, `"balance"`} {
 		if !strings.Contains(admins, want) {
 			t.Errorf("administrators are not offered %s: %s", want, admins)
+		}
+	}
+}
+
+// A hyphen is not legal in a Telegram command, and one illegal name fails the
+// whole setMyCommands call — so a single hyphenated command would take the menu
+// away for every other one.
+func TestRegisterCommandsPublishesNamesTelegramAccepts(t *testing.T) {
+	api := newStubAPI(t)
+	tr := newTransport(t, api)
+
+	cmds := []chat.Command{
+		{Name: "link-code", Description: "get a code", MinRole: chat.RoleNone},
+		{Name: "link-treasury", Description: "prove an account", MinRole: chat.RoleAdmin},
+	}
+	if err := tr.RegisterCommands(context.Background(), cmds); err != nil {
+		t.Fatalf("RegisterCommands: %v", err)
+	}
+	for _, call := range api.callsTo("setMyCommands") {
+		body := string(call.Body)
+		if strings.Contains(body, "link-") {
+			t.Errorf("published a hyphenated command name: %s", body)
+		}
+		if !strings.Contains(body, `"link_code"`) {
+			t.Errorf("link-code was not published as link_code: %s", body)
 		}
 	}
 }
@@ -490,4 +532,36 @@ func TestTelegramSatisfiesTheConformanceSuite(t *testing.T) {
 			return ok && opts["is_disabled"] == true
 		},
 	})
+}
+
+// TestParsePicksAPersonByIDNeverByHandle: "/grant approver" sent as a reply
+// means the person replied to, by the id Telegram assigned them. A handle in
+// the text is just text: renameable, and reassignable once released.
+func TestParsePicksAPersonByIDNeverByHandle(t *testing.T) {
+	tr := newTransport(t, newStubAPI(t))
+	for name, tc := range map[string]struct {
+		body string
+		want string
+	}{
+		"a reply": {`{"update_id":31,"message":{"message_id":5,"from":{"id":42},"chat":{"id":-100,"type":"supergroup"},
+			"text":"/grant approver","entities":[{"type":"bot_command","offset":0,"length":6}],
+			"reply_to_message":{"from":{"id":77,"username":"bo"}}}}`, "77"},
+		"a text mention": {`{"update_id":32,"message":{"message_id":5,"from":{"id":42},"chat":{"id":-100,"type":"supergroup"},
+			"text":"/grant Bo approver","entities":[{"type":"bot_command","offset":0,"length":6},
+			{"type":"text_mention","offset":7,"length":2,"user":{"id":78}}]}}`, "78"},
+		"a reply to the bot itself": {`{"update_id":33,"message":{"message_id":5,"from":{"id":42},"chat":{"id":-100,"type":"supergroup"},
+			"text":"/grant approver","entities":[{"type":"bot_command","offset":0,"length":6}],
+			"reply_to_message":{"from":{"id":9,"is_bot":true}}}}`, ""},
+		"an @handle": {`{"update_id":34,"message":{"message_id":5,"from":{"id":42},"chat":{"id":-100,"type":"supergroup"},
+			"text":"/grant @bo approver","entities":[{"type":"bot_command","offset":0,"length":6},
+			{"type":"mention","offset":7,"length":3}]}}`, ""},
+	} {
+		d, err := tr.Parse([]byte(tc.body))
+		if err != nil || len(d.Messages) != 1 {
+			t.Fatalf("%s: parse: %v (%d messages)", name, err, len(d.Messages))
+		}
+		if got := d.Messages[0].Options["user"]; got != tc.want {
+			t.Errorf("%s: picked %q, want %q", name, got, tc.want)
+		}
+	}
 }

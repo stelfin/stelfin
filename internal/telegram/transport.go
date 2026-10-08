@@ -133,6 +133,10 @@ type message struct {
 	Chat            *tgChat  `json:"chat"`
 	Text            string   `json:"text"`
 	Entities        []entity `json:"entities"`
+	// ReplyTo is the message this one answers. Only its author is read.
+	ReplyTo *struct {
+		From *user `json:"from"`
+	} `json:"reply_to_message"`
 }
 
 type user struct {
@@ -198,6 +202,19 @@ func (t *Transport) Parse(body []byte) (chat.Delivery, error) {
 		conv.ThreadID = strconv.FormatInt(m.MessageThreadID, 10)
 	}
 
+	// Who a command is about, by the platform's own immutable id: the author
+	// of the message being replied to, or a person mentioned by a text
+	// mention, which is how Telegram links someone who has no username.
+	//
+	// Never by @handle. A handle is free to rename and, once released, free
+	// for someone else to take, and a role granted to one would follow it.
+	// This is what lets "/grant approver" in reply to somebody's message mean
+	// that person, without them having to speak to the bot first.
+	var options map[string]string
+	if picked := pickedUser(m); picked != "" {
+		options = map[string]string{"user": picked}
+	}
+
 	ack.Messages = []chat.Inbound{{
 		// Channel-prefixed: a Telegram update id and a Discord snowflake share
 		// no id space, and an unprefixed claim would let one hide the other.
@@ -213,9 +230,27 @@ func (t *Transport) Parse(body []byte) (chat.Delivery, error) {
 		Conversation: conv,
 		Command:      cmd,
 		Args:         args,
+		Options:      options,
 		ReceivedAt:   time.Now(),
 	}}
 	return ack, nil
+}
+
+// pickedUser returns the id of the person a message points at, or "".
+//
+// A reply wins over a mention: replying is the deliberate gesture, and a
+// message may mention several people in passing. A bot is never picked — the
+// bot itself least of all.
+func pickedUser(m *message) string {
+	if m.ReplyTo != nil && m.ReplyTo.From != nil && !m.ReplyTo.From.IsBot && m.ReplyTo.From.ID != 0 {
+		return strconv.FormatInt(m.ReplyTo.From.ID, 10)
+	}
+	for _, e := range m.Entities {
+		if e.Type == "text_mention" && e.User != nil && !e.User.IsBot && e.User.ID != 0 {
+			return strconv.FormatInt(e.User.ID, 10)
+		}
+	}
+	return ""
 }
 
 // sendMessageRequest is the outbound wire body.
@@ -290,6 +325,7 @@ func (t *Transport) Send(ctx context.Context, to chat.Conversation, actor chat.A
 	if err := t.call(ctx, "sendMessage", req, nil); err != nil {
 		var apiErr *apiError
 		if errors.As(err, &apiErr) && apiErr.Code == http.StatusForbidden && r.Ephemeral && !to.IsDM {
+			t.sayStartFirst(ctx, to, actor)
 			return fmt.Errorf(
 				"telegram: cannot send privately to this member — they have never "+
 					"started a chat with the bot: %w", err)
@@ -297,6 +333,37 @@ func (t *Transport) Send(ctx context.Context, to chat.Conversation, actor chat.A
 		return err
 	}
 	return nil
+}
+
+// startFirstNotice is posted to the group when a private reply cannot be
+// delivered. It is fixed text on purpose: whatever the undelivered reply said —
+// a signing link, someone's own instruction quoted back — none of it may be
+// repeated where the room can read it.
+const startFirstNotice = "I answer privately, and Telegram only lets me message " +
+	"people who have started a chat with me. Open a chat with me, press Start, " +
+	"then send that again."
+
+// sayStartFirst tells the group, in place of a reply it could not deliver,
+// what the person has to do.
+//
+// Without it the failure is silent on the only side that can fix it: the bot
+// logs an error and the member, who typed a command and got nothing, concludes
+// it is broken. Best effort — if this fails too there is nobody left to tell.
+func (t *Transport) sayStartFirst(ctx context.Context, to chat.Conversation, actor chat.Actor) {
+	text := startFirstNotice
+	if actor.Handle != "" {
+		text = "@" + actor.Handle + " " + text
+	}
+	req := sendMessageRequest{
+		ChatID:             to.SpaceID,
+		Text:               text,
+		MessageThreadID:    to.ThreadID,
+		LinkPreviewOptions: &linkPreviewOptions{IsDisabled: true},
+	}
+	if to.MessageID != "" {
+		req.ReplyParameters = &replyParameters{MessageID: to.MessageID, AllowSendingWithoutReply: true}
+	}
+	_ = t.call(ctx, "sendMessage", req, nil)
 }
 
 // botCommand is one entry in setMyCommands.
@@ -321,7 +388,9 @@ func (t *Transport) RegisterCommands(ctx context.Context, cmds []chat.Command) e
 	all := make([]botCommand, 0, len(cmds))
 	admin := make([]botCommand, 0, len(cmds))
 	for _, c := range cmds {
-		entry := botCommand{Command: c.Name, Description: c.Description}
+		// Hyphens are not legal in a Telegram command and one bad name fails
+		// the whole call, taking the menu for every other command with it.
+		entry := botCommand{Command: wireName(c.Name), Description: c.Description}
 		if c.MinRole >= chat.RoleAdmin {
 			admin = append(admin, entry)
 			continue
