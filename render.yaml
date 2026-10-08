@@ -123,3 +123,33 @@ services:
         value: ""
       - key: STELFIN_SHUTDOWN_GRACE
         value: 20s
+
+      # The kill switch. Set to "true" in the dashboard and redeploy to stop
+      # everything that builds or submits while leaving reads up.
+      - key: STELFIN_READONLY
+        value: "false"
+      # The same switch without a redeploy: while this file exists, nothing is
+      # built or submitted.
+      - key: STELFIN_READONLY_FILE
+        value: /tmp/stelfin-readonly
+
+      # Calling allowed third-party contracts. Off: contract calls are not
+      # bounded by the spend ceilings.
+      - key: STELFIN_CONTRACT_CALLS
+        value: "false"
+
+      # Deployment-wide ceilings on treasury proposals, in whole units of the
+      # asset. Optional on testnet; the server refuses to start on the public
+      # network without them.
+      - key: STELFIN_MAX_PAYMENT
+        sync: false
+      - key: STELFIN_MAX_DAILY
+        sync: false
+
+      # Connectors. Optional; each enables its own half. The key seals
+      # connector endpoints and tokens at rest (openssl rand -hex 32). The
+      # service account is the JSON key Google issues, pasted whole.
+      - key: STELFIN_CONNECTOR_KEY
+        sync: false
+      - key: STELFIN_GOOGLE_SERVICE_ACCOUNT
+        sync: false
