@@ -89,13 +89,6 @@ func (s *Service) Handle(ctx context.Context, m chat.Inbound, out api.Replier, l
 	}
 
 	if m.Command == "" {
-		if s.unavailable.FreeText {
-			// Said plainly, and once per message addressed to the bot. The
-			// alternative was handing the sentence to a decoder with no model
-			// behind it and apologising for the failure, every time, as if
-			// trying again might help.
-			return req.reply(ctx, noModelReply)
-		}
 		return s.sender.HandleSend(ctx, req.scope, m, out, links)
 	}
 
@@ -211,10 +204,6 @@ func (s *Service) introduction() string {
 	}
 	return b.String()
 }
-
-// noModelReply answers a sentence on a deployment with no model to read it.
-const noModelReply = "I can't read a sentence here: this deployment has no language model connected, " +
-	"so I only understand commands. /help lists them — /pay proposes a payment from the treasury."
 
 // readOnlyReply answers anything that would build or submit while the
 // deployment's kill switch is on.

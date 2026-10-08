@@ -49,6 +49,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -138,7 +139,12 @@ func TestTreasuryPaymentEndToEnd(t *testing.T) {
 	port := freePort(t)
 	base := fmt.Sprintf("http://localhost:%d", port)
 
-	startServer(t, base, map[string]string{
+	// The decoder's model, stood in for. It reads the tokens it is sent and
+	// answers with positions in them, which is all the real one is trusted to
+	// do: everything it says is re-checked against the user's words.
+	model := newFakeModel(t)
+
+	env := map[string]string{
 		"STELFIN_HTTP_ADDR":               fmt.Sprintf("127.0.0.1:%d", port),
 		"STELFIN_BASE_URL":                base,
 		"STELFIN_DATABASE_URL":            db.DSN,
@@ -152,12 +158,7 @@ func TestTreasuryPaymentEndToEnd(t *testing.T) {
 		"STELFIN_TELEGRAM_BOT_TOKEN":      botToken,
 		"STELFIN_TELEGRAM_WEBHOOK_SECRET": webhookSecret,
 		"STELFIN_TELEGRAM_API_URL":        telegram.URL,
-		// The decoder's model, stood in for. It reads the tokens it is sent and
-		// answers with positions in them, which is all the real one is trusted
-		// to do: everything it says is re-checked against the user's words.
-		"ANTHROPIC_BASE_URL":     newFakeModel(t).URL,
-		"ANTHROPIC_API_KEY":      "e2e-not-a-key",
-		"STELFIN_SHUTDOWN_GRACE": "5s",
+		"STELFIN_SHUTDOWN_GRACE":          "5s",
 
 		"STELFIN_DISCORD_PUBLIC_KEY":     hex.EncodeToString(discord.public),
 		"STELFIN_DISCORD_BOT_TOKEN":      "e2e-discord-bot-token",
@@ -174,7 +175,11 @@ func TestTreasuryPaymentEndToEnd(t *testing.T) {
 
 		"STELFIN_CONNECTOR_KEY":          strings.Repeat("0f", 32),
 		"STELFIN_GOOGLE_SERVICE_ACCOUNT": throwawayServiceAccount(t),
-	})
+	}
+	for k, v := range decoderEnv(model) {
+		env[k] = v
+	}
+	startServer(t, base, env)
 
 	// The command menu is published at boot, and Telegram rejects the whole
 	// call if any name carries a hyphen.
@@ -415,6 +420,15 @@ func TestTreasuryPaymentEndToEnd(t *testing.T) {
 		&txnbuild.Payment{Destination: carol.Address(), Amount: "10", Asset: usdc},
 	}, issuer)
 	before := balance(t, horizon, recipient.Address(), usdc)
+
+	// The model is somebody else's API, and it goes down. A sentence written
+	// plainly is read anyway, by a grammar that needs no model; one that is not
+	// is answered with how to write it so that it goes through, and is not
+	// called a mistake.
+	model.down.Store(true)
+	mustContain(t, chat.ask(carolID, "carol", plain), "Send 3")
+	mustContain(t, chat.ask(carolID, "carol", "could you send three to "+recipient.Address()), "isn't answering")
+	model.down.Store(false)
 
 	reply = chat.ask(carolID, "carol", plain)
 	mustContain(t, reply, "Send 3")
@@ -913,36 +927,35 @@ func plus(t *testing.T, balance string, units int) string {
 	return strconv.Itoa(n+units) + "." + frac
 }
 
-// ---- The model: the Messages API, as much of it as the decoder calls.
+// ---- The model: as much of a provider's API as a decoder calls.
 
-// newFakeModel answers a decode the way a careful model would: by pointing at
+// fakeModel answers a decode the way a careful model would: by pointing at
 // tokens. It finds the verb, the first number and the address in the token
 // list it was sent and returns their positions, copying the text exactly.
 //
 // It is deliberately dumb. Nothing downstream trusts the decoder, so a stand-in
 // that can only point is enough to exercise everything that does the checking.
-func newFakeModel(t *testing.T) *httptest.Server {
-	token := regexp.MustCompile(`(?m)^  \[(\d+)\] (.+)$`)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Messages []struct {
-				Content []struct {
-					Text string `json:"text"`
-				} `json:"content"`
-			} `json:"messages"`
-		}
-		raw, _ := io.ReadAll(r.Body)
-		if err := json.Unmarshal(raw, &req); err != nil || len(req.Messages) == 0 || len(req.Messages[0].Content) == 0 {
-			t.Errorf("the decoder sent something the stand-in cannot read: %s", raw)
-			http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"unreadable"}}`, http.StatusBadRequest)
-			return
-		}
+//
+// It speaks both wire formats the server can be configured for: the OpenAI
+// chat-completions one that most providers share, which is what this run uses
+// unless E2E_DECODER says otherwise, and Anthropic's Messages API.
+type fakeModel struct {
+	*httptest.Server
+	// down makes every request fail, the way a provider does when it is
+	// rate-limiting, out of credit, or simply having a bad afternoon.
+	down atomic.Bool
+}
 
+func newFakeModel(t *testing.T) *fakeModel {
+	token := regexp.MustCompile(`(?m)^  \[(\d+)\] (.+)$`)
+
+	// point reads the token list a decoder sent and answers with positions.
+	point := func(listing string) string {
 		span := func(i int, text string) map[string]any {
 			return map[string]any{"text": text, "turn": 0, "start": i, "end": i + 1}
 		}
 		out := map[string]any{}
-		for _, m := range token.FindAllStringSubmatch(req.Messages[0].Content[0].Text, -1) {
+		for _, m := range token.FindAllStringSubmatch(listing, -1) {
 			i, _ := strconv.Atoi(m[1])
 			text := m[2]
 			switch {
@@ -959,17 +972,81 @@ func newFakeModel(t *testing.T) *httptest.Server {
 			out["action"] = map[string]any{"text": "", "turn": 0, "start": 0, "end": 0}
 		}
 		decoded, _ := json.Marshal(out)
+		return string(decoded)
+	}
 
+	f := &fakeModel{}
+	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
+		if f.down.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, `{"error":{"message":"the model is overloaded"}}`)
+			return
+		}
+
+		if strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			var req struct {
+				Messages []struct {
+					Role    string `json:"role"`
+					Content string `json:"content"`
+				} `json:"messages"`
+			}
+			if err := json.Unmarshal(raw, &req); err != nil || len(req.Messages) == 0 {
+				t.Errorf("the decoder sent something the stand-in cannot read: %s", raw)
+				http.Error(w, `{"error":{"message":"unreadable"}}`, http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "cmpl_e2e", "object": "chat.completion",
+				"choices": []map[string]any{{
+					"index": 0, "finish_reason": "stop",
+					"message": map[string]any{
+						"role": "assistant", "content": point(req.Messages[len(req.Messages)-1].Content),
+					},
+				}},
+			})
+			return
+		}
+
+		var req struct {
+			Messages []struct {
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(raw, &req); err != nil || len(req.Messages) == 0 || len(req.Messages[0].Content) == 0 {
+			t.Errorf("the decoder sent something the stand-in cannot read: %s", raw)
+			http.Error(w, `{"type":"error","error":{"type":"invalid_request_error","message":"unreadable"}}`, http.StatusBadRequest)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id": "msg_e2e", "type": "message", "role": "assistant", "model": "claude-opus-5",
-			"content":     []map[string]any{{"type": "text", "text": string(decoded)}},
+			"content":     []map[string]any{{"type": "text", "text": point(req.Messages[0].Content[0].Text)}},
 			"stop_reason": "end_turn", "stop_sequence": nil,
 			"usage": map[string]any{"input_tokens": 1, "output_tokens": 1},
 		})
 	}))
-	t.Cleanup(srv.Close)
-	return srv
+	t.Cleanup(f.Close)
+	return f
+}
+
+// decoderEnv points the server at the stand-in, in whichever wire format this
+// run is exercising.
+func decoderEnv(model *fakeModel) map[string]string {
+	if os.Getenv("E2E_DECODER") == "anthropic" {
+		return map[string]string{
+			"STELFIN_DECODER":    "anthropic",
+			"ANTHROPIC_BASE_URL": model.URL,
+			"ANTHROPIC_API_KEY":  "e2e-not-a-key",
+		}
+	}
+	return map[string]string{
+		"STELFIN_DECODER_BASE_URL": model.URL + "/v1",
+		"STELFIN_DECODER_API_KEY":  "e2e-not-a-key",
+		"STELFIN_DECODER_MODEL":    "e2e-model",
+	}
 }
 
 // ---- Discord: interactions in, followups out.

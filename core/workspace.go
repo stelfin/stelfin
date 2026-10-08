@@ -412,7 +412,6 @@ func (s *Service) workspaceCommands() []*command {
 		},
 		{
 			name:        "send",
-			needs:       needsFreeText,
 			description: "Send from your own wallet, in your own words",
 			options:     text("what", "Like: 50 to mum", true),
 			minRole:     chat.RoleNone,

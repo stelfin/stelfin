@@ -90,8 +90,10 @@ type Config struct {
 // service wired with no opinion at all should offer everything, as it did
 // before this type existed.
 type Unavailable struct {
-	// FreeText: no model is connected, so a sentence cannot be read.
-	FreeText bool
+	// Model: no language model is connected. A sentence is still read, by a
+	// fixed grammar, in the one form "send <amount> to <who>" — so this hides
+	// nothing, and only changes what /help says a sentence can be.
+	Model bool
 	// Connectors: neither a connector key nor a Google service account.
 	Connectors bool
 	// ContractCalls: not switched on, or no Soroban RPC to make them through.
@@ -100,8 +102,7 @@ type Unavailable struct {
 
 // lacks reports whether any capability in needs is missing.
 func (u Unavailable) lacks(needs capability) bool {
-	return needs&needsFreeText != 0 && u.FreeText ||
-		needs&needsConnectors != 0 && u.Connectors ||
+	return needs&needsConnectors != 0 && u.Connectors ||
 		needs&needsContractCalls != 0 && u.ContractCalls
 }
 

@@ -199,9 +199,14 @@ the network.
 On Telegram a command cannot contain a hyphen, so the menu offers
 `/link_treasury` and `/link_code`. Typing them with a hyphen works too.
 
-Writing in your own words needs `ANTHROPIC_API_KEY`: a model finds the amount
-and the recipient in the sentence, and what it finds is checked against the
-words before anything is built. The slash commands need no model at all.
+Writing in your own words needs a language model: it finds the amount and the
+recipient in the sentence, and what it finds is checked against the words
+before anything is built. Any provider that speaks the OpenAI format will do
+(`STELFIN_DECODER_API_KEY`, `STELFIN_DECODER_MODEL`, and
+`STELFIN_DECODER_BASE_URL` unless it is OpenAI's own), or Anthropic
+(`ANTHROPIC_API_KEY`). With neither, a sentence is still read in the one form
+`send 5 to mum`, and that form keeps working when a model's provider is down.
+The slash commands need no model at all.
 
 The treasury pays its own transaction fee, so it needs a little XLM, and the
 destination needs a trustline to the asset in `STELFIN_ASSET_CODE` /

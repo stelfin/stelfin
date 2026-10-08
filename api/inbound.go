@@ -201,6 +201,13 @@ func (s *Service) replyWithProblem(ctx context.Context, out Replier, m chat.Inbo
 		body = "That doesn't look like a valid wallet address. Check it and send the instruction again."
 	case errors.Is(cause, intent.ErrAmountUnreadable), errors.Is(cause, intent.ErrAmountAmbiguous):
 		body = "I couldn't tell how much. Send it again with the amount as a number, like: send 50 to G…"
+	case errors.Is(cause, intent.ErrDecoderUnavailable):
+		// Not their mistake, and said so. What they wrote may be perfectly
+		// good; what is missing is something to read it with, and there is a
+		// way to write it that needs nothing.
+		body = "I can't read a sentence right now: the language model I use for that isn't " +
+			"answering. Written plainly it still goes through — send 5 to G… or send 5 to a " +
+			"name you've saved. Nothing was sent."
 	case sourceMissing(cause):
 		body = "Your wallet doesn't exist on this network yet, so there's nothing to send from. " +
 			"It needs to be funded, and to hold the asset, before I can build a payment from it."

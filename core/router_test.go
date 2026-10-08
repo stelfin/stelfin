@@ -1084,7 +1084,6 @@ func TestACommandTheDeploymentCannotServeIsNotOffered(t *testing.T) {
 	}{
 		"no connectors":     {Unavailable{Connectors: true}, []string{"connector", "connectors", "read", "payroll"}},
 		"no contract calls": {Unavailable{ContractCalls: true}, []string{"contract", "contracts", "invoke", "restore"}},
-		"no model":          {Unavailable{FreeText: true}, []string{"send"}},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1138,11 +1137,16 @@ func TestACommandTheDeploymentCannotServeIsNotOffered(t *testing.T) {
 	}
 }
 
-// TestWithNoModelASentenceIsToldSo: the alternative was handing it to a decoder
-// with nothing behind it and apologising for the failure every time, as if
-// trying again might help — under a /help that invited people to try.
-func TestWithNoModelASentenceIsToldSo(t *testing.T) {
-	h := harnessWithout(t, Unavailable{FreeText: true})
+// TestWithNoModelASentenceIsStillRead: no model used to mean no sentences, and
+// then that /send was withdrawn and a sentence was told so. Neither is needed.
+// The one form a payment can always be written in is read with no model at
+// all, so nothing is hidden, and what changes is only what /help promises a
+// sentence can be.
+func TestWithNoModelASentenceIsStillRead(t *testing.T) {
+	h := harnessWithout(t, Unavailable{Model: true})
+	if !offered(h.svc.Commands())["send"] {
+		t.Fatal("/send is withdrawn on a deployment with no model, and it does not need one")
+	}
 	if err := h.handle(t, message("-430901", commandSetup, "Acme DAO")); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -1151,22 +1155,23 @@ func TestWithNoModelASentenceIsToldSo(t *testing.T) {
 	if err := h.handle(t, message("-430901", "", "send 5 to ada")); err != nil {
 		t.Fatalf("free text: %v", err)
 	}
-	if body := h.out.only(t).Text; body != noModelReply {
-		t.Errorf("reply:\n%s", body)
-	}
-	if got := len(h.sender.sent()); got != 0 {
-		t.Errorf("the sentence reached the payment path %d times with no model to read it", got)
+	if got := len(h.sender.sent()); got != 1 {
+		t.Errorf("the sentence reached the payment path %d times, want 1", got)
 	}
 
 	h.out = &fakeReplier{}
 	if err := h.handle(t, message("-430901", "help", "")); err != nil {
 		t.Fatalf("help: %v", err)
 	}
-	if body := h.out.only(t).Text; strings.Contains(body, "in your own words") {
-		t.Errorf("/help invites a sentence nothing can read:\n%s", body)
+	body := h.out.only(t).Text
+	if strings.Contains(body, "Or just tell me what you want to send") {
+		t.Errorf("/help promises a sentence in any words, with nothing to read one:\n%s", body)
+	}
+	if !strings.Contains(body, "send 5 to") {
+		t.Errorf("/help does not say how a sentence has to be written here:\n%s", body)
 	}
 
-	// With one, both are as they were.
+	// With a model the invitation is the wider one.
 	h = newHarness(t, true)
 	if err := h.handle(t, message("-430902", commandSetup, "Acme DAO")); err != nil {
 		t.Fatalf("setup: %v", err)
@@ -1175,7 +1180,7 @@ func TestWithNoModelASentenceIsToldSo(t *testing.T) {
 	if err := h.handle(t, message("-430902", "help", "")); err != nil {
 		t.Fatalf("help: %v", err)
 	}
-	if body := h.out.only(t).Text; !strings.Contains(body, "in your own words") {
-		t.Errorf("/help no longer mentions free text where it works:\n%s", body)
+	if body := h.out.only(t).Text; !strings.Contains(body, "Or just tell me what you want to send") {
+		t.Errorf("/help no longer mentions free text where a model reads it:\n%s", body)
 	}
 }

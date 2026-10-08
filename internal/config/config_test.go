@@ -525,3 +525,72 @@ func TestConnectorSettingsAreCheckedAtBoot(t *testing.T) {
 		t.Error("a key file that does not exist was accepted")
 	}
 }
+
+// TestTheDecoderFollowsTheKeys: with nothing said, the keys say it. And no key
+// at all means no model, not "Anthropic, with whatever its SDK can find" — on a
+// server that has nothing to find, that was a decoder failing on every message.
+func TestTheDecoderFollowsTheKeys(t *testing.T) {
+	cases := map[string]struct {
+		set  map[string]string
+		want string
+	}{
+		"nothing":               {nil, DecoderGrammar},
+		"an anthropic key":      {map[string]string{"ANTHROPIC_API_KEY": "sk-ant"}, DecoderAnthropic},
+		"a compatible key":      {map[string]string{"STELFIN_DECODER_API_KEY": "gsk", "STELFIN_DECODER_MODEL": "m"}, DecoderOpenAI},
+		"both keys":             {map[string]string{"ANTHROPIC_API_KEY": "sk-ant", "STELFIN_DECODER_API_KEY": "gsk", "STELFIN_DECODER_MODEL": "m"}, DecoderOpenAI},
+		"both, and said":        {map[string]string{"STELFIN_DECODER": "anthropic", "ANTHROPIC_API_KEY": "sk-ant", "STELFIN_DECODER_API_KEY": "gsk"}, DecoderAnthropic},
+		"a key, and none asked": {map[string]string{"STELFIN_DECODER": "grammar", "ANTHROPIC_API_KEY": "sk-ant"}, DecoderGrammar},
+		"anthropic by name":     {map[string]string{"STELFIN_DECODER": "Anthropic"}, DecoderAnthropic},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			env := validEnv(t)
+			for _, k := range []string{"ANTHROPIC_API_KEY", "STELFIN_DECODER", "STELFIN_DECODER_API_KEY", "STELFIN_DECODER_MODEL", "STELFIN_DECODER_BASE_URL"} {
+				delete(env, k)
+			}
+			for k, v := range c.set {
+				env[k] = v
+			}
+			withEnv(t, env)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := cfg.DecoderKind(); got != c.want {
+				t.Errorf("DecoderKind = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestACompatibleDecoderIsRefusedHalfConfigured: with a key and no model it
+// would start, read nothing, and say so only when somebody wrote a sentence.
+func TestACompatibleDecoderIsRefusedHalfConfigured(t *testing.T) {
+	for name, set := range map[string]map[string]string{
+		"a key and no model":     {"STELFIN_DECODER_API_KEY": "gsk"},
+		"asked for, with no key": {"STELFIN_DECODER": "openai", "STELFIN_DECODER_MODEL": "m"},
+		"a key sent over http":   {"STELFIN_DECODER_API_KEY": "gsk", "STELFIN_DECODER_MODEL": "m", "STELFIN_DECODER_BASE_URL": "http://api.example.com/v1"},
+		"a decoder nobody has":   {"STELFIN_DECODER": "gemini"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := validEnv(t)
+			for k, v := range set {
+				env[k] = v
+			}
+			withEnv(t, env)
+			if _, err := Load(); err == nil {
+				t.Fatal("accepted")
+			}
+		})
+	}
+
+	// On this machine http is fine, as it is for the base URL: a local model
+	// server is an ordinary thing to run.
+	env := validEnv(t)
+	env["STELFIN_DECODER_API_KEY"], env["STELFIN_DECODER_MODEL"] = "local", "llama"
+	env["STELFIN_DECODER_BASE_URL"] = "http://localhost:11434/v1"
+	withEnv(t, env)
+	if _, err := Load(); err != nil {
+		t.Fatalf("a model server on this machine was refused: %v", err)
+	}
+}

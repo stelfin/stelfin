@@ -45,8 +45,7 @@ type command struct {
 type capability uint8
 
 const (
-	needsFreeText capability = 1 << iota
-	needsConnectors
+	needsConnectors capability = 1 << iota
 	needsContractCalls
 )
 
@@ -240,7 +239,11 @@ func (s *Service) help(ctx context.Context, r *request) error {
 		}
 		fmt.Fprintf(&b, "  /%s — %s\n", c.Name, c.Description)
 	}
-	if !s.unavailable.FreeText {
+	// What a sentence can be depends on what is reading it, and the invitation
+	// should not promise more than that.
+	if s.unavailable.Model {
+		b.WriteString("\nOr write it plainly: send 5 to G… — or to a name you've saved with /save.")
+	} else {
 		b.WriteString("\nOr just tell me what you want to send, in your own words.")
 	}
 	return r.reply(ctx, b.String())

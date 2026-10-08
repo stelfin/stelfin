@@ -106,6 +106,12 @@ var (
 	// things a message can turn out to be, rather than in whichever decoder
 	// happened to notice.
 	ErrUndecodable = errors.New("intent: the message is not a recognised instruction")
+	// ErrDecoderUnavailable reports that nothing could read the message: the
+	// model could not be asked, and the message is not in the one form that
+	// needs no model. It says nothing about the message. The person did not
+	// write something wrong, and should be told how to write it so that it
+	// goes through anyway.
+	ErrDecoderUnavailable = errors.New("intent: no decoder could read the message")
 
 	// ErrMissingField reports a required field the model did not provide.
 	ErrMissingField = errors.New("intent: required field is missing")

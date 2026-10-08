@@ -79,7 +79,7 @@ an admin of a workspace with a proved treasury turns it on, and capped after tha
 | Blockchain      | `github.com/stellar/go-stellar-sdk`             |
 | Database        | PostgreSQL via `pgx/v5`, migrations via `goose` |
 | Messaging       | Telegram Bot API, Discord Interactions           |
-| Intent decoding | Anthropic Claude (`anthropic-sdk-go`)           |
+| Intent decoding | Any OpenAI-compatible model, or Anthropic Claude; a fixed grammar with neither |
 
 ## Getting started
 
@@ -141,7 +141,8 @@ descriptions; the essentials:
 | `STELFIN_CONNECTOR_KEY`          | No       | Seals connector endpoints and tokens at rest. Enables MCP and webhook connectors.        |
 | `STELFIN_GOOGLE_SERVICE_ACCOUNT` | No       | Google service-account JSON (or `_FILE`). Enables spreadsheet connectors.                |
 | `STELFIN_CONFIRM_TOKEN_SECRET`   | Yes      | Signs confirmation links. `openssl rand -hex 32`.                                       |
-| `ANTHROPIC_API_KEY`              | No       | Omit to let the Anthropic SDK resolve credentials itself.                               |
+| `STELFIN_DECODER_API_KEY` / `_MODEL` / `_BASE_URL` | No | A model from any provider speaking the OpenAI format (Groq, OpenRouter, OpenAI…) to read sentences. |
+| `ANTHROPIC_API_KEY`              | No       | The same, from Anthropic. With no model at all, a sentence is read only as `send 5 to mum`. |
 
 ## Contracts
 
@@ -193,7 +194,7 @@ rather than an error.
 | ------------------- | ----------------------------------------------------------- |
 | `api/`              | HTTP server, webhook handling, submission, orchestration.   |
 | `api/intent`        | Tokenizer, verifier, normalizer, resolver for user intents. |
-| `api/decoder`       | Claude-backed free-text → structured-intent decoder.        |
+| `api/decoder`       | Free text → structured intent: a model, backed by a fixed grammar. |
 | `internal/money`    | Exact fixed-point money type.                               |
 | `ledger/`           | Append-only, double-entry Postgres ledger and migrations.   |
 | `settlement/`       | Stellar transaction building and submission.                |

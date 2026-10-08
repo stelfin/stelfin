@@ -20,7 +20,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stellar/go-stellar-sdk/clients/horizonclient"
 	"github.com/stellar/go-stellar-sdk/clients/rpcclient"
@@ -28,7 +27,6 @@ import (
 	"github.com/stellar/go-stellar-sdk/txnbuild"
 
 	"github.com/stelfin/stelfin/api"
-	"github.com/stelfin/stelfin/api/decoder"
 	"github.com/stelfin/stelfin/api/intent"
 	"github.com/stelfin/stelfin/chat"
 	"github.com/stelfin/stelfin/core"
@@ -213,19 +211,16 @@ func Run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	if cfg.AnthropicAPIKey == "" {
-		log.Warn("no model key configured; the bot understands commands and cannot read a sentence")
+	reader, err := decoderFor(cfg, log)
+	if err != nil {
+		return err
 	}
 	if !cfg.ContractCalls {
 		log.Info("contract calls are off; the contract commands are not offered")
 	}
 
 	svc, err := api.NewService(pool,
-		decoder.New(decoder.Config{
-			APIKey: cfg.AnthropicAPIKey,
-			// Config has already rejected anything that is not a known level.
-			Effort: anthropic.OutputConfigEffort(cfg.DecoderEffort),
-		}),
+		reader,
 		intent.NewResolver(pool),
 		settle,
 		api.Config{
@@ -277,7 +272,7 @@ func Run(log *slog.Logger) error {
 		// are not offered. A command that can only answer "not here" is a dead
 		// button.
 		Unavailable: core.Unavailable{
-			FreeText:      cfg.AnthropicAPIKey == "",
+			Model:         cfg.DecoderKind() == config.DecoderGrammar,
 			Connectors:    connectors == nil,
 			ContractCalls: !cfg.ContractCalls || !cfg.HasSoroban(),
 		},

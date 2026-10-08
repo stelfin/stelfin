@@ -118,6 +118,17 @@ services:
       - key: STELFIN_CONFIRM_TOKEN_SECRET
         sync: false
 
+      # What reads a sentence. Optional: with none of these set, no model is
+      # used and a sentence is read only as "send <amount> to <who>". For a
+      # provider speaking the OpenAI format, set the key and the model, and the
+      # base URL unless it is OpenAI's own (Groq:
+      # https://api.groq.com/openai/v1). For Anthropic, set its key instead.
+      - key: STELFIN_DECODER_API_KEY
+        sync: false
+      - key: STELFIN_DECODER_MODEL
+        sync: false
+      - key: STELFIN_DECODER_BASE_URL
+        sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
       - key: STELFIN_DECODER_EFFORT

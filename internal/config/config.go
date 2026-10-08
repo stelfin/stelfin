@@ -115,6 +115,23 @@ type Config struct {
 	// DecoderEffort tunes how hard the model works. Empty uses the API default.
 	DecoderEffort string
 
+	// Decoder says what reads a sentence: "anthropic", "openai" for any
+	// provider that speaks the OpenAI chat-completions format, or "grammar"
+	// for no model at all. Empty chooses by which key is present; see
+	// DecoderKind.
+	Decoder string
+	// DecoderBaseURL is the compatible provider's API root, up to and
+	// including the version: https://api.groq.com/openai/v1, for example.
+	// Empty means OpenAI's own. Held to https unless it is this machine,
+	// because the API key is sent to it.
+	DecoderBaseURL string
+	// DecoderAPIKey authenticates to the compatible provider.
+	DecoderAPIKey string
+	// DecoderModel is the model id, as the provider names it. Required for a
+	// compatible provider, since no default is right for more than one of
+	// them; optional for Anthropic, where it overrides the built-in choice.
+	DecoderModel string
+
 	// ShutdownGrace bounds how long in-flight work has to finish.
 	ShutdownGrace time.Duration
 
@@ -236,6 +253,10 @@ func Load() (*Config, error) {
 		ConfirmTokenSecret:   []byte(req("STELFIN_CONFIRM_TOKEN_SECRET")),
 		AnthropicAPIKey:      os.Getenv("ANTHROPIC_API_KEY"),
 		DecoderEffort:        os.Getenv("STELFIN_DECODER_EFFORT"),
+		Decoder:              strings.ToLower(strings.TrimSpace(os.Getenv("STELFIN_DECODER"))),
+		DecoderBaseURL:       strings.TrimSpace(os.Getenv("STELFIN_DECODER_BASE_URL")),
+		DecoderAPIKey:        strings.TrimSpace(os.Getenv("STELFIN_DECODER_API_KEY")),
+		DecoderModel:         strings.TrimSpace(os.Getenv("STELFIN_DECODER_MODEL")),
 
 		DiscordAPIURL: strings.TrimSpace(os.Getenv("STELFIN_DISCORD_API_URL")),
 		ReadOnlyFile:  strings.TrimSpace(os.Getenv("STELFIN_READONLY_FILE")),
@@ -433,7 +454,60 @@ func (c *Config) validate() error {
 	default:
 		return fmt.Errorf("config: STELFIN_DECODER_EFFORT %q is not a known effort level", c.DecoderEffort)
 	}
+
+	switch c.Decoder {
+	case "", DecoderAnthropic, DecoderOpenAI, DecoderGrammar:
+	default:
+		return fmt.Errorf("config: STELFIN_DECODER %q is not one of %s, %s, %s",
+			c.Decoder, DecoderAnthropic, DecoderOpenAI, DecoderGrammar)
+	}
+	if c.DecoderKind() == DecoderOpenAI {
+		// Both, and said together: a provider configured with a key and no
+		// model would start, read nothing, and say so only when somebody
+		// first wrote a sentence.
+		if c.DecoderAPIKey == "" || c.DecoderModel == "" {
+			return errors.New(
+				"config: a compatible decoder needs STELFIN_DECODER_API_KEY and " +
+					"STELFIN_DECODER_MODEL — there is no default model that is right " +
+					"for more than one provider")
+		}
+		if c.DecoderBaseURL != "" && !secureOrLocal(c.DecoderBaseURL) {
+			return errors.New(
+				"config: STELFIN_DECODER_BASE_URL must be https — the API key is sent to it")
+		}
+	}
 	return nil
+}
+
+// What can read a sentence.
+const (
+	// DecoderAnthropic is the Anthropic API.
+	DecoderAnthropic = "anthropic"
+	// DecoderOpenAI is any provider speaking the OpenAI chat-completions
+	// format: OpenAI, Groq, OpenRouter, a self-hosted server.
+	DecoderOpenAI = "openai"
+	// DecoderGrammar is no model: only "send <amount> to <who>" is read.
+	DecoderGrammar = "grammar"
+)
+
+// DecoderKind reports which decoder this deployment uses.
+//
+// Said outright if STELFIN_DECODER is set. Otherwise it follows the keys: a
+// compatible provider's key means that provider, an Anthropic key means
+// Anthropic, and no key at all means the grammar. The last used to mean
+// "Anthropic, with whatever credentials its SDK can find", which on a server
+// that has none is a decoder that fails on every message; a deployment that
+// wants that behaviour asks for it by name.
+func (c *Config) DecoderKind() string {
+	switch {
+	case c.Decoder != "":
+		return c.Decoder
+	case c.DecoderAPIKey != "":
+		return DecoderOpenAI
+	case c.AnthropicAPIKey != "":
+		return DecoderAnthropic
+	}
+	return DecoderGrammar
 }
 
 // defaultTestnetHorizon is where an unconfigured deployment points. Named so
@@ -501,6 +575,8 @@ func (c *Config) Redacted() map[string]any {
 		"discord":        c.HasDiscord(),
 		"web_auth":       c.HasWebAuth(),
 		"decoder_effort": c.DecoderEffort,
+		"decoder":        c.DecoderKind(),
+		"decoder_model":  c.DecoderModel,
 		"read_only":      c.ReadOnly,
 		"read_only_file": c.ReadOnlyFile,
 		"connector_key":  len(c.ConnectorKey) > 0,
