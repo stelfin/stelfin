@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/stellar/go-stellar-sdk/txnbuild"
@@ -220,15 +223,100 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 
 		for _, m := range delivery.Messages {
-			if err := s.cfg.Handler.Handle(ctx, m, s.cfg.Transports, s); err != nil {
-				// Logged, not retried: the message is already claimed, and
-				// replaying it would risk a second confirmation.
-				s.log.Error("inbound message failed",
-					"channel", channel, "dedupe_id", m.DedupeID, "error", err)
-			}
+			s.handleInbound(ctx, channel, m)
 		}
 	}()
 }
+
+// handleInbound runs one message through the handler and makes sure the person
+// who sent it is not left with nothing.
+//
+// Two things can otherwise happen that look, from the chat, like a bot that is
+// not there. The handler can fail before it has said anything. And it can
+// panic, which in a goroutine nothing recovers takes the whole process down
+// with it: every other conversation in flight, for one message nobody
+// anticipated.
+func (s *Server) handleInbound(ctx context.Context, channel chat.Channel, m chat.Inbound) {
+	out := &answering{next: s.cfg.Transports}
+
+	defer func() {
+		if p := recover(); p != nil {
+			s.log.Error("inbound message panicked",
+				"channel", channel, "dedupe_id", m.DedupeID,
+				"panic", fmt.Sprint(p), "stack", string(debug.Stack()))
+			s.sayItFailed(ctx, out, m, inboundFailedReply)
+		}
+	}()
+
+	err := s.cfg.Handler.Handle(ctx, m, out, s)
+	if err != nil {
+		// Logged, not retried: the message is already claimed, and
+		// replaying it would risk a second confirmation.
+		s.log.Error("inbound message failed",
+			"channel", channel, "dedupe_id", m.DedupeID, "error", err)
+	}
+
+	switch {
+	case out.answered():
+		// The handler spoke for itself.
+	case err != nil && owedAnAnswer(m):
+		s.sayItFailed(ctx, out, m, inboundFailedReply)
+	case m.Conversation.InteractionToken != "":
+		// Handled, and deliberately without a word. That is right for a
+		// message in a group and wrong for an interaction: the platform has
+		// already been told an answer is coming, and shows a spinner until
+		// one does.
+		s.sayItFailed(ctx, out, m, inboundNothingReply)
+	}
+}
+
+// owedAnAnswer reports whether somebody is waiting on this message.
+//
+// A command is addressed to the bot, and so is anything that arrived as an
+// interaction. Free text in a group is not necessarily: a failure reading it is
+// logged, and nobody is told about a message they may not have meant for us.
+func owedAnAnswer(m chat.Inbound) bool {
+	return m.Command != "" || m.Conversation.InteractionToken != "" || m.Conversation.IsDM
+}
+
+// inboundFailedReply is what somebody is told when their message failed before
+// anything could answer it. Nothing of the error goes in it: an error can carry
+// addresses, SQL and upstream URLs.
+const inboundFailedReply = "Something went wrong on my side, so I stopped. " +
+	"Nothing was sent or changed — please try that again in a moment."
+
+// inboundNothingReply closes an interaction that needed no answer.
+const inboundNothingReply = "There was nothing for me to do with that."
+
+// inboundReplyTimeout bounds the fallback reply. It gets its own, because the
+// work it follows may be exactly what used the first one up.
+const inboundReplyTimeout = 10 * time.Second
+
+func (s *Server) sayItFailed(ctx context.Context, out *answering, m chat.Inbound, text string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), inboundReplyTimeout)
+	defer cancel()
+	if err := out.Send(ctx, m.Conversation, m.Actor, chat.Reply{Text: text, Ephemeral: true}); err != nil {
+		s.log.Error("could not tell the sender their message failed",
+			"dedupe_id", m.DedupeID, "error", err)
+	}
+}
+
+// answering is a Replier that remembers whether it was used.
+//
+// It counts an attempt, not a delivery. A reply that failed to send was still
+// the handler's answer, and following it with a second message would be two
+// attempts to reach somebody the platform will not let us reach.
+type answering struct {
+	next Replier
+	used atomic.Bool
+}
+
+func (a *answering) Send(ctx context.Context, to chat.Conversation, actor chat.Actor, r chat.Reply) error {
+	a.used.Store(true)
+	return a.next.Send(ctx, to, actor, r)
+}
+
+func (a *answering) answered() bool { return a.used.Load() }
 
 // writeAck sends the platform's acknowledgement and flushes it, so the response
 // is on the wire before the work starts rather than when the handler returns.
