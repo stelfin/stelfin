@@ -6,7 +6,7 @@ for a typical web app — read this before opening a pull request.
 
 ## Before you begin
 
-- Read [DESIGN.md](DESIGN.md) first. It explains *why* the system is shaped the
+- Read [docs/architecture.md](docs/architecture.md) first. It explains *why* the system is shaped the
   way it is: why custody was rejected, why the intent-verification scheme has
   the checks it has, and what tradeoffs were accepted on purpose rather than by
   accident. A change that looks like a simplification is often reopening a
@@ -92,7 +92,7 @@ match the top-level package touched: `api`, `ledger`, `settlement`,
 - [ ] If the change touches `internal/config` or `.env.example`, both are
       updated together.
 - [ ] If the change touches the intent-verification scheme or custody model,
-      [DESIGN.md](DESIGN.md) is updated to match.
+      [docs/architecture.md](docs/architecture.md) is updated to match.
 - [ ] Commit messages follow the Conventional Commits format above.
 
 ## Questions

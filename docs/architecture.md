@@ -6,8 +6,8 @@ stelfin is a non-custodial bot a DAO runs its Stellar treasury through, from
 Telegram and Discord, with a connector layer so the other tools a community
 touches on-chain are reachable from the same place.
 
-This document is the plan being built from. `../DESIGN.md` is the reasoning
-behind it. It replaces the plan for the WhatsApp wallet stelfin began as — that
+This document is the plan being built from, and the record of what building
+it found. It replaces the plan for the WhatsApp wallet stelfin began as — that
 document described a zkLogin/Groth16 authentication model and a Soroban custom
 account that were never built and are not in scope. Nothing of it is preserved
 except the parts that turned out to be right about money, which are recorded in
@@ -362,27 +362,63 @@ What end-to-end still does not cover:
   done automatically, because restoring costs money and changes what the
   transaction does.
 
-### Not code, and not mine to do
+### Found by reading the paths a stranger walks
 
-- **The Render database needs dropping, not migrating.** The migration set was
-  replaced during the rebuild, so goose against the existing `goose_db_version`
-  table does nothing. There are fourteen migrations it has never seen.
+A third pass, after the two above, made by following what somebody who has never
+seen the bot would actually do. Fixed; listed for the same reason as the others.
 
-  Order matters, and the wrong order is not obvious. `ledger.Migrate` runs
-  unconditionally at boot, so the service must be suspended before the schema
-  is dropped: a free-tier instance restarts on any request after fifteen idle
-  minutes, and a stale binary waking into an empty database re-applies its own
-  old migration set and puts the version table back.
-- **`DESIGN.md` is gitignored** (`.gitignore`) while `README.md` links to it.
-  Either track it or drop the link.
-- **The deployed service is far behind `main`.** The push happened; the deploy
-  did not follow it. `/confirm` answers while `/approve`, `/link`, `/reclaim`
-  and the `/v1` routes added from phase 5 onward return 404, which is the
-  signature of a build from before the rebuild. `autoDeploy` is now declared in
-  `render.yaml` so the drift cannot recur silently.
-- **No chat transport is registered on the deployment.** `POST /webhook/{any}`
-  returns 404 because the Telegram and Discord variables were never filled in,
-  not because anything is broken. Until one is set the bot cannot be reached.
+- **A treasury could be locked out of proposing.** One open proposal per
+  account, no cancel, an expiry sweep that was never started, and a transaction
+  the network included and failed left its proposal open for good. `/cancel`
+  now exists, expiry happens when a proposal is created, read and on a timer,
+  and a refusal from the network closes the proposal or leaves it open
+  according to whether the envelope is spent.
+- **First contact was silence.** A direct message is an unregistered space, and
+  it is where the bot sends people; it ignored the Start it had asked for. A
+  command before `/setup` got nothing, which on Discord is a spinner that never
+  stops. The person is now answered and the room still is not.
+- **Every message in a group was read as a payment.** The documentation said to
+  turn Telegram's privacy mode off. Words now count only when they are said to
+  the bot, and the transport registers its own webhook at start.
+- **A handler that panicked took the server down**, and one that failed before
+  answering answered nothing.
+- **Nine commands could only refuse** on a deployment with the defaults, and
+  replies over a platform's length limit were refused whole.
+- **Setting a wallet up could strand a browser.** The key was stored before the
+  wallet existed, so any failed attempt left a key that made every later one
+  stop at "this device already has a wallet". The limiter's age rule was met
+  only after a link had been handed out.
+- **A signing page could not be reloaded**, an empty paste took the form away on
+  two of the five, and nothing offered to copy the envelope a signer has to
+  carry to their wallet.
+
+### What is next, in order
+
+1. **Signing with a wallet extension.** Freighter, beside paste, on the four
+   pages that sign.
+2. **A decoder that is not tied to one provider**, and a fixed grammar behind
+   it so that `/send` works with no model at all.
+3. **`/balance`, and treasury trustlines and swaps as proposals.** The
+   operations are built in `settlement` and nothing in chat reaches them.
+4. **Contract-held treasuries**, on a `dao_treasury` in which no single key can
+   move funds or change the rules without a passed vote. The contract uploaded
+   today lets its admin do both, so it is not used.
+
+### Not code
+
+- **`DESIGN.md` is gitignored.** Nothing tracked links to it any more; it is the
+  owner's to publish or keep.
+- **No chat transport is registered on the deployment** until its Telegram and
+  Discord variables are set. `POST /webhook/{any}` returns 404 until then, and
+  the server now refuses to start with a platform configured and no web-auth
+  key, since such a bot could be spoken to and could finish nothing.
+- **The deployment sleeps.** On the free plan it stops after fifteen idle
+  minutes and takes about thirteen seconds to wake, which Telegram tolerates and
+  Discord's three-second limit does not. An external ping to `/health` keeps it
+  up; nothing in the code can.
+- **Testnet is reset from time to time**, which removes every account and
+  contract. Recovery is a fresh database, a re-funded operator, and the
+  contract uploads again.
 
 ### Roadmap — decided against, for now
 

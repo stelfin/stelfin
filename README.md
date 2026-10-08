@@ -3,16 +3,16 @@
 **A non-custodial DAO treasury bot on Stellar, run from Telegram and Discord.**
 
 stelfin lets a DAO act on-chain from the group chat it already lives in: payments,
-payroll, trustlines, swaps, contract calls and proposals. A message like
-`/pay 5000 USDC to ada` is turned into a structured instruction, checked against the
-user's own words, and confirmed by a human in a browser that re-derives the
-transaction from the XDR before signing it.
+payroll, contract calls, and the proposals that carry them to the treasury's
+signers. `/pay 250 to G…` opens a proposal; a sentence like "send 5 to mum" is turned
+into a structured instruction and checked against the sender's own words. Either
+way a human confirms it in a browser that re-derives the transaction from the XDR
+before signing it.
 
-The bot never holds a member's key. It adapts to whatever signing authority the DAO
-already runs — a single signer, an M-of-N classic multisig, or a Soroban smart
-account — building and routing transactions while the network decides whether they
-are authorized. The operator's own key sponsors reserves and pays fees, and can move
-nothing else.
+The bot never holds a member's key. It adapts to the signing authority the DAO
+already runs — a single signer or an M-of-N classic multisig — building and routing
+transactions while the network decides whether they are authorized. The operator's
+own key sponsors reserves and pays fees, and can move nothing else.
 
 Beyond treasury operations, stelfin is a place to connect the other tools a community
 already uses: a spreadsheet, somebody's MCP server, an endpoint that returns rows. A
@@ -20,15 +20,15 @@ connector is used only once the treasury's signers have signed a statement of wh
 may do, at the weight a payment takes. What it returns is text: a payroll read from a
 sheet becomes a draft, a person proposes it, and the signers sign that too.
 
-The full reasoning — why non-custodial, why Go, why the intent-verification scheme
-looks the way it does, what tradeoffs were accepted on purpose — is in
-[DESIGN.md](DESIGN.md), and the build plan in
+The seams, the data model and the decisions behind them — why non-custodial, why the
+browser re-derives what it signs, what was accepted on purpose — are in
 [docs/architecture.md](docs/architecture.md).
 
 > **Status: testnet.** The path from a chat message to a multisig payment on chain
-> works and is exercised end to end by `make e2e`. What is not built — the mainnet
-> rails above all — is listed in [docs/architecture.md](docs/architecture.md).
-> Nothing here is on mainnet.
+> works and is exercised end to end by `make e2e`. What is not built is listed in
+> [docs/architecture.md](docs/architecture.md): treasury trustlines, swaps and
+> contract-held treasuries are the next three. Nothing here is on mainnet, and
+> the server refuses to start there unless told to in so many words.
 
 ---
 
@@ -58,11 +58,12 @@ looks the way it does, what tradeoffs were accepted on purpose — is in
    signed, single-use token in the URL fragment. Opening it renders the confirmation
    page (`web/`), which parses the envelope itself and refuses to show a sign button
    if its reading disagrees with the server's summary.
-4. Confirming submits (`POST /v1/submit`) and the server builds and settles the
-   payment on Stellar (`settlement/`), recorded first in an append-only,
-   double-entry ledger (`ledger/`) backed by Postgres.
-5. A separate ingestion worker (`ingestion/`) streams confirmed Stellar
-   transactions back from Horizon to reconcile the ledger against the chain.
+4. Confirming submits (`POST /v1/submit`), and the server settles the signed
+   payment on Stellar (`settlement/`), paying its fee.
+5. An ingestion worker (`ingestion/`) streams confirmed transactions back from
+   Horizon and records them in an append-only, double-entry ledger (`ledger/`)
+   backed by Postgres. The ledger is an index of what the chain did, never the
+   authority for a balance.
 
 A member with no wallet goes through `POST /v1/enroll` → `POST /v1/enroll/submit`,
 which provisions a Stellar account for them (sponsored reserve, no custody) before
@@ -125,9 +126,9 @@ descriptions; the essentials:
 | `STELFIN_NETWORK`                | No       | `testnet` (default) or `public`.                                                        |
 | `STELFIN_TREASURY_SEED`          | Yes      | Pays fees, sponsors reserves. Testnet-only as an env var — move to KMS/HSM for mainnet. |
 | `STELFIN_ASSET_CODE` / `_ISSUER` | Yes      | The asset users transact in (network-specific issuer).                                  |
-| `STELFIN_WEBAUTH_SEED`           | No       | Signs SEP-10 challenges. Must differ from the treasury seed. Without it, no linking.    |
+| `STELFIN_WEBAUTH_SEED`           | With a chat platform | Signs SEP-10 challenges. Must differ from the treasury seed. Required once Telegram or Discord is configured: without it nobody can link a wallet or a treasury. |
 | `STELFIN_TELEGRAM_BOT_TOKEN`     | No       | Telegram bot token. Required together with the webhook secret.                          |
-| `STELFIN_TELEGRAM_WEBHOOK_SECRET`| No       | Echoed back on every delivery — Telegram does not sign, so this authenticates it. ≥32.  |
+| `STELFIN_TELEGRAM_WEBHOOK_SECRET`| No       | Echoed back on every delivery — Telegram does not sign, so this authenticates it. ≥32. stelfin registers the webhook itself at start. |
 | `STELFIN_TELEGRAM_API_URL`       | No       | Bot API root, for a self-hosted Bot API server. https, or this machine.                 |
 | `STELFIN_DISCORD_PUBLIC_KEY`     | No       | Application public key. Verifies the Ed25519 signature on each delivery.                |
 | `STELFIN_DISCORD_BOT_TOKEN`      | No       | Discord bot token. Required with the public key and application id.                     |
@@ -213,14 +214,13 @@ rather than an error.
 | `cmd/stelfin-dev`   | The same server for a laptop: embedded Postgres, `.env`.    |
 | `cmd/stelfinctl`    | The operator's tool: list workspaces, suspend or resume one. |
 | `connector/`        | The connector model and guard; Sheets, MCP client, webhook, egress. |
-| `mcp/`              | stelfin as an MCP server, read-only, mounted at `POST /mcp`. |
+| `mcp/`              | stelfin as an MCP server at `POST /mcp`: read, and a tier that can only draft. |
 | `e2e/`              | The whole flow against live testnet (`make e2e`).           |
 
 ## Documentation
 
 | Document                                     | What it covers                                                                                                    |
 | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| [DESIGN.md](DESIGN.md)                       | Full design record: custody decision, auth model, intent-verification scheme, accepted tradeoffs, open questions. |
 | [docs/running-locally.md](docs/running-locally.md) | Running it on a laptop, connecting a Telegram bot, and the flow command by command. |
 | [docs/architecture.md](docs/architecture.md) | The seams, the data model, the build sequence — and everything still left to do. |
 
