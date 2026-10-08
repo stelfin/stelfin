@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/stellar/go-stellar-sdk/clients/horizonclient"
@@ -188,8 +189,8 @@ func (c *Client) SubmitFeeBump(ctx context.Context, tx *txnbuild.FeeBumpTransact
 // definite "did not happen". Anything else is ambiguous, and the ledger is the
 // only authority that can settle it.
 func (c *Client) resolveAmbiguous(ctx context.Context, hash string, submitErr error) (Result, error) {
-	if isDefiniteRejection(submitErr) {
-		return Result{}, fmt.Errorf("%w: %s rejected: %w", ErrNoEffect, hash, submitErr)
+	if rejected := rejectionOf(hash, submitErr); rejected != nil {
+		return Result{}, rejected
 	}
 
 	found, lookupErr := c.LookupTransaction(ctx, hash)
@@ -231,14 +232,76 @@ func resultFrom(tx horizon.Transaction, alreadyKnown bool) Result {
 	}
 }
 
-// isDefiniteRejection reports whether Horizon told us the transaction was
-// invalid, as opposed to the request failing for some other reason. Only a
-// structured Horizon problem carrying transaction result codes is conclusive.
-func isDefiniteRejection(err error) bool {
+// Rejection is a transaction Horizon refused, with the network's own reasons.
+//
+// It is ErrNoEffect, and it says more: which codes. The codes are what decide
+// what a caller may do next, because "did nothing" covers two different facts.
+// A transaction turned away before it reached a ledger has spent nothing and
+// may be sent again once whatever was wrong is put right. One that reached a
+// ledger and failed there has spent its fee and its sequence number, and no
+// envelope built on that sequence number can ever be sent again.
+type Rejection struct {
+	// Hash is the transaction that was refused.
+	Hash string
+	// Transaction is the transaction-level result code, such as tx_failed or
+	// tx_bad_auth.
+	Transaction string
+	// Operations are the per-operation codes, in order, when the transaction
+	// got as far as running its operations.
+	Operations []string
+
+	cause error
+}
+
+func (r *Rejection) Error() string {
+	return fmt.Sprintf("%v: %s rejected: %v", ErrNoEffect, r.Hash, r.cause)
+}
+
+// Unwrap makes a Rejection satisfy errors.Is(err, ErrNoEffect), which is what
+// it was before it had a type.
+func (r *Rejection) Unwrap() []error { return []error{ErrNoEffect, r.cause} }
+
+// Spent reports whether the envelope can never be sent again.
+//
+// True when it reached a ledger and failed, which consumed its sequence number,
+// and when its sequence number or its time bounds are already behind the
+// network. False for everything that is about the moment rather than the
+// envelope: too few signatures for what the account now requires, or an account
+// that cannot cover the fee. Those leave the envelope exactly as valid as it
+// was, and resending it later is the right thing to do.
+func (r *Rejection) Spent() bool {
+	switch r.Transaction {
+	case "tx_failed", "tx_fee_bump_inner_failed", "tx_bad_seq", "tx_too_late":
+		return true
+	}
+	return false
+}
+
+// Codes is the rejection as the network put it, for a log or an audit line.
+func (r *Rejection) Codes() string {
+	if len(r.Operations) == 0 {
+		return r.Transaction
+	}
+	return r.Transaction + " (" + strings.Join(r.Operations, ", ") + ")"
+}
+
+// rejectionOf reports whether Horizon told us the transaction was invalid, as
+// opposed to the request failing for some other reason, and returns what it
+// said. Only a structured Horizon problem carrying transaction result codes is
+// conclusive; anything else is nil, and the outcome is still open.
+func rejectionOf(hash string, err error) *Rejection {
 	problem := horizonclient.GetError(err)
 	if problem == nil {
-		return false
+		return nil
 	}
 	codes, codeErr := problem.ResultCodes()
-	return codeErr == nil && codes != nil
+	if codeErr != nil || codes == nil {
+		return nil
+	}
+	return &Rejection{
+		Hash:        hash,
+		Transaction: codes.TransactionCode,
+		Operations:  codes.OperationCodes,
+		cause:       err,
+	}
 }
