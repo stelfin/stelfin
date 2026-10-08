@@ -25,9 +25,12 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/stellar/go-stellar-sdk/txnbuild"
+
 	"github.com/stelfin/stelfin/api"
 	"github.com/stelfin/stelfin/chat"
 	"github.com/stelfin/stelfin/connector"
+	"github.com/stelfin/stelfin/contracts/treasuryabi"
 	"github.com/stelfin/stelfin/identity"
 	"github.com/stelfin/stelfin/internal/money"
 	"github.com/stelfin/stelfin/ledger/store"
@@ -70,6 +73,29 @@ type Sender interface {
 	ProposeRestore(ctx context.Context, scope api.Scope, treasury store.TreasuryID,
 		label, function, arguments string, by store.MemberID) (*api.ProposalView, error)
 	Challenges() *identity.Challenges
+
+	// A treasury held by a contract. See api/daotreasury.go.
+	CreateContractTreasury(ctx context.Context, scope api.Scope, p api.CreateTreasuryParams) (*api.TreasuryState, error)
+	AdoptContractTreasury(ctx context.Context, scope api.Scope, address, label string,
+		member store.Member, by store.IdentityID) (*api.TreasuryState, error)
+	ContractTreasuryState(ctx context.Context, scope api.Scope, treasury store.Treasury) (*api.TreasuryState, error)
+	ChainProposals(ctx context.Context, scope api.Scope, treasury store.Treasury, limit int) ([]api.ChainProposal, error)
+	ChainProposalByID(ctx context.Context, scope api.Scope, treasury store.Treasury, id uint32) (*api.ChainProposal, error)
+	ProposeOnChain(ctx context.Context, scope api.Scope, treasury store.Treasury, member store.Member,
+		action treasuryabi.Action, note string) (*api.PreparedCall, error)
+	VoteOnChain(ctx context.Context, scope api.Scope, treasury store.Treasury, member store.Member,
+		proposal *api.ChainProposal, approve bool) (*api.PreparedCall, error)
+	WithdrawOnChain(ctx context.Context, scope api.Scope, treasury store.Treasury, member store.Member,
+		proposal *api.ChainProposal) (*api.PreparedCall, error)
+	SpendOnChain(ctx context.Context, scope api.Scope, treasury store.Treasury, member store.Member,
+		asset txnbuild.Asset, to string, amount money.Stroops) (*api.PreparedCall, error)
+	DepositOnChain(ctx context.Context, scope api.Scope, treasury store.Treasury, member store.Member,
+		asset txnbuild.Asset, amount money.Stroops) (*api.PreparedCall, error)
+	ExecuteOnChain(ctx context.Context, scope api.Scope, treasury store.Treasury, id uint32) (settlement.Result, error)
+	SettleOnChain(ctx context.Context, scope api.Scope, treasury store.Treasury, id uint32) (string, error)
+	PayAction(asset txnbuild.Asset, to string, amount money.Stroops) (treasuryabi.Action, error)
+	TreasuryAsset(text string) (txnbuild.Asset, error)
+	DescribeAction(a treasuryabi.Action) string
 }
 
 // Config wires the router.
@@ -104,12 +130,16 @@ type Unavailable struct {
 	Connectors bool
 	// ContractCalls: not switched on, or no Soroban RPC to make them through.
 	ContractCalls bool
+	// ContractTreasuries: no Soroban RPC, or no treasury code uploaded to the
+	// network this deployment runs on.
+	ContractTreasuries bool
 }
 
 // lacks reports whether any capability in needs is missing.
 func (u Unavailable) lacks(needs capability) bool {
 	return needs&needsConnectors != 0 && u.Connectors ||
-		needs&needsContractCalls != 0 && u.ContractCalls
+		needs&needsContractCalls != 0 && u.ContractCalls ||
+		needs&needsSoroban != 0 && u.ContractTreasuries
 }
 
 // Service routes inbound messages.

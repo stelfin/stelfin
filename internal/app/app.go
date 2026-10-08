@@ -218,6 +218,10 @@ func Run(log *slog.Logger) error {
 	if !cfg.ContractCalls {
 		log.Info("contract calls are off; the contract commands are not offered")
 	}
+	treasuries, err := contractTreasuriesFor(cfg, treasury, log)
+	if err != nil {
+		return err
+	}
 
 	svc, err := api.NewService(pool,
 		reader,
@@ -237,6 +241,7 @@ func Run(log *slog.Logger) error {
 			MaxDaily:      ceiling(cfg.MaxDaily),
 			Connectors:    connectors,
 			ContractCalls: cfg.ContractCalls,
+			Treasuries:    treasuries,
 		})
 	if err != nil {
 		return err
@@ -275,6 +280,8 @@ func Run(log *slog.Logger) error {
 			Model:         cfg.DecoderKind() == config.DecoderGrammar,
 			Connectors:    connectors == nil,
 			ContractCalls: !cfg.ContractCalls || !cfg.HasSoroban(),
+
+			ContractTreasuries: treasuries == nil,
 		},
 		Logger: log,
 	})

@@ -19,7 +19,8 @@ type AccountBalance struct {
 	// account, which is an ordinary state for a wallet that was only linked.
 	Exists bool
 	// Contract marks a treasury held by a contract rather than by signatures.
-	// Its holdings are not read here.
+	// A contract has no list of balances of its own, so its lines are only the
+	// assets this deployment knows to ask about.
 	Contract bool
 	Lines    []BalanceLine
 }
@@ -61,9 +62,11 @@ func (s *Service) Balances(
 		}
 		for _, t := range list {
 			if t.Kind != store.TreasuryClassic {
-				report.Treasuries = append(report.Treasuries, AccountBalance{
-					Label: t.Label, Address: t.Address, Exists: true, Contract: true,
-				})
+				balance, err := s.contractBalance(ctx, t)
+				if err != nil {
+					return nil, err
+				}
+				report.Treasuries = append(report.Treasuries, balance)
 				continue
 			}
 			balance, err := s.balanceOf(ctx, t.Address, t.Label)
@@ -126,13 +129,12 @@ func (s *Service) TreasuryHoldings(ctx context.Context, org ledger.OrgID) ([]mcp
 	}
 	var out []mcp.BalanceLine
 	for _, t := range list {
-		if t.Kind != store.TreasuryClassic {
-			// Not read here yet, and not reported as empty: an account left
-			// out is a question, an account shown holding nothing is a wrong
-			// answer.
-			continue
+		var balance AccountBalance
+		if t.Kind == store.TreasuryClassic {
+			balance, err = s.balanceOf(ctx, t.Address, t.Label)
+		} else {
+			balance, err = s.contractBalance(ctx, t)
 		}
-		balance, err := s.balanceOf(ctx, t.Address, t.Label)
 		if err != nil {
 			return nil, err
 		}

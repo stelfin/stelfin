@@ -71,9 +71,10 @@ func TestLinkTreasuryIsAdminOnly(t *testing.T) {
 	}
 }
 
-// TestLinkTreasuryNamesTheContractCase: a C-address is where the product is
-// going, and a flat "not an address" would read as a typo.
-func TestLinkTreasuryNamesTheContractCase(t *testing.T) {
+// TestLinkTreasuryNeverAsksAContractForSignatures: a contract is not proved by
+// collecting signatures, so its address must never start that handshake. What
+// it is asked instead is in daotreasury_test.go.
+func TestLinkTreasuryNeverAsksAContractForSignatures(t *testing.T) {
 	h := newHarness(t, true)
 	setUpWorkspace(t, h, "-410003")
 
@@ -81,11 +82,27 @@ func TestLinkTreasuryNamesTheContractCase(t *testing.T) {
 	if err := h.handle(t, message("-410003", "link-treasury", contract)); err != nil {
 		t.Fatalf("link-treasury: %v", err)
 	}
-	if body := h.out.only(t).Text; !strings.Contains(body, "contract account") {
-		t.Errorf("reply does not say what a contract account is:\n%s", body)
+	if body := h.out.only(t).Text; strings.Contains(body, "/link#") {
+		t.Errorf("a contract address was handed a signing link:\n%s", body)
 	}
 	if got := h.sender.provedTreasuries(); len(got) != 0 {
 		t.Fatalf("a contract address started a signature proof: %v", got)
+	}
+}
+
+// And on a deployment that cannot reach a contract, it says that and not that
+// the address is mistyped.
+func TestLinkTreasuryNamesTheContractCaseWithoutSoroban(t *testing.T) {
+	h := newHarness(t, true)
+	h.svc.unavailable.ContractTreasuries = true
+	setUpWorkspace(t, h, "-410013")
+
+	const contract = "CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE"
+	if err := h.handle(t, message("-410013", "link-treasury", contract)); err != nil {
+		t.Fatalf("link-treasury: %v", err)
+	}
+	if body := h.out.only(t).Text; !strings.Contains(body, "That's a contract") {
+		t.Errorf("reply does not say it is a contract:\n%s", body)
 	}
 }
 

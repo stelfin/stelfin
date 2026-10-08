@@ -38,8 +38,10 @@ func (s *Service) balance(ctx context.Context, r *request) error {
 	account := func(heading string, a api.AccountBalance) {
 		fmt.Fprintf(&b, "%s\n%s\n", heading, a.Address)
 		switch {
+		case a.Contract && len(a.Lines) == 0:
+			b.WriteString("  held by a contract, and holding none of the assets I know to ask about\n")
 		case a.Contract:
-			b.WriteString("  held by a contract; its balance is not shown here yet\n")
+			b.WriteString("  held by a contract, which its members vote in\n")
 		case !a.Exists:
 			b.WriteString("  not on the network yet: it has an address, and no account until somebody funds it\n")
 		case len(a.Lines) == 0:

@@ -41,11 +41,14 @@ func (s *Service) linkTreasury(ctx context.Context, r *request) error {
 	}
 	if !strkey.IsValidEd25519PublicKey(address) {
 		if strkey.IsValidContractAddress(address) {
-			// Worth naming, because it is the direction the product is going
-			// and a flat "not an address" would read as a typo.
-			return r.reply(ctx,
-				"That's a contract account. Proving one means asking the contract, "+
-					"not collecting signatures, and stelfin can't do that yet.")
+			// A contract is not proved by signatures. What it is, and whether
+			// whoever is asking has a say in it, are read from the contract.
+			if s.unavailable.ContractTreasuries {
+				return r.reply(ctx,
+					"That's a contract, and this deployment can't work with a treasury held by one: "+
+						"it has no Soroban RPC configured, or no treasury code on this network.")
+			}
+			return s.adoptTreasury(ctx, r, address)
 		}
 		return r.reply(ctx,
 			"That isn't an account I can ask you to prove. It needs to be a G… address.")
@@ -112,6 +115,13 @@ func (s *Service) treasuries(ctx context.Context, r *request) error {
 		name := t.Label
 		if name == "" {
 			name = "unnamed"
+		}
+		if t.Kind == store.TreasuryContract {
+			// Nothing about it is kept here to go stale: its voters and its
+			// rules are the contract's, and /rules reads them from it.
+			fmt.Fprintf(&b, "\n· %s — %s\n  held by a contract its voters decide in; /rules shows them and its rules",
+				name, t.Address)
+			continue
 		}
 		// The threshold is reported as of the last read and said to be so. A
 		// number presented as current, and stale, is worse than one that admits

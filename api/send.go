@@ -98,6 +98,10 @@ type Config struct {
 	// connector can be registered here, and every command that would use one
 	// says so.
 	Connectors *ConnectorConfig
+
+	// Treasuries is what holding a treasury in a contract needs. Nil means
+	// this deployment has only classic treasuries.
+	Treasuries *ContractTreasuryConfig
 }
 
 // Service prepares payments for approval.

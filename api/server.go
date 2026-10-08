@@ -17,6 +17,7 @@ import (
 	"github.com/stelfin/stelfin/chat"
 	"github.com/stelfin/stelfin/identity"
 	"github.com/stelfin/stelfin/ledger/store"
+	"github.com/stelfin/stelfin/settlement"
 )
 
 // ServerConfig wires the HTTP surface.
@@ -147,6 +148,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/proposal", s.handleProposal)
 	mux.HandleFunc("POST /v1/proposal/approve", s.handleApprove)
 	mux.HandleFunc("POST /v1/proposal/execute", s.handleExecute)
+	mux.HandleFunc("GET /v1/call", s.handleCall)
+	mux.HandleFunc("POST /v1/call/submit", s.handleCallSubmit)
 	// Liveness: the process is up and serving. Deliberately asks nothing of
 	// anything else, because this is what a platform's health check and a
 	// keep-alive ping hit, and a database having a slow minute is not a reason
@@ -170,6 +173,7 @@ func (s *Server) Routes() http.Handler {
 		mux.Handle("GET /link", s.cfg.Assets)
 		mux.Handle("GET /approve", s.cfg.Assets)
 		mux.Handle("GET /reclaim", s.cfg.Assets)
+		mux.Handle("GET /call", s.cfg.Assets)
 		mux.Handle("GET /static/", s.cfg.Assets)
 	}
 	return mux
@@ -735,10 +739,24 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 		// Not-found and not-yours are the same response: telling a caller that
 		// a transaction exists but belongs to someone else is itself a leak.
 		http.Error(w, "not found", http.StatusNotFound)
-	case errors.Is(err, ErrAlreadySubmitted):
+	case errors.Is(err, store.ErrNoMemberCall), errors.Is(err, store.ErrCallNotYours):
+		// One answer for both, as above and for the same reason.
+		http.Error(w, "not found", http.StatusNotFound)
+	case errors.Is(err, ErrAlreadySubmitted), errors.Is(err, store.ErrCallSubmitted):
 		http.Error(w, "already submitted", http.StatusConflict)
-	case errors.Is(err, ErrExpired):
+	case errors.Is(err, ErrExpired), errors.Is(err, store.ErrCallExpired):
 		http.Error(w, "expired", http.StatusGone)
+	case errors.Is(err, ErrContractTreasuriesOff):
+		http.Error(w, "contract treasuries are not available", http.StatusServiceUnavailable)
+	case errors.Is(err, ErrCallFailedOnChain):
+		// 422: it reached a ledger and the contract refused it there.
+		http.Error(w, "the contract refused the call on chain", http.StatusUnprocessableEntity)
+	case errors.Is(err, settlement.ErrRejected):
+		// Turned away before a ledger, which for a signed call is nearly
+		// always the signature: not this account's, or not over this call.
+		http.Error(w, "the network did not accept that signature for this call", http.StatusBadRequest)
+	case errors.Is(err, settlement.ErrTryAgainLater):
+		http.Error(w, "the network is busy; try again in a moment", http.StatusServiceUnavailable)
 	case errors.Is(err, ErrUnsigned):
 		http.Error(w, "transaction is not signed", http.StatusBadRequest)
 	case errors.Is(err, ErrAlreadyEnrolled), errors.Is(err, store.ErrAlreadyGranted):

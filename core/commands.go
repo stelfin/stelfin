@@ -47,6 +47,9 @@ type capability uint8
 const (
 	needsConnectors capability = 1 << iota
 	needsContractCalls
+	// needsSoroban is a treasury held by a contract: an RPC to reach one
+	// through, and treasury code on this network to run.
+	needsSoroban
 )
 
 func (s *Service) registerCommands() {
@@ -80,6 +83,7 @@ func (s *Service) registerCommands() {
 	cmds = append(cmds, s.roleCommands()...)
 	cmds = append(cmds, s.linkCommands()...)
 	cmds = append(cmds, s.treasuryCommands()...)
+	cmds = append(cmds, s.daoTreasuryCommands()...)
 	cmds = append(cmds, s.proposalCommands()...)
 	cmds = append(cmds, s.assetCommands()...)
 	cmds = append(cmds, s.reclaimCommands()...)

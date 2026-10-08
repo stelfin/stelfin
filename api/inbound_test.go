@@ -70,6 +70,10 @@ func (stubLinker) IssueReclaimLink(_ Scope, hash string, _ time.Time) (string, e
 	return "https://stelfin.example/reclaim#" + hash, nil
 }
 
+func (stubLinker) IssueCallLink(_ Scope, hash string, _ time.Time) (string, error) {
+	return "https://stelfin.example/call#" + hash, nil
+}
+
 func (stubLinker) IssueApproveLink(_ Scope, id store.ProposalID, _ time.Time) (string, error) {
 	return fmt.Sprintf("https://stelfin.example/approve#token-for-%d", id), nil
 }

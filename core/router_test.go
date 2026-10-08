@@ -120,6 +120,9 @@ type fakeSender struct {
 	grantsAsked []string
 	contractErr error
 	invoked     []string
+
+	// A treasury held by a contract, as far as the commands can see one.
+	chain chainFake
 }
 
 func (f *fakeSender) HandleSend(
@@ -418,6 +421,10 @@ func (stubLinker) IssueLinkLink(_ api.Scope, hash string, _ time.Time) (string, 
 
 func (stubLinker) IssueReclaimLink(_ api.Scope, hash string, _ time.Time) (string, error) {
 	return "https://stelfin.example/reclaim#" + hash, nil
+}
+
+func (stubLinker) IssueCallLink(_ api.Scope, hash string, _ time.Time) (string, error) {
+	return "https://stelfin.example/call#" + hash, nil
 }
 
 func (stubLinker) IssueApproveLink(_ api.Scope, id store.ProposalID, _ time.Time) (string, error) {

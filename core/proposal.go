@@ -29,6 +29,9 @@ func (s *Service) pay(ctx context.Context, r *request) error {
 	if err != nil || treasury.ID == 0 {
 		return err
 	}
+	if treasury.Kind == store.TreasuryContract {
+		return s.payFromContract(ctx, r, treasury)
+	}
 
 	args := payArguments(r.msg)
 	amountText, destination, memo := args["amount"], args["to"], args["memo"]
@@ -134,8 +137,39 @@ func overCeilingReply(e *api.CeilingError) string {
 			"whatever a workspace's own limits are. That's set by whoever runs it.", what)
 }
 
+// byKind sends a command about a numbered proposal down the road for the
+// treasury it is about. done is true when there is nothing left for the
+// caller: it was a contract treasury's, and has been dealt with, or the
+// question of which treasury has been put back to whoever asked.
+func (s *Service) byKind(
+	ctx context.Context, r *request,
+	onChain func(treasury store.Treasury, number string) error,
+) (done bool, err error) {
+	args, rest := named(r.msg, "id", "treasury")
+	treasury, kind, err := s.addressed(ctx, r, args["treasury"])
+	switch kind {
+	case replied:
+		return true, err
+	case contractTreasury:
+		number := args["id"]
+		if number == "" && len(rest) > 0 {
+			number = rest[0]
+		}
+		return true, onChain(treasury, number)
+	}
+	// A classic treasury, read as it always was — less the name of the
+	// treasury, if one was given, which that reading does not expect.
+	r.msg.Args = strings.Join(rest, " ")
+	return false, nil
+}
+
 // approve hands one member their own link to sign a proposal.
 func (s *Service) approve(ctx context.Context, r *request) error {
+	if done, err := s.byKind(ctx, r, func(t store.Treasury, number string) error {
+		return s.vote(ctx, r, t, number, true)
+	}); done || err != nil {
+		return err
+	}
 	view, err := s.namedProposal(ctx, r)
 	if err != nil || view == nil {
 		return err
@@ -161,6 +195,11 @@ func (s *Service) approve(ctx context.Context, r *request) error {
 
 // execute submits a proposal that has reached its threshold.
 func (s *Service) execute(ctx context.Context, r *request) error {
+	if done, err := s.byKind(ctx, r, func(t store.Treasury, number string) error {
+		return s.executeOnChain(ctx, r, t, number)
+	}); done || err != nil {
+		return err
+	}
 	view, err := s.namedProposal(ctx, r)
 	if err != nil || view == nil {
 		return err
@@ -265,6 +304,11 @@ func refusalReason(e *api.RefusedError) string {
 
 // cancel withdraws an open proposal.
 func (s *Service) cancel(ctx context.Context, r *request) error {
+	if done, err := s.byKind(ctx, r, func(t store.Treasury, number string) error {
+		return s.withdraw(ctx, r, t, number)
+	}); done || err != nil {
+		return err
+	}
 	view, err := s.namedProposal(ctx, r)
 	if err != nil || view == nil {
 		return err
@@ -312,20 +356,44 @@ func (s *Service) proposals(ctx context.Context, r *request) error {
 	if err != nil {
 		return err
 	}
-	if len(list) == 0 {
+	treasuries, err := s.store.Treasuries(ctx, r.org.ID)
+	if err != nil {
+		return err
+	}
+	var held []store.Treasury
+	for _, t := range treasuries {
+		if t.Kind == store.TreasuryContract {
+			held = append(held, t)
+		}
+	}
+	if len(list) == 0 && len(held) == 0 {
 		return r.reply(ctx, "No proposals here yet. /pay starts one.")
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "Recent proposals for %s:\n", r.org.DisplayName)
-	for _, p := range list {
-		fmt.Fprintf(&b, "\n#%d · %s · %s", p.ID, p.Kind, p.Status)
-		if p.Status == store.ProposalOpen {
-			fmt.Fprintf(&b, " · expires %s", p.ExpiresAt.UTC().Format("2 Jan 15:04 MST"))
+	if len(list) > 0 {
+		fmt.Fprintf(&b, "Recent proposals for %s:\n", r.org.DisplayName)
+		for _, p := range list {
+			fmt.Fprintf(&b, "\n#%d · %s · %s", p.ID, p.Kind, p.Status)
+			if p.Status == store.ProposalOpen {
+				fmt.Fprintf(&b, " · expires %s", p.ExpiresAt.UTC().Format("2 Jan 15:04 MST"))
+			}
+		}
+		b.WriteString("\n\nRun /approve <number> to sign one, or /cancel <number> to withdraw one that is open.")
+	}
+	// A treasury held by a contract keeps its own proposals and numbers them
+	// itself, so each is listed apart, read from the contract.
+	for _, t := range held {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		if err := s.chainProposals(ctx, r, t, &b); err != nil {
+			if handled, failed := s.refusedOnChain(ctx, r, t, err); handled || failed != nil {
+				return failed
+			}
 		}
 	}
-	b.WriteString("\n\nRun /approve <number> to sign one, or /cancel <number> to withdraw one that is open.")
-	return r.reply(ctx, b.String())
+	return r.reply(ctx, strings.TrimRight(b.String(), "\n"))
 }
 
 // payArguments reads /pay's arguments from wherever the platform put them.

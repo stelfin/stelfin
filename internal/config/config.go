@@ -71,6 +71,18 @@ type Config struct {
 	// everything in exactly that position.
 	WebAuthSeed string
 
+	// RelaySeed is the key of the account that sends the contract calls nobody
+	// has to sign for: creating a treasury contract, and carrying out a
+	// proposal its members have already passed.
+	//
+	// Optional. Left empty, the treasury key does it, which is the same key
+	// that already pays every fee. A separate one is worth having on a busy
+	// deployment for one reason: an account has one sequence number, and
+	// carrying out a proposal while a wallet is being set up would otherwise
+	// have the two take turns. The contract gives this account no authority
+	// either way, so what a leaked relay key costs is the fee money in it.
+	RelaySeed string
+
 	// AssetCode and AssetIssuer identify the asset users transact in.
 	AssetCode   string
 	AssetIssuer string
@@ -240,6 +252,7 @@ func Load() (*Config, error) {
 		SorobanStartLedger: optLedger("STELFIN_SOROBAN_START_LEDGER"),
 		TreasurySeed:       req("STELFIN_TREASURY_SEED"),
 		WebAuthSeed:        strings.TrimSpace(os.Getenv("STELFIN_WEBAUTH_SEED")),
+		RelaySeed:          strings.TrimSpace(os.Getenv("STELFIN_RELAY_SEED")),
 		AssetCode:          opt("STELFIN_ASSET_CODE", "USDC"),
 		AssetIssuer:        req("STELFIN_ASSET_ISSUER"),
 
@@ -440,6 +453,16 @@ func (c *Config) validate() error {
 				"config: STELFIN_WEBAUTH_SEED must not be the treasury key — it signs " +
 					"attacker-chosen material and is the one key here that cannot go " +
 					"behind a remote signer")
+		}
+	}
+	if c.RelaySeed != "" {
+		if !strkey.IsValidEd25519SecretSeed(c.RelaySeed) {
+			return errors.New("config: STELFIN_RELAY_SEED is not a valid Stellar secret seed")
+		}
+		if c.RelaySeed == c.WebAuthSeed {
+			return errors.New(
+				"config: STELFIN_RELAY_SEED must not be the web-auth key — that one signs " +
+					"attacker-chosen material, and this one's account holds fee money")
 		}
 	}
 	if !strkey.IsValidEd25519PublicKey(c.AssetIssuer) {
