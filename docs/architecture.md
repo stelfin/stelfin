@@ -133,10 +133,10 @@ Beyond the existing double-entry core:
   of two simultaneous approvals.
 - `tracked_addresses` — one address, one ledger account, so an incoming payment
   posts to exactly one place.
-- `connectors`, `connector_credentials`, `connector_grants_cache`,
-  `connector_calls`, `drafts` — the connector layer, with credentials sealed
-  against `(org, connector, purpose)` so a row moved between orgs decrypts to
-  nothing.
+- `connectors`, `connector_grants`, `drafts` — the connector layer. A
+  connector's address and token are sealed against `(org, name)`, so a row moved
+  between orgs decrypts to nothing. A grant is in force only with the signed
+  envelope that put it there, which the table itself requires.
 
 ## Contracts
 
@@ -183,8 +183,8 @@ Every phase ends with `make check` green and something demonstrable.
 | 8 | The contracts, deployed and pinned |
 | 9 | Ingestion: Horizon operations, Soroban events, SAC transfers |
 | 10 | Connectors and the Sheets adapter |
-| 11 | MCP server (done); MCP client and tier P deferred — see *What is left* |
-| 12 | Mainnet rails; the marketing rebuild — not started |
+| 11 | MCP server with read and propose tiers; MCP client, reachable as a connector |
+| 12 | Mainnet rails; the marketing rebuild; the generic webhook connector |
 
 ## Verification
 
@@ -194,6 +194,12 @@ Every phase ends with `make check` green and something demonstrable.
 - A cross-language golden corpus for transaction description: the same bytes
   asserted by a Go test and a Node test. Without it the two implementations
   drift and the guarantee disappears silently.
+- `make e2e`: the end-to-end bar below, run against live testnet with the chat
+  platform and the model replaced by local stand-ins and everything else real —
+  the `stelfind` binary, Postgres, Horizon. `make e2e-browser` is the same run
+  with every signing page then walked in headless Chrome, because the Go half
+  plays the browser by calling the JSON endpoints and so proves nothing about
+  the pages. What these two found is under *Found by running it end to end*.
 - `go test -tags=integration ./settlement/` against live testnet and friendbot,
   creating its own dependencies rather than relying on a third party's account.
 - `cargo test` including negative-authorization cases run *without*
@@ -206,89 +212,144 @@ Every phase ends with `make check` green and something demonstrable.
 
 ## What is left
 
-Phases 0 to 10 are built and phase 11 is half built. This is everything that is
-not, written down so it survives the session it was decided in. Nothing here is
-blocked on a decision unless it says so.
+Phases 0 to 10 and the mainnet rails are built, and the path from a chat message
+to money on chain is exercised end to end on both platforms. What follows is
+everything that is not, written down so it survives the session it was decided
+in.
 
-### Phase 11 — the MCP client
+### Connectors: decided, built, and where they differ from the plan
 
-The half where stelfin calls *out* to somebody else's MCP server. The server
-half is built; this is deliberately parked rather than half-built, because a
-partial version of it is worse than none.
+Connectors are reachable from chat: registered by an admin, set up on a page,
+granted by the treasury's signers, read through `connector.Guard`, and turned
+into payroll drafts a proposer puts to the signers.
 
-What it has to carry:
+**The grant is not on chain, and that is a decision, not a gap.** The plan put
+it in `connector_registry`. What was built instead is a statement in plain text
+— connector, kind, host, endpoint digest, pinned surface, capabilities, rate —
+whose SHA-256 rides in a SEP-10 challenge the treasury's signers sign at the
+weight a payment takes. The signed envelope is kept with the grant
+(`connector_grants.signed_xdr`), so the authorisation can be re-verified by
+anyone holding the row, without this deployment.
 
-- **An SSRF-safe dialer that pins the resolved IP.** A connector URL is
-  attacker-influenced input. Resolving a hostname and then connecting are two
-  operations, and between them the answer can change — so the address is
-  resolved once, checked against the private and link-local ranges, and the
-  connection made to that address rather than to the name.
-- **A digest-pinned tool surface**, the same pin `connector.Guard` and the
-  on-chain registry already apply: a server granted "read a spreadsheet" that
-  later offers a transfer tool must fail rather than be obeyed.
-- **Budgets and circuit breakers**, so an endpoint that is slow, hostile or
-  merely broken cannot hold a request path open or spend a workspace's rate.
-- **No agent loop.** The strongest defence here is architectural rather than
-  code: a tool result never reaches the decoder, so nothing an external server
-  says can become an instruction. That holds today by construction, and the
-  client must be built so it stays true.
+The reasoning: the guard that enforces a grant is this deployment's code
+wherever the grant is stored, so on-chain storage adds a public record and not a
+control; a connector can only read and draft, so a bad grant costs noise and not
+funds; and the on-chain path needed a contract instance per DAO, rent that must
+be kept paid, a slot in the one-open-proposal queue, and the still-undesigned
+page for confirming a contract call. What it gives up is the public audit trail.
+The stored envelope can be mirrored to `connector_registry` later if that is
+wanted; nothing about the grant format would change.
 
-### Phase 11 — tier P tools
+The browser checks what it is asked to sign. `link.js` hashes the statement it
+is shown and refuses unless the envelope commits to exactly that digest — and
+refuses any envelope that commits to a statement it is not showing, whatever the
+server labels it.
 
-MCP tools that draft a payment for a human to approve. Sequenced after the draft
-flow has run in anger, which it has not. The tier exists in `mcp_tokens` and
-nothing is registered against it, so a propose-tier token currently reaches
-exactly what a read-tier one does.
+**What each piece still does not do**, written where it lives and repeated here:
 
-### Phase 12 — mainnet rails
+- `mcpclient` has been run against stelfin's own MCP server
+  (`TestStelfinsMCPClientReadsStelfinsMCPServer`) and never against a third
+  party's. It refuses a paginated `tools/list`, ends a call on any
+  server-originated request including a ping, and does not pin `annotations` or
+  `outputSchema`.
+- `egress` refuses NAT64, 6to4 and Teredo wholesale rather than decoding the
+  IPv4 address inside, so a deployment on an IPv6-only network with DNS64 could
+  not reach IPv4-only endpoints.
+- The Sheets exchange has never met Google's real token endpoint with a real
+  key. `make e2e` gets as far as Google refusing a throwaway one.
 
-None of this is built. It is what has to exist before real money, and it is
-listed roughly in the order it is worth doing.
+**Agents drafting payments (the propose tier)** is built, on a decision made
+here: a propose-tier token can write a draft and nothing more, the draft is
+marked as the agent's everywhere it is shown, and its destinations must be
+addresses — a saved name belongs to the member who saved it. A member proposes
+it; the signers sign that.
 
-- **Network-binding startup check.** Partially present: `EnsurePlatformOrg`
-  refuses to come up against a different network than the books were written
-  for. What is missing is the same check for every org and for the configured
-  Horizon and RPC endpoints, so a mainnet passphrase pointed at a testnet
-  Horizon fails at startup rather than at the first payment.
-- **Spend ceilings**, per org and deployment-wide, above the on-chain policy —
-  a second limit that stelfin enforces even where the contract does not,
-  because a classic M-of-N treasury has no contract to enforce anything.
-- **Destination pre-flight.** Check the destination exists and can hold the
-  asset *before* asking anyone to sign. On Stellar a payment to an account with
-  no trustline fails, and finding that out after collecting three signatures
-  wastes the one resource a DAO has.
-- **Kill switches.** `orgs.status = 'suspended'` is enforced in
-  `core/router.go`, but nothing can set it — there is no command and no
-  operator path. A deployment-wide `STELFIN_READONLY` does not exist at all.
-- **Third-party contract allowlist**, with the WASM hash captured at
-  registration and re-checked before every call. Soroban contracts are
-  upgradeable: code audited on Tuesday can be different on Wednesday at the
-  same address with no signal. Generic third-party invocation ships *after*
-  this, never alongside it.
+### Contract calls
 
-### Phase 12 — the marketing site
+Built, behind three rules. `STELFIN_CONTRACT_CALLS` is off by default, because a
+contract call moves money in ways the spend ceilings cannot see. Only contracts
+on the workspace's allowlist, and only while they run the code they were
+allowed with — the pin (a WASM hash, or the fact of being an asset's own
+contract) is checked when the call is built and again before it is submitted.
+And a call is a proposal like any other, described from its own envelope and
+executed only at the treasury's spending weight. `make e2e` deploys the test
+asset's own contract and pays through it.
 
-`marketing/` still sells a WhatsApp USDC wallet. It needs Add-to-Discord and
-Open-in-Telegram calls to action and copy about DAO treasuries.
+A call that finds its state archived is refused, and the restore is offered as
+a proposal of its own (`/restore`): it costs money and is not folded quietly
+into the call. Restores are described by both renderers and pinned in the
+golden corpus; none has been run on chain, because a test cannot make testnet
+archive something on demand.
 
-Per the repository owner's standing instruction, invoke the
-`redesign-existing-projects` skill before touching it rather than restyling from
-default instincts.
+`ExtendFootprintTtl` is still not assembled. Nothing asks for it: extending is
+paying ahead of time to avoid a restore, and restoring when it is needed is
+built.
 
-### Phase 12 — the generic webhook connector
+### Smaller things, each reachable today
 
-Read tier only, and last on purpose. It is the most general connector shape and
-therefore the one with the least that can be said about what it will return.
+- **Limits are read without a lock.** Two proposals racing can together exceed a
+  daily ceiling by one payment. Every proposal still needs its signatures; the
+  alternative is serialising every proposal in the deployment behind one row.
+- **A linked wallet is booked in one workspace.** It has its own ledger account
+  beside any provisioned one, so ingestion records its payments — in the first
+  workspace that linked it. The network has one history and each payment is
+  posted once.
+- **Spend ceilings do not bound contract calls.** Stated where calls are turned
+  on and in every `/invoke` reply.
 
-### Carried over from phase 10
+### Found by running it end to end
 
-- **A `drafts` table.** `ProposeBatch` currently goes read → resolve → propose
-  in one call. That works, but a sheet that fails to resolve cannot be reviewed
-  before committing to it, and a draft cannot be handed between people.
-- **The Google service-account token exchange.** `connector/sheets` takes a
-  `Tokens` interface and nothing implements it: the RS256 JWT assertion and the
-  token endpoint call are not written. The seam is there and offline-testable;
-  the credential path is not.
+Each of these passed every unit test. They are fixed; they are listed because
+the way they were found says where the next ones are.
+
+- **The enrolment limiter was written and never called.** `GrantEnrollment` —
+  the budget, the daily caps, the float floor, one account per member — had no
+  caller, and neither did `SetEnrollmentPolicy`. As wired, anybody who added the
+  bot to a group could have the operator pay account reserves without limit. It
+  is now taken in `SubmitEnrollment` before the operator's signature goes on,
+  provisioning is off until an admin of a workspace with a proved treasury runs
+  `/provisioning on`, and a chat message says so rather than a link that leads
+  to a refusal.
+- **A provisioned account could never be handed back.** It holds no XLM by
+  design, and the hand-back transaction asked it to pay its own fee. `/reclaim`
+  also looked for the wallet in the wrong place — at the address a member proved
+  with `/link`, not the one provisioned for them. The operator now fee-bumps a
+  hand-back as it does a payment.
+- **Four of the five signing pages threw before rendering**, on
+  `new StellarSdk.TransactionBuilder.fromXDR(…)`, and the enroll page then
+  refused every provisioning transaction for a starting balance of
+  `"0.0000000"` where it expected `"0"`. `web/static/*.test.js` runs the modules
+  under Node and never loads a page. `make e2e-browser` now does.
+- **`/pay`, `/link-treasury` and `/link-code` could not be invoked from
+  Telegram**, which has no structured options and no hyphens in command names.
+- **Nothing could grant a role after `/setup`**, so only whoever installed the
+  bot could ever be offered a link.
+- **Every payment logged a tamper warning**, by comparing the hash the user
+  signed against the hash of the fee-bump around it.
+- **A command that failed internally answered with silence.**
+
+Found in the second pass, the same way:
+
+- **`/send` handed the decoder a sentence with no verb in it**, so the one way
+  to write a sentence on Discord could never be read as a payment.
+- **A member with a wallet of their own met a red dead end** on the confirm
+  page, which treated "the key is not on this device" as an error and not as an
+  ordinary way to hold a wallet.
+- **Nothing could attach a second chat space, save a recipient, set a limit,
+  mint an agent token or suspend a workspace**, though the store had a method
+  for each.
+- **The connector layer was written and unreachable**: the guard, the sealer,
+  the Sheets reader and batch payroll were tested packages that nothing in the
+  running application constructed.
+
+What end-to-end still does not cover:
+
+- **A live model.** `make e2e` stands in for the Messages API with something
+  that can only point at tokens. That exercises everything that checks the
+  decoder and nothing about the decoder's own judgement.
+- **The real platforms.** Telegram's Bot API and Discord's interactions are
+  both stood in for, faithfully to their documented shapes, and neither has
+  been driven against the real service from this tree.
 
 ### Smaller gaps, each stated where it lives
 
@@ -305,7 +366,7 @@ therefore the one with the least that can be said about what it will return.
 
 - **The Render database needs dropping, not migrating.** The migration set was
   replaced during the rebuild, so goose against the existing `goose_db_version`
-  table does nothing. There are nine migrations it has never seen.
+  table does nothing. There are fourteen migrations it has never seen.
 
   Order matters, and the wrong order is not obvious. `ledger.Migrate` runs
   unconditionally at boot, so the service must be suspended before the schema
