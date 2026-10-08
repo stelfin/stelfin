@@ -322,7 +322,7 @@ func Run(log *slog.Logger) error {
 	routes.Handle("POST /mcp", agents.Handler())
 	routes.Handle("/", server.Routes())
 
-	ingester, err := ingestion.New(db, pool, ingestion.Config{})
+	ingester, err := ingestion.New(db, pool, ingestion.Config{Logger: log})
 	if err != nil {
 		return err
 	}
@@ -348,6 +348,15 @@ func Run(log *slog.Logger) error {
 	// them. Said out loud at startup rather than left as a silent zero
 	// balance for whoever runs one.
 	if cfg.HasSoroban() {
+		if cfg.SorobanStartLedger == 0 {
+			// Not fatal, because it only matters the first time: a deployment
+			// that has ingested before resumes from its cursor. But on a fresh
+			// one, token-event ingestion will refuse to begin, and it should be
+			// said here rather than discovered from a balance that never moves.
+			log.Warn("no Soroban start ledger is configured; on a deployment with no " +
+				"ingestion cursor yet, token events will not be read until " +
+				"STELFIN_SOROBAN_START_LEDGER names where to begin")
+		}
 		transfers, err := ingestion.NewTransferSource(
 			rpcclient.NewClient(cfg.SorobanRPCURL, &http.Client{Timeout: 30 * time.Second}),
 			"transfers", cfg.SorobanStartLedger)

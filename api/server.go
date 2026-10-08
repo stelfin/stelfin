@@ -147,9 +147,16 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /v1/proposal", s.handleProposal)
 	mux.HandleFunc("POST /v1/proposal/approve", s.handleApprove)
 	mux.HandleFunc("POST /v1/proposal/execute", s.handleExecute)
+	// Liveness: the process is up and serving. Deliberately asks nothing of
+	// anything else, because this is what a platform's health check and a
+	// keep-alive ping hit, and a database having a slow minute is not a reason
+	// to have the platform restart a process that is serving signing pages.
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	// Readiness: could this instance do its job right now. For a person or a
+	// monitor asking why the bot is quiet.
+	mux.HandleFunc("GET /ready", s.handleReady)
 	// "/{$}" matches only the exact root path, not a catch-all subtree — the
 	// marketing site lives elsewhere now (a separate Next.js app), so this
 	// binary's job at "/" is just to send a stray visitor there rather than
@@ -226,6 +233,25 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 			s.handleInbound(ctx, channel, m)
 		}
 	}()
+}
+
+// readyTimeout bounds the readiness check. An answer that takes longer than
+// this is the answer.
+const readyTimeout = 2 * time.Second
+
+// handleReady reports whether the database can be reached.
+//
+// Says only yes or no. The reason goes to the log: this route is public, and
+// a connection error names hosts.
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), readyTimeout)
+	defer cancel()
+	if err := s.svc.Ready(ctx); err != nil {
+		s.log.Warn("not ready", "error", err)
+		http.Error(w, "not ready", http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 // handleInbound runs one message through the handler and makes sure the person

@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"sync"
 	"time"
@@ -50,6 +51,10 @@ type Config struct {
 
 	// PollInterval is the pause after catching up. Zero means DefaultPollInterval.
 	PollInterval time.Duration
+
+	// Logger is where a source that cannot be read says so. Nil means
+	// slog.Default.
+	Logger *slog.Logger
 }
 
 // Ingester applies records from any source to the ledger.
@@ -64,6 +69,7 @@ type Ingester struct {
 
 	pageSize     uint
 	pollInterval time.Duration
+	log          *slog.Logger
 
 	// external is the counterparty account for each org, memoised.
 	//
@@ -89,9 +95,14 @@ func New(s *store.Store, pool *pgxpool.Pool, cfg Config) (*Ingester, error) {
 		poll = DefaultPollInterval
 	}
 
+	log := cfg.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+
 	return &Ingester{
 		store: s, pool: pool,
-		pageSize: pageSize, pollInterval: poll,
+		pageSize: pageSize, pollInterval: poll, log: log,
 		external: make(map[ledger.OrgID]ledger.AccountID),
 	}, nil
 }
@@ -130,14 +141,28 @@ func (i *Ingester) externalFor(ctx context.Context, org ledger.OrgID) (ledger.Ac
 // rate limit bites. Backing off and retrying is correct because the cursor is
 // durable, so nothing is lost by waiting. Returning on the first error would
 // stop ingestion permanently on a blip.
+//
+// Retrying is not the same as saying nothing. Every failure used to be
+// swallowed here, so a source that could never start — an RPC with no starting
+// ledger configured, an endpoint that had gone for good — looked from the logs
+// exactly like one that was working, and the first sign of it was a balance
+// that did not move. A failure is now logged when it begins and when what is
+// failing changes, and so is the recovery; not on every attempt, which would
+// bury the one line that matters under a copy of itself per backoff.
 func (i *Ingester) Run(ctx context.Context, src Source) error {
 	backoff := minBackoff
+	var failing string
 	for {
 		n, err := i.Once(ctx, src)
 		switch {
 		case ctx.Err() != nil:
 			return ctx.Err()
 		case err != nil:
+			if msg := err.Error(); msg != failing {
+				i.log.Error("ingestion cannot read its source; it will keep trying",
+					"source", src.Name(), "error", err)
+				failing = msg
+			}
 			if sleepErr := sleep(ctx, jitter(backoff)); sleepErr != nil {
 				return sleepErr
 			}
@@ -145,6 +170,10 @@ func (i *Ingester) Run(ctx context.Context, src Source) error {
 			continue
 		}
 
+		if failing != "" {
+			i.log.Info("ingestion is reading its source again", "source", src.Name())
+			failing = ""
+		}
 		backoff = minBackoff
 		// A short page means we have caught up with the chain; anything else
 		// means there is more waiting and we should not pause.

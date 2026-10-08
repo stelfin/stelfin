@@ -70,6 +70,14 @@ func (e *DestinationError) Error() string {
 
 func (e *DestinationError) Unwrap() error { return ErrDestinationNotReady }
 
+// Ready reports whether the service can reach what it cannot work without.
+//
+// The database, and only that. Horizon being slow makes a payment slow; the
+// database being gone makes every command fail.
+func (s *Service) Ready(ctx context.Context) error {
+	return s.pool.Ping(ctx)
+}
+
 // writable refuses when the deployment is read-only.
 //
 // Two switches, either of which is enough. The variable is read once, at boot.
