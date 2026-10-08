@@ -13,12 +13,15 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/stellar/go-stellar-sdk/network"
+
+	"github.com/stelfin/stelfin/internal/money"
 	"github.com/stellar/go-stellar-sdk/strkey"
 )
 
@@ -82,6 +85,14 @@ type Config struct {
 	// so it is the only thing authenticating them.
 	TelegramBotToken      string
 	TelegramWebhookSecret string
+	// TelegramAPIURL overrides the Bot API root. Optional; empty means
+	// Telegram's own.
+	//
+	// Telegram publishes its Bot API server for self-hosting, and a deployment
+	// that runs one points here. The bot token is part of every request path,
+	// so this is held to https unless it is this machine — the same bar as the
+	// base URL, for the same reason.
+	TelegramAPIURL string
 
 	// DiscordPublicKey, DiscordBotToken and DiscordApplicationID configure the
 	// Discord transport. Optional, and required together.
@@ -106,7 +117,61 @@ type Config struct {
 
 	// ShutdownGrace bounds how long in-flight work has to finish.
 	ShutdownGrace time.Duration
+
+	// DiscordAPIURL overrides Discord's REST root. Optional, and for a proxy an
+	// operator runs or a test: Discord offers nothing to self-host. Held to
+	// https unless it is this machine, because the bot token is sent to it.
+	DiscordAPIURL string
+
+	// ReadOnly is the deployment-wide kill switch. Everything that reads keeps
+	// working; nothing new is built and nothing is submitted to the network.
+	//
+	// An environment variable rather than something in the database, on
+	// purpose: the moment it is needed is the moment the database, or whatever
+	// writes to it, may be the thing that is not trusted.
+	ReadOnly bool
+	// ReadOnlyFile is the same switch without a restart: while a file exists
+	// at this path, nothing is built or submitted. Looked for on every write.
+	ReadOnlyFile string
+
+	// MaxPayment and MaxDaily are this deployment's own ceilings on treasury
+	// proposals, in whole units of the asset, across every workspace. Empty
+	// means none. Required on the public network: a deployment handling real
+	// money with no ceiling of its own is relying on every workspace to have
+	// set one.
+	MaxPayment string
+	MaxDaily   string
+
+	// ConnectorKey seals what a workspace's connectors need kept: where each
+	// one is and the token it is reached with. Thirty-two bytes, hex. Optional:
+	// without it no MCP server or webhook can be registered.
+	//
+	// Losing it loses every sealed endpoint and credential, and changing it
+	// does the same. That is the right failure: they are re-entered on a page
+	// by the people who know them, and re-entering one ends its grant.
+	ConnectorKey []byte
+	// GoogleServiceAccount is a Google service-account key, as the JSON Google
+	// issues. Optional: without it there is no Sheets connector. One account
+	// for the deployment; a workspace shares a spreadsheet with its address,
+	// as a viewer.
+	GoogleServiceAccount []byte
+
+	// ContractCalls turns on calling allowed third-party contracts from a
+	// treasury. Off unless set: a contract call moves money in ways the spend
+	// ceilings cannot see, so a deployment relying on them must opt in.
+	ContractCalls bool
+
+	// MainnetAck is the operator saying, in so many words, that this
+	// deployment is meant to handle real funds. See validate.
+	MainnetAck string
 }
+
+// MainnetAcknowledgement is what STELFIN_MAINNET_ACK has to say, exactly.
+//
+// A sentence and not a boolean. "true" is what a variable gets set to by
+// someone copying a block of configuration from a staging environment; nobody
+// types this by accident.
+const MainnetAcknowledgement = "this deployment moves real funds"
 
 // Load reads configuration from the environment.
 //
@@ -150,7 +215,7 @@ func Load() (*Config, error) {
 		HTTPAddr:    opt("STELFIN_HTTP_ADDR", ":8080"),
 		BaseURL:     req("STELFIN_BASE_URL"),
 		DatabaseURL: req("STELFIN_DATABASE_URL"),
-		HorizonURL:  opt("STELFIN_HORIZON_URL", "https://horizon-testnet.stellar.org"),
+		HorizonURL:  opt("STELFIN_HORIZON_URL", defaultTestnetHorizon),
 		// No default. A default would point a mainnet deployment at whatever
 		// endpoint happened to be written here, and an RPC decides what a
 		// contract call is simulated against.
@@ -163,6 +228,7 @@ func Load() (*Config, error) {
 
 		TelegramBotToken:      strings.TrimSpace(os.Getenv("STELFIN_TELEGRAM_BOT_TOKEN")),
 		TelegramWebhookSecret: strings.TrimSpace(os.Getenv("STELFIN_TELEGRAM_WEBHOOK_SECRET")),
+		TelegramAPIURL:        strings.TrimSpace(os.Getenv("STELFIN_TELEGRAM_API_URL")),
 
 		DiscordPublicKey:     strings.TrimSpace(os.Getenv("STELFIN_DISCORD_PUBLIC_KEY")),
 		DiscordBotToken:      strings.TrimSpace(os.Getenv("STELFIN_DISCORD_BOT_TOKEN")),
@@ -170,6 +236,56 @@ func Load() (*Config, error) {
 		ConfirmTokenSecret:   []byte(req("STELFIN_CONFIRM_TOKEN_SECRET")),
 		AnthropicAPIKey:      os.Getenv("ANTHROPIC_API_KEY"),
 		DecoderEffort:        os.Getenv("STELFIN_DECODER_EFFORT"),
+
+		DiscordAPIURL: strings.TrimSpace(os.Getenv("STELFIN_DISCORD_API_URL")),
+		ReadOnlyFile:  strings.TrimSpace(os.Getenv("STELFIN_READONLY_FILE")),
+		MaxPayment:    strings.TrimSpace(os.Getenv("STELFIN_MAX_PAYMENT")),
+		MaxDaily:      strings.TrimSpace(os.Getenv("STELFIN_MAX_DAILY")),
+		MainnetAck:    strings.TrimSpace(os.Getenv("STELFIN_MAINNET_ACK")),
+	}
+
+	if raw := strings.TrimSpace(os.Getenv("STELFIN_CONNECTOR_KEY")); raw != "" {
+		key, err := hex.DecodeString(raw)
+		if err != nil || len(key) != 32 {
+			return nil, errors.New(
+				"config: STELFIN_CONNECTOR_KEY must be 32 bytes, hex-encoded — openssl rand -hex 32")
+		}
+		c.ConnectorKey = key
+	}
+	// The key itself, or a file holding it. A file is what a secret manager
+	// mounts; the variable is what a platform's dashboard takes.
+	switch inline, path := strings.TrimSpace(os.Getenv("STELFIN_GOOGLE_SERVICE_ACCOUNT")),
+		strings.TrimSpace(os.Getenv("STELFIN_GOOGLE_SERVICE_ACCOUNT_FILE")); {
+	case inline != "" && path != "":
+		return nil, errors.New(
+			"config: set STELFIN_GOOGLE_SERVICE_ACCOUNT or STELFIN_GOOGLE_SERVICE_ACCOUNT_FILE, not both")
+	case inline != "":
+		c.GoogleServiceAccount = []byte(inline)
+	case path != "":
+		key, err := os.ReadFile(path)
+		if err != nil {
+			// The path, and nothing of what was or was not in it.
+			return nil, fmt.Errorf("config: STELFIN_GOOGLE_SERVICE_ACCOUNT_FILE: cannot read %s", path)
+		}
+		c.GoogleServiceAccount = key
+	}
+
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("STELFIN_CONTRACT_CALLS"))) {
+	case "", "0", "false", "off", "no":
+	case "1", "true", "on", "yes":
+		c.ContractCalls = true
+	default:
+		return nil, errors.New("config: STELFIN_CONTRACT_CALLS must be true or false")
+	}
+
+	// Parsed strictly. A kill switch that read "ture" as off would be off on
+	// the one day somebody was typing in a hurry.
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("STELFIN_READONLY"))) {
+	case "", "0", "false", "off", "no":
+	case "1", "true", "on", "yes":
+		c.ReadOnly = true
+	default:
+		return nil, errors.New("config: STELFIN_READONLY must be true or false")
 	}
 
 	switch strings.ToLower(opt("STELFIN_NETWORK", "testnet")) {
@@ -216,6 +332,47 @@ func (c *Config) validate() error {
 				"Telegram does not sign deliveries, so this secret is the only thing "+
 				"authenticating them", n, telegramMinSecretLength)
 	}
+	if c.TelegramAPIURL != "" && !secureOrLocal(c.TelegramAPIURL) {
+		return errors.New(
+			"config: STELFIN_TELEGRAM_API_URL must be https — the bot token is " +
+				"part of every request sent to it")
+	}
+	if c.DiscordAPIURL != "" && !secureOrLocal(c.DiscordAPIURL) {
+		return errors.New(
+			"config: STELFIN_DISCORD_API_URL must be https — the bot token is sent to it")
+	}
+	for name, value := range map[string]string{
+		"STELFIN_MAX_PAYMENT": c.MaxPayment, "STELFIN_MAX_DAILY": c.MaxDaily,
+	} {
+		if value == "" {
+			continue
+		}
+		if n, err := money.Parse(value); err != nil || n <= 0 {
+			return fmt.Errorf("config: %s must be a positive amount, like 25000", name)
+		}
+	}
+	if c.IsMainnet() {
+		// The settled decision this implements: an operator key read from the
+		// environment does not start against the public network unless the
+		// operator has said, deliberately, that it should.
+		if c.MainnetAck != MainnetAcknowledgement {
+			return fmt.Errorf(
+				"config: STELFIN_NETWORK is public, and this deployment's operator key is "+
+					"read from the environment. Set STELFIN_MAINNET_ACK to %q to start anyway",
+				MainnetAcknowledgement)
+		}
+		if c.MaxPayment == "" || c.MaxDaily == "" {
+			return errors.New(
+				"config: on the public network STELFIN_MAX_PAYMENT and STELFIN_MAX_DAILY " +
+					"are required — a classic multisig has no contract to enforce a limit, " +
+					"so the deployment's own ceilings are the only ones guaranteed to exist")
+		}
+		if c.HorizonURL == defaultTestnetHorizon {
+			return errors.New(
+				"config: STELFIN_NETWORK is public and STELFIN_HORIZON_URL is still the " +
+					"testnet default; set it to a public-network Horizon")
+		}
+	}
 	discord := []string{c.DiscordPublicKey, c.DiscordBotToken, c.DiscordApplicationID}
 	set := 0
 	for _, v := range discord {
@@ -256,7 +413,7 @@ func (c *Config) validate() error {
 	if !strkey.IsValidEd25519PublicKey(c.AssetIssuer) {
 		return errors.New("config: STELFIN_ASSET_ISSUER is not a valid Stellar address")
 	}
-	if !strings.HasPrefix(c.BaseURL, "https://") && !strings.HasPrefix(c.BaseURL, "http://localhost") {
+	if !secureOrLocal(c.BaseURL) {
 		return errors.New(
 			"config: STELFIN_BASE_URL must be https — confirmation links carry payment authority")
 	}
@@ -266,6 +423,29 @@ func (c *Config) validate() error {
 		return fmt.Errorf("config: STELFIN_DECODER_EFFORT %q is not a known effort level", c.DecoderEffort)
 	}
 	return nil
+}
+
+// defaultTestnetHorizon is where an unconfigured deployment points. Named so
+// the public-network check can recognise a deployment that forgot to change it.
+const defaultTestnetHorizon = "https://horizon-testnet.stellar.org"
+
+// secureOrLocal reports whether a URL is https, or plain http to this machine.
+//
+// The host is parsed rather than prefix-matched: "http://localhost.evil.example"
+// starts with "http://localhost" and is not this machine.
+func secureOrLocal(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return true
+	case "http":
+		host := u.Hostname()
+		return host == "localhost" || host == "127.0.0.1" || host == "::1"
+	}
+	return false
 }
 
 // telegramMinSecretLength mirrors telegram.MinSecretLength. Duplicated rather
@@ -310,6 +490,13 @@ func (c *Config) Redacted() map[string]any {
 		"discord":        c.HasDiscord(),
 		"web_auth":       c.HasWebAuth(),
 		"decoder_effort": c.DecoderEffort,
+		"read_only":      c.ReadOnly,
+		"read_only_file": c.ReadOnlyFile,
+		"connector_key":  len(c.ConnectorKey) > 0,
+		"contract_calls": c.ContractCalls,
+		"google_sheets":  len(c.GoogleServiceAccount) > 0,
+		"max_payment":    c.MaxPayment,
+		"max_daily":      c.MaxDaily,
 		"shutdown_grace": c.ShutdownGrace.String(),
 		// Secrets are named, never valued, so a startup log confirms they were
 		// supplied without disclosing them.

@@ -3,6 +3,9 @@ package config
 import (
 	"crypto/ed25519"
 	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -114,6 +117,57 @@ func TestLoadRequiresHTTPS(t *testing.T) {
 	withEnv(t, env)
 	if _, err := Load(); err != nil {
 		t.Errorf("localhost should be allowed for development: %v", err)
+	}
+}
+
+// TestLoadReadsTheHostNotThePrefix: "http://localhost.evil.example" begins with
+// "http://localhost" and is somebody else's machine.
+func TestLoadReadsTheHostNotThePrefix(t *testing.T) {
+	for _, base := range []string{
+		"http://localhost.evil.example",
+		"http://localhost@evil.example",
+		"http://localhostevil.example:8080",
+		"ftp://localhost",
+		"localhost:8080",
+	} {
+		env := validEnv(t)
+		env["STELFIN_BASE_URL"] = base
+		withEnv(t, env)
+		if _, err := Load(); err == nil {
+			t.Errorf("%s was accepted as a local base url", base)
+		}
+	}
+	for _, base := range []string{"http://localhost", "http://127.0.0.1:8080", "http://[::1]:8080"} {
+		env := validEnv(t)
+		env["STELFIN_BASE_URL"] = base
+		withEnv(t, env)
+		if _, err := Load(); err != nil {
+			t.Errorf("%s should be allowed for development: %v", base, err)
+		}
+	}
+}
+
+// The bot token is part of every Bot API request path, so an API root over
+// plaintext discloses the credential to anyone on the path.
+func TestLoadHoldsTheTelegramAPIURLToHTTPS(t *testing.T) {
+	env := validEnv(t)
+	env["STELFIN_TELEGRAM_API_URL"] = "http://bot-api.example"
+	withEnv(t, env)
+	if _, err := Load(); err == nil {
+		t.Error("a plaintext Telegram API url was accepted")
+	}
+
+	for _, ok := range []string{"https://bot-api.example", "http://localhost:8081"} {
+		env["STELFIN_TELEGRAM_API_URL"] = ok
+		withEnv(t, env)
+		cfg, err := Load()
+		if err != nil {
+			t.Errorf("%s: %v", ok, err)
+			continue
+		}
+		if cfg.TelegramAPIURL != ok {
+			t.Errorf("TelegramAPIURL = %q, want %q", cfg.TelegramAPIURL, ok)
+		}
 	}
 }
 
@@ -305,5 +359,122 @@ func TestWebAuthIsOptional(t *testing.T) {
 	}
 	if cfg.HasWebAuth() {
 		t.Error("web auth reported as configured with no seed set")
+	}
+}
+
+// TestThePublicNetworkHasToBeAskedFor: the operator's key is read from the
+// environment, which is acceptable on testnet and is not something a deployment
+// should drift into on the public network because one variable was copied from
+// somewhere else.
+func TestThePublicNetworkHasToBeAskedFor(t *testing.T) {
+	mainnet := func(t *testing.T) map[string]string {
+		env := validEnv(t)
+		env["STELFIN_NETWORK"] = "public"
+		env["STELFIN_HORIZON_URL"] = "https://horizon.stellar.org"
+		env["STELFIN_MAINNET_ACK"] = MainnetAcknowledgement
+		env["STELFIN_MAX_PAYMENT"] = "25000"
+		env["STELFIN_MAX_DAILY"] = "100000"
+		return env
+	}
+
+	withEnv(t, mainnet(t))
+	if _, err := Load(); err != nil {
+		t.Fatalf("a fully acknowledged public-network configuration was refused: %v", err)
+	}
+
+	for name, mutate := range map[string]func(map[string]string){
+		"no acknowledgement":        func(e map[string]string) { e["STELFIN_MAINNET_ACK"] = "" },
+		"a boolean acknowledgement": func(e map[string]string) { e["STELFIN_MAINNET_ACK"] = "true" },
+		"no per-payment ceiling":    func(e map[string]string) { e["STELFIN_MAX_PAYMENT"] = "" },
+		"no daily ceiling":          func(e map[string]string) { e["STELFIN_MAX_DAILY"] = "" },
+		"the testnet horizon":       func(e map[string]string) { e["STELFIN_HORIZON_URL"] = "" },
+	} {
+		env := mainnet(t)
+		mutate(env)
+		withEnv(t, env)
+		if _, err := Load(); err == nil {
+			t.Errorf("%s: a public-network deployment started anyway", name)
+		}
+	}
+}
+
+// A kill switch that read a typo as "off" would be off on the one day somebody
+// was typing in a hurry.
+func TestTheReadOnlySwitchIsParsedStrictly(t *testing.T) {
+	for value, want := range map[string]bool{"": false, "false": false, "0": false, "true": true, "1": true, "ON": true} {
+		env := validEnv(t)
+		env["STELFIN_READONLY"] = value
+		withEnv(t, env)
+		cfg, err := Load()
+		if err != nil {
+			t.Errorf("STELFIN_READONLY=%q: %v", value, err)
+			continue
+		}
+		if cfg.ReadOnly != want {
+			t.Errorf("STELFIN_READONLY=%q read as %v", value, cfg.ReadOnly)
+		}
+	}
+	for _, value := range []string{"ture", "enabled", "2"} {
+		env := validEnv(t)
+		env["STELFIN_READONLY"] = value
+		withEnv(t, env)
+		if _, err := Load(); err == nil {
+			t.Errorf("STELFIN_READONLY=%q was accepted", value)
+		}
+	}
+}
+
+func TestCeilingsHaveToBeAmounts(t *testing.T) {
+	for _, value := range []string{"lots", "-5", "0"} {
+		env := validEnv(t)
+		env["STELFIN_MAX_PAYMENT"] = value
+		withEnv(t, env)
+		if _, err := Load(); err == nil {
+			t.Errorf("STELFIN_MAX_PAYMENT=%q was accepted", value)
+		}
+	}
+}
+
+func TestConnectorSettingsAreCheckedAtBoot(t *testing.T) {
+	for _, bad := range []string{"short", strings.Repeat("zz", 32), strings.Repeat("ab", 31)} {
+		env := validEnv(t)
+		env["STELFIN_CONNECTOR_KEY"] = bad
+		withEnv(t, env)
+		if _, err := Load(); err == nil {
+			t.Errorf("STELFIN_CONNECTOR_KEY=%q was accepted", bad)
+		}
+	}
+
+	path := filepath.Join(t.TempDir(), "account.json")
+	if err := os.WriteFile(path, []byte(`{"type":"service_account"}`), 0o600); err != nil {
+		t.Fatalf("write key file: %v", err)
+	}
+	env := validEnv(t)
+	env["STELFIN_CONNECTOR_KEY"] = strings.Repeat("ab", 32)
+	env["STELFIN_GOOGLE_SERVICE_ACCOUNT_FILE"] = path
+	withEnv(t, env)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.ConnectorKey) != 32 || string(cfg.GoogleServiceAccount) != `{"type":"service_account"}` {
+		t.Fatalf("connector settings read as key %d bytes, account %q", len(cfg.ConnectorKey), cfg.GoogleServiceAccount)
+	}
+	// The log line names that they are set, never what they are.
+	if fmt.Sprint(cfg.Redacted()) == "" || strings.Contains(fmt.Sprint(cfg.Redacted()), "service_account") {
+		t.Errorf("the redacted configuration carries the key: %v", cfg.Redacted())
+	}
+
+	// Both forms at once is ambiguous about which one is meant.
+	env["STELFIN_GOOGLE_SERVICE_ACCOUNT"] = `{"type":"service_account"}`
+	withEnv(t, env)
+	if _, err := Load(); err == nil {
+		t.Error("both the inline key and a key file were accepted")
+	}
+	env["STELFIN_GOOGLE_SERVICE_ACCOUNT"] = ""
+	env["STELFIN_GOOGLE_SERVICE_ACCOUNT_FILE"] = filepath.Join(t.TempDir(), "missing.json")
+	withEnv(t, env)
+	if _, err := Load(); err == nil {
+		t.Error("a key file that does not exist was accepted")
 	}
 }
