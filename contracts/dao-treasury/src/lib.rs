@@ -234,6 +234,10 @@ impl DaoTreasury {
     /// that is not being used: state that is left alone long enough is archived
     /// by the network and has to be paid to be brought back, and a treasury's
     /// members should not find that out on the day they next want to vote.
+    ///
+    /// It does not renew the code this contract runs, which every treasury
+    /// shares and none owns. Anyone can extend that too, with the network's
+    /// own operation and no call here.
     pub fn bump(env: Env) {
         policy::keep_everything(&env);
     }

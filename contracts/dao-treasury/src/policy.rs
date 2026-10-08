@@ -15,10 +15,24 @@ pub(crate) const KEEP_LEDGERS: u32 = 518_400;
 pub(crate) const RENEW_BELOW: u32 = KEEP_LEDGERS / 2;
 
 /// Keeps the contract's own state alive. Called on every use.
+///
+/// Its own state, and deliberately not the code it runs. The two are separate
+/// entries, and the obvious call renews both — but the code is tens of
+/// kilobytes shared by every treasury there is, and rent is charged by the
+/// byte. Renewing it here would put that whole bill inside whichever member's
+/// vote happened to come first after it ran low: a fee tens of times the usual
+/// one, for something that member did not ask for and no treasury owns.
+///
+/// What a treasury owns is small, and renewing it as it is used costs next to
+/// nothing. The code is kept alive from outside, by whoever runs it, with the
+/// network's own operation for extending an entry — which needs nobody's
+/// permission and no function here.
 pub(crate) fn keep_alive(env: &Env) {
-    env.storage()
-        .instance()
-        .extend_ttl(RENEW_BELOW, KEEP_LEDGERS);
+    env.deployer().extend_ttl_for_contract_instance(
+        env.current_contract_address(),
+        RENEW_BELOW,
+        KEEP_LEDGERS,
+    );
 }
 
 /// Keeps one stored entry alive.
@@ -35,7 +49,7 @@ pub(crate) fn keep<K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>>(env: &Env, ke
 ///
 /// Proposals and votes are not included. They are renewed when they are
 /// written, and an old one that lapses is a record that can be restored, not a
-/// rule the treasury runs on.
+/// rule the treasury runs on. Nor is the code: see `keep_alive`.
 pub(crate) fn keep_everything(env: &Env) {
     keep_alive(env);
     for member in members(env).iter() {
@@ -190,6 +204,10 @@ pub(crate) fn total_weight(env: &Env) -> u32 {
     let mut total: u32 = 0;
     for member in members(env).iter() {
         total = total.saturating_add(weight_of(env, &member));
+        // Every member's weight is read to settle anything, including the
+        // weight of a member who never votes. Renewed here, so that the place
+        // of somebody who stays away lasts as long as the treasury is in use.
+        keep(env, &Key::Member(member));
     }
     total
 }
@@ -288,10 +306,11 @@ pub(crate) fn allowlist(env: &Env) -> Vec<Address> {
 /// one that reads as convenient and ships a treasury that can pay an attacker's
 /// address on the day somebody forgets to populate it.
 pub(crate) fn is_allowed(env: &Env, to: &Address) -> bool {
-    env.storage()
-        .persistent()
-        .get(&Key::Allowed(to.clone()))
-        .unwrap_or(false)
+    let key = Key::Allowed(to.clone());
+    let allowed = env.storage().persistent().get(&key).unwrap_or(false);
+    // Paying somebody is what keeps them payable.
+    keep(env, &key);
+    allowed
 }
 
 /// Requires a member's signature and reports their weight.
