@@ -42,6 +42,18 @@ vet: ## Static analysis
 test: ## Unit and integration tests
 	$(GO) test ./...
 
+.PHONY: dev
+dev: ## Run the server locally: embedded Postgres, .env, testnet. No setup
+	$(GO) run ./cmd/stelfin-dev
+
+.PHONY: e2e
+e2e: ## Walk the whole flow against live testnet: setup, link, propose, sign, execute
+	$(GO) test -tags=e2e ./e2e/ -count=1 -v -timeout 15m
+
+.PHONY: e2e-browser
+e2e-browser: ## The same flow, with every signing page walked in headless Chrome
+	@GO=$(GO) NODE=$(NODE) ./e2e/browser/run.sh
+
 .PHONY: test-js
 test-js: ## Check the browser's renderer against the Go corpus, and its shape rules
 	@cd web/static && $(NODE) --test describe.test.js policy.test.js pages.test.js styles.test.js

@@ -13,3 +13,5 @@ DESIGN.md
 !.env.example
 contracts/target/
 contracts/*/test_snapshots/
+.dev/
+e2e/e2e-hold.txt
