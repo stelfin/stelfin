@@ -24,6 +24,7 @@ const (
 	InvalidMembers      Code = 15
 	NothingToRevoke     Code = 16
 	Undecided           Code = 17
+	TransferFailed      Code = 18
 )
 
 // Known reports whether this is a refusal the contract defines.
@@ -32,7 +33,7 @@ func (c Code) Known() bool {
 	case NotInitialised, NotMember, UnknownProposal, NotOpen, AlreadyVoted,
 		NotExecutable, RecipientNotAllowed, SpendLimitExceeded, InvalidPolicy,
 		InvalidAmount, WouldLockOut, NotProposer, InvalidMembers, NothingToRevoke,
-		Undecided:
+		Undecided, TransferFailed:
 		return true
 	default:
 		return false

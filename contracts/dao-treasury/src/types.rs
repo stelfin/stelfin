@@ -176,4 +176,12 @@ pub enum Error {
     NothingToRevoke = 16,
     /// Voting is still open and the votes not yet cast could change the result.
     Undecided = 17,
+    /// The token would not make the payment: most often because the treasury
+    /// does not hold enough of it.
+    ///
+    /// Reported as this contract's own refusal and not passed through as the
+    /// token's. A token's error codes are numbered by the token, and one of
+    /// them arriving from here would read as whichever of the codes above
+    /// happened to share its number.
+    TransferFailed = 18,
 }

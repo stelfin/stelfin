@@ -292,6 +292,7 @@ func TestTheErrorCodesAreTheContracts(t *testing.T) {
 		"SpendLimitExceeded": SpendLimitExceeded, "InvalidPolicy": InvalidPolicy,
 		"InvalidAmount": InvalidAmount, "WouldLockOut": WouldLockOut, "NotProposer": NotProposer,
 		"InvalidMembers": InvalidMembers, "NothingToRevoke": NothingToRevoke, "Undecided": Undecided,
+		"TransferFailed": TransferFailed,
 	}
 
 	seen := 0

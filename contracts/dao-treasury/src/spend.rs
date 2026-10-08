@@ -70,7 +70,7 @@ pub(crate) fn spend(
     env.storage().persistent().set(&Key::Window, &window);
     policy::keep(env, &Key::Window);
 
-    token::Client::new(env, token_id).transfer(&env.current_contract_address(), to, &amount);
+    pay_out(env, token_id, to, amount)?;
 
     Spent {
         member: member.clone(),
@@ -80,6 +80,30 @@ pub(crate) fn spend(
     }
     .publish(env);
     Ok(())
+}
+
+/// Moves the treasury's own money, and reports a token that would not.
+///
+/// The one place this contract's funds leave it. A refusal by the token —
+/// nearly always that the treasury does not hold enough — comes back as this
+/// contract's refusal, and everything this invocation wrote goes with it: a
+/// proposal that could not be paid is still passed, not executed, and a spend
+/// that did not happen has not used up any of its window.
+pub(crate) fn pay_out(
+    env: &Env,
+    token_id: &Address,
+    to: &Address,
+    amount: i128,
+) -> Result<(), Error> {
+    let moved = token::Client::new(env, token_id).try_transfer(
+        &env.current_contract_address(),
+        to,
+        &amount,
+    );
+    match moved {
+        Ok(Ok(())) => Ok(()),
+        _ => Err(Error::TransferFailed),
+    }
 }
 
 /// How much is left in the window that is currently open.

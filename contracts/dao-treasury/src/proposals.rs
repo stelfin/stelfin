@@ -1,4 +1,4 @@
-use soroban_sdk::{token, Address, BytesN, Env};
+use soroban_sdk::{Address, BytesN, Env};
 
 use crate::events::{Decided, Executed, Proposed, Voted};
 use crate::policy;
@@ -308,11 +308,7 @@ pub(crate) fn execute(env: &Env, id: u32) -> Result<(), Error> {
             if !policy::is_allowed(env, &payment.to) {
                 return Err(Error::RecipientNotAllowed);
             }
-            token::Client::new(env, &payment.token).transfer(
-                &env.current_contract_address(),
-                &payment.to,
-                &payment.amount,
-            );
+            crate::spend::pay_out(env, &payment.token, &payment.to, payment.amount)?;
         }
         // Each of these is checked again here, against the treasury as it is
         // now. Membership and policy can both have changed since the vote, and

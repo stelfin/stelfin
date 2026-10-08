@@ -756,6 +756,27 @@ fn a_proposal_executes_once() {
     assert_eq!(f.balance(&f.payee), 100, "it paid twice");
 }
 
+/// A payment the treasury cannot cover is not carried out, is not marked as if
+/// it had been, and can be carried out once it can.
+#[test]
+fn a_payment_the_treasury_cannot_cover_waits_until_it_can() {
+    let f = setup(strict());
+    let id = f.passed(&f.pay(1_000_001));
+    f.at(DAY);
+
+    // This contract's refusal, and not whatever number the token gave its own.
+    assert_eq!(refused(f.client.try_execute(&id)), Error::TransferFailed);
+    assert_eq!(f.client.proposal(&id).status, Status::Passed);
+    assert_eq!(f.balance(&f.payee), 0);
+
+    f.env.mock_all_auths();
+    token::StellarAssetClient::new(&f.env, &f.token).mint(&f.contract, &1);
+    f.env.set_auths(&[]);
+    f.client.execute(&id);
+    assert_eq!(f.client.proposal(&id).status, Status::Executed);
+    assert_eq!(f.balance(&f.payee), 1_000_001);
+}
+
 /// What the timelock is for. A payment has passed and is waiting; the members
 /// decide the recipient should not be paid after all. Taking them off the list
 /// needs the votes and does not wait out a timelock of its own — if it did, it
@@ -960,6 +981,24 @@ fn what_one_member_can_spend_is_bounded_by_what_was_voted() {
         );
     }
     assert_eq!(f.balance(&f.payee), 300);
+}
+
+/// A spend that did not happen has not used any of the window up.
+#[test]
+fn a_spend_the_treasury_cannot_cover_uses_none_of_the_allowance() {
+    let f = setup(Policy {
+        spend_limit: 5_000_000,
+        spend_window: DAY,
+        ..strict()
+    });
+    f.env.mock_all_auths();
+
+    assert_eq!(
+        refused(f.client.try_spend(&f.ada, &f.token, &f.payee, &1_000_001)),
+        Error::TransferFailed
+    );
+    assert_eq!(f.client.spendable(), 5_000_000);
+    assert_eq!(f.balance(&f.payee), 0);
 }
 
 #[test]

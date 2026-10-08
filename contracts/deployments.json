@@ -16,8 +16,8 @@
       "package": "dao-treasury",
       "networks": {
         "testnet": {
-          "wasm_hash": "e8f0f9216a35849880d77dc8dbedacce02a25faa9763059f000d2bb35e232a3f",
-          "upload_tx": "ef992e084153586bccaa849726150b1105640083645b49ea47594d7c2cf19ae9",
+          "wasm_hash": "ccf36b0ce15f44668c527aef79c7326b4a5f2ae67e767e2107b5c6a02c35f50f",
+          "upload_tx": "f0843f55ebca99aa3301801096d3f75323c06a802d05c344a4a579dce7da67ce",
           "uploaded_at": "2026-10-08"
         }
       }

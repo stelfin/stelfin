@@ -173,7 +173,7 @@ DAO is created on demand and recorded in Postgres, not here.
 
 | Contract             | WASM hash                                                          | Upload                                                                                                              |
 | -------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| `dao_treasury`       | `e8f0f9216a35849880d77dc8dbedacce02a25faa9763059f000d2bb35e232a3f` | [tx](https://stellar.expert/explorer/testnet/tx/ef992e084153586bccaa849726150b1105640083645b49ea47594d7c2cf19ae9) |
+| `dao_treasury`       | `ccf36b0ce15f44668c527aef79c7326b4a5f2ae67e767e2107b5c6a02c35f50f` | [tx](https://stellar.expert/explorer/testnet/tx/f0843f55ebca99aa3301801096d3f75323c06a802d05c344a4a579dce7da67ce) |
 | `connector_registry` | `903898770dba6b113fb7f60c3f81cc430d3492613ba876993829be952b10d25e` | [tx](https://stellar.expert/explorer/testnet/tx/66eaf4fd5ea8e721ed734373b39a174fad96db8854df9d3963ecae905835d501) |
 
 Those hashes are not taken on trust. `contracts/deployments.json` is embedded in
