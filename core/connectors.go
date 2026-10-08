@@ -542,6 +542,7 @@ func (s *Service) connectorCommands() []*command {
 	return []*command{
 		{
 			name:        "connector",
+			needs:       needsConnectors,
 			description: "Add, set up, grant, revoke or remove a connector",
 			options: []chat.Option{
 				opt("action", "add, setup, grant, revoke or remove", true),
@@ -554,12 +555,14 @@ func (s *Service) connectorCommands() []*command {
 		},
 		{
 			name:        "connectors",
+			needs:       needsConnectors,
 			description: "List this workspace's connectors",
 			minRole:     chat.RoleObserver,
 			run:         func(ctx context.Context, s *Service, r *request) error { return s.connectors(ctx, r) },
 		},
 		{
 			name:        "read",
+			needs:       needsConnectors,
 			description: "Show what a connector returns",
 			options: []chat.Option{
 				opt("connector", "Its name here", true),
@@ -570,6 +573,7 @@ func (s *Service) connectorCommands() []*command {
 		},
 		{
 			name:        "payroll",
+			needs:       needsConnectors,
 			description: "Read a payroll from a connector, as a draft",
 			options: []chat.Option{
 				opt("connector", "Its name here", true),

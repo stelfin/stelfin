@@ -332,6 +332,17 @@ func (c *Config) validate() error {
 				"Telegram does not sign deliveries, so this secret is the only thing "+
 				"authenticating them", n, telegramMinSecretLength)
 	}
+	if (c.HasTelegram() || c.HasDiscord()) && !c.HasWebAuth() {
+		// Optional on a deployment nobody can reach, where the signing pages
+		// are all there is. Not optional once somebody can: linking a wallet
+		// and proving a treasury both need it, every payment needs a treasury,
+		// and a bot that can be spoken to and can finish nothing is worse than
+		// one that will not start, because only the second gets fixed.
+		return errors.New(
+			"config: STELFIN_WEBAUTH_SEED is required once a chat platform is configured — " +
+				"without it nobody can link a wallet or prove a treasury, so nothing the bot " +
+				"offers can be finished. Generate a key for it that is not the treasury's")
+	}
 	if c.TelegramAPIURL != "" && !secureOrLocal(c.TelegramAPIURL) {
 		return errors.New(
 			"config: STELFIN_TELEGRAM_API_URL must be https — the bot token is " +

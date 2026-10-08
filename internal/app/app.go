@@ -213,6 +213,12 @@ func Run(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	if cfg.AnthropicAPIKey == "" {
+		log.Warn("no model key configured; the bot understands commands and cannot read a sentence")
+	}
+	if !cfg.ContractCalls {
+		log.Info("contract calls are off; the contract commands are not offered")
+	}
 
 	svc, err := api.NewService(pool,
 		decoder.New(decoder.Config{
@@ -267,7 +273,15 @@ func Run(log *slog.Logger) error {
 		Sender:  svc,
 		Admins:  transports,
 		Network: networkName(cfg),
-		Logger:  log,
+		// What this deployment was not given, so that the commands needing it
+		// are not offered. A command that can only answer "not here" is a dead
+		// button.
+		Unavailable: core.Unavailable{
+			FreeText:      cfg.AnthropicAPIKey == "",
+			Connectors:    connectors == nil,
+			ContractCalls: !cfg.ContractCalls || !cfg.HasSoroban(),
+		},
+		Logger: log,
 	})
 	if err != nil {
 		return err

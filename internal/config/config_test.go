@@ -317,6 +317,7 @@ func TestBothTransportsCanBeConfigured(t *testing.T) {
 	env["STELFIN_DISCORD_PUBLIC_KEY"] = hex.EncodeToString(make([]byte, ed25519.PublicKeySize))
 	env["STELFIN_DISCORD_BOT_TOKEN"] = "bot"
 	env["STELFIN_DISCORD_APPLICATION_ID"] = "111"
+	env["STELFIN_WEBAUTH_SEED"] = keypair.MustRandom().Seed()
 	withEnv(t, env)
 
 	cfg, err := Load()
@@ -325,6 +326,52 @@ func TestBothTransportsCanBeConfigured(t *testing.T) {
 	}
 	if !cfg.HasTelegram() || !cfg.HasDiscord() {
 		t.Errorf("telegram = %v, discord = %v; want both", cfg.HasTelegram(), cfg.HasDiscord())
+	}
+}
+
+// TestAReachableBotNeedsTheLinkingKey: the key is optional on a deployment
+// nobody can speak to. Once somebody can, a bot without it can be spoken to and
+// can finish nothing — no wallet linked, no treasury proved, so no payment —
+// and that is worse than one that will not start, because only the second gets
+// fixed.
+func TestAReachableBotNeedsTheLinkingKey(t *testing.T) {
+	platforms := map[string]map[string]string{
+		"telegram": {
+			"STELFIN_TELEGRAM_BOT_TOKEN":      "12345:ABC",
+			"STELFIN_TELEGRAM_WEBHOOK_SECRET": strings.Repeat("a", 32),
+		},
+		"discord": {
+			"STELFIN_DISCORD_PUBLIC_KEY":     hex.EncodeToString(make([]byte, ed25519.PublicKeySize)),
+			"STELFIN_DISCORD_BOT_TOKEN":      "bot",
+			"STELFIN_DISCORD_APPLICATION_ID": "111",
+		},
+	}
+	for name, vars := range platforms {
+		t.Run(name, func(t *testing.T) {
+			env := validEnv(t)
+			delete(env, "STELFIN_WEBAUTH_SEED")
+			for k, v := range vars {
+				env[k] = v
+			}
+			withEnv(t, env)
+
+			_, err := Load()
+			if err == nil {
+				t.Fatal("a bot somebody can reach started with no way to link a wallet")
+			}
+			if !strings.Contains(err.Error(), "STELFIN_WEBAUTH_SEED") {
+				t.Errorf("the refusal does not name the variable to set: %v", err)
+			}
+		})
+	}
+
+	// With no platform configured it stays optional: the signing pages are all
+	// there is, and they need no challenge key.
+	env := validEnv(t)
+	delete(env, "STELFIN_WEBAUTH_SEED")
+	withEnv(t, env)
+	if _, err := Load(); err != nil {
+		t.Fatalf("a deployment with no chat platform was refused for it: %v", err)
 	}
 }
 

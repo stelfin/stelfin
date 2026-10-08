@@ -74,19 +74,48 @@ type Config struct {
 	// Network is the network new orgs are created on, matching the platform
 	// org. A tenant is bound to one for its lifetime.
 	Network string
-	Logger  *slog.Logger
+	// Unavailable names what this deployment has not been given. The zero
+	// value means it has everything.
+	Unavailable Unavailable
+	Logger      *slog.Logger
+}
+
+// Unavailable is what a deployment cannot do, for want of configuration.
+//
+// Stated as what is missing rather than what is present because the difference
+// decides what a mistake looks like. Forgetting to say a capability is there
+// would hide working commands; forgetting to say it is missing leaves a command
+// in the menu that answers "not on this deployment". The second is the bug this
+// exists to remove, and it should not also be what happens by default — but a
+// service wired with no opinion at all should offer everything, as it did
+// before this type existed.
+type Unavailable struct {
+	// FreeText: no model is connected, so a sentence cannot be read.
+	FreeText bool
+	// Connectors: neither a connector key nor a Google service account.
+	Connectors bool
+	// ContractCalls: not switched on, or no Soroban RPC to make them through.
+	ContractCalls bool
+}
+
+// lacks reports whether any capability in needs is missing.
+func (u Unavailable) lacks(needs capability) bool {
+	return needs&needsFreeText != 0 && u.FreeText ||
+		needs&needsConnectors != 0 && u.Connectors ||
+		needs&needsContractCalls != 0 && u.ContractCalls
 }
 
 // Service routes inbound messages.
 type Service struct {
-	store      *store.Store
-	sender     Sender
-	admins     Admins
-	challenges *identity.Challenges
-	network    string
-	log        *slog.Logger
-	commands   map[string]*command
-	catalog    []chat.Command
+	store       *store.Store
+	sender      Sender
+	admins      Admins
+	challenges  *identity.Challenges
+	network     string
+	unavailable Unavailable
+	log         *slog.Logger
+	commands    map[string]*command
+	catalog     []chat.Command
 }
 
 // New returns a Service.
@@ -107,12 +136,13 @@ func New(cfg Config) (*Service, error) {
 	}
 
 	s := &Service{
-		store:      cfg.Store,
-		sender:     cfg.Sender,
-		admins:     cfg.Admins,
-		challenges: cfg.Sender.Challenges(),
-		network:    cfg.Network,
-		log:        log,
+		store:       cfg.Store,
+		sender:      cfg.Sender,
+		admins:      cfg.Admins,
+		challenges:  cfg.Sender.Challenges(),
+		network:     cfg.Network,
+		unavailable: cfg.Unavailable,
+		log:         log,
 	}
 	s.registerCommands()
 	return s, nil

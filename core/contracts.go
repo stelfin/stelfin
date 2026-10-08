@@ -229,6 +229,7 @@ func (s *Service) contractCommands() []*command {
 	return []*command{
 		{
 			name:        "contract",
+			needs:       needsContractCalls,
 			description: "Allow or remove a third-party contract",
 			options: []chat.Option{
 				opt("action", "allow or remove", true),
@@ -240,12 +241,14 @@ func (s *Service) contractCommands() []*command {
 		},
 		{
 			name:        "contracts",
+			needs:       needsContractCalls,
 			description: "List the contracts this workspace may call",
 			minRole:     chat.RoleObserver,
 			run:         func(ctx context.Context, s *Service, r *request) error { return s.contracts(ctx, r) },
 		},
 		{
 			name:        "restore",
+			needs:       needsContractCalls,
 			description: "Propose restoring archived state a contract call needs",
 			options: []chat.Option{
 				opt("contract", "Its label here", true),
@@ -257,6 +260,7 @@ func (s *Service) contractCommands() []*command {
 		},
 		{
 			name:        "invoke",
+			needs:       needsContractCalls,
 			description: "Propose a call to an allowed contract from the treasury",
 			options: []chat.Option{
 				opt("contract", "Its label here", true),

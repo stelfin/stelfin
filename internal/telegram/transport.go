@@ -482,18 +482,31 @@ func (t *Transport) Send(ctx context.Context, to chat.Conversation, actor chat.A
 		req.ReplyParameters = nil
 	}
 
-	if err := t.call(ctx, "sendMessage", req, nil); err != nil {
-		var apiErr *apiError
-		if errors.As(err, &apiErr) && apiErr.Code == http.StatusForbidden && r.Ephemeral && !to.IsDM {
-			t.sayStartFirst(ctx, to, actor)
-			return fmt.Errorf(
-				"telegram: cannot send privately to this member — they have never "+
-					"started a chat with the bot: %w", err)
+	// A reply longer than one message goes as several, in order. Sent whole it
+	// is refused whole, and the member sees nothing.
+	for i, piece := range chat.Split(r.Text, maxMessageUnits) {
+		req.Text = piece
+		if i > 0 {
+			// Only the first piece is a reply to anything; the rest follow it.
+			req.ReplyParameters = nil
 		}
-		return err
+		if err := t.call(ctx, "sendMessage", req, nil); err != nil {
+			var apiErr *apiError
+			if errors.As(err, &apiErr) && apiErr.Code == http.StatusForbidden && r.Ephemeral && !to.IsDM {
+				t.sayStartFirst(ctx, to, actor)
+				return fmt.Errorf(
+					"telegram: cannot send privately to this member — they have never "+
+						"started a chat with the bot: %w", err)
+			}
+			return err
+		}
 	}
 	return nil
 }
+
+// maxMessageUnits is the longest text Telegram accepts in one message, in
+// UTF-16 code units.
+const maxMessageUnits = 4096
 
 // startFirstNotice is posted to the group when a private reply cannot be
 // delivered. It is fixed text on purpose: whatever the undelivered reply said —

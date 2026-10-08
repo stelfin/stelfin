@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -732,4 +733,63 @@ func TestDiscordSatisfiesTheConformanceSuite(t *testing.T) {
 			return int(flags)&flagSuppressEmbeds != 0
 		},
 	})
+}
+
+// TestSendSplitsAReplyTooLongForOneMessage: Discord refuses a message over two
+// thousand characters whole, and the invoker is left with a spinner. An admin's
+// /help was ten characters short of that before the last six commands.
+func TestSendSplitsAReplyTooLongForOneMessage(t *testing.T) {
+	api := newStubAPI(t)
+	tr := newTransport(t, newSigner(t), api)
+
+	var long strings.Builder
+	for i := range 80 {
+		fmt.Fprintf(&long, "  /command-%d — does the thing that command number %d does\n", i, i)
+	}
+
+	err := tr.Send(context.Background(), chat.Conversation{
+		Channel: chat.Discord, SpaceID: "2", InteractionToken: "tok",
+	}, chat.Actor{UserID: "42"}, chat.Reply{Text: long.String(), Ephemeral: true})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	calls := api.recorded()
+	if len(calls) < 2 {
+		t.Fatalf("made %d call(s) for a %d-character reply, want it split", len(calls), long.Len())
+	}
+	for i, c := range calls {
+		var body struct {
+			Content string `json:"content"`
+			Flags   int    `json:"flags"`
+		}
+		if err := json.Unmarshal(c.Body, &body); err != nil {
+			t.Fatalf("decode call %d: %v", i, err)
+		}
+		if n := len([]rune(body.Content)); n > 2000 || n == 0 {
+			t.Errorf("call %d carries %d characters", i, n)
+		}
+		if c.Auth != "" {
+			t.Errorf("call %d carried an Authorization header; the interaction token is the credential", i)
+		}
+		if i == 0 {
+			// The first piece replaces the deferred message.
+			if c.Method != http.MethodPatch || !strings.HasSuffix(c.Path, "/tok/messages/@original") {
+				t.Errorf("first call = %s %s, want a PATCH of the deferred message", c.Method, c.Path)
+			}
+			continue
+		}
+		// The rest are followups, and a followup does not inherit the
+		// acknowledgement's privacy: each has to say it is ephemeral, or the
+		// second half of a private reply is posted to the channel.
+		if c.Method != http.MethodPost || c.Path != "/webhooks/"+testAppID+"/tok" {
+			t.Errorf("call %d = %s %s, want a followup", i, c.Method, c.Path)
+		}
+		if body.Flags&flagEphemeral == 0 {
+			t.Errorf("followup %d is not ephemeral (flags %d)", i, body.Flags)
+		}
+		if body.Flags&flagSuppressEmbeds == 0 {
+			t.Errorf("followup %d would unfurl links (flags %d)", i, body.Flags)
+		}
+	}
 }

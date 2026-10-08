@@ -433,8 +433,11 @@ func (d *Transport) Send(ctx context.Context, to chat.Conversation, actor chat.A
 		return errors.New("discord: refusing to send an empty message")
 	}
 
+	// A reply longer than one message goes as several, in order. Sent whole it
+	// is refused whole, and the invoker is left with a spinner.
+	pieces := chat.Split(r.Text, maxMessageLength)
 	body := message{
-		Content:         r.Text,
+		Content:         pieces[0],
 		Flags:           flagSuppressEmbeds,
 		AllowedMentions: allowedMentions{Parse: []string{}},
 	}
@@ -449,6 +452,19 @@ func (d *Transport) Send(ctx context.Context, to chat.Conversation, actor chat.A
 		path := fmt.Sprintf("/webhooks/%s/%s/messages/@original", d.applicationID, to.InteractionToken)
 		err := d.call(ctx, http.MethodPatch, path, body, false)
 		if err == nil {
+			// The rest follow as followups on the same interaction. A followup
+			// does not inherit the acknowledgement's privacy, so each says it
+			// is ephemeral for itself: the second half of a private reply is
+			// as private as the first.
+			followups := fmt.Sprintf("/webhooks/%s/%s", d.applicationID, to.InteractionToken)
+			for _, piece := range pieces[1:] {
+				more := body
+				more.Content = piece
+				more.Flags |= flagEphemeral
+				if err := d.call(ctx, http.MethodPost, followups, more, false); err != nil {
+					return err
+				}
+			}
 			return nil
 		}
 		var apiErr *apiError
@@ -472,8 +488,17 @@ func (d *Transport) Send(ctx context.Context, to chat.Conversation, actor chat.A
 	if channelID == "" {
 		return errors.New("discord: no channel to post to")
 	}
-	return d.call(ctx, http.MethodPost, "/channels/"+channelID+"/messages", body, true)
+	for _, piece := range pieces {
+		body.Content = piece
+		if err := d.call(ctx, http.MethodPost, "/channels/"+channelID+"/messages", body, true); err != nil {
+			return err
+		}
+	}
+	return nil
 }
+
+// maxMessageLength is the longest content Discord accepts in one message.
+const maxMessageLength = 2000
 
 // applicationCommand is one entry in the bulk command registration.
 type applicationCommand struct {

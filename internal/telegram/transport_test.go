@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf16"
 
 	"github.com/stelfin/stelfin/chat"
 	"github.com/stelfin/stelfin/chat/chattest"
@@ -827,5 +828,48 @@ func TestStartFailsRatherThanGuessWhoItIs(t *testing.T) {
 	}
 	if tr.Username() != "" {
 		t.Errorf("Username = %q after a failed Start", tr.Username())
+	}
+}
+
+// TestSendSplitsAReplyTooLongForOneMessage: Telegram refuses a message over
+// 4096 code units whole, and what the member sees is nothing.
+func TestSendSplitsAReplyTooLongForOneMessage(t *testing.T) {
+	api := newStubAPI(t)
+	tr := newTransport(t, api)
+
+	var long strings.Builder
+	for i := range 200 {
+		long.WriteString("  /command — does the thing that this particular command does\n")
+		_ = i
+	}
+
+	err := tr.Send(context.Background(),
+		chat.Conversation{Channel: chat.Telegram, SpaceID: "-100", MessageID: "7"},
+		chat.Actor{UserID: "42"}, chat.Reply{Text: long.String(), Ephemeral: true})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	calls := api.callsTo("sendMessage")
+	if len(calls) < 2 {
+		t.Fatalf("made %d sendMessage call(s) for a %d-character reply, want it split", len(calls), long.Len())
+	}
+	for i, c := range calls {
+		var body struct {
+			ChatID string `json:"chat_id"`
+			Text   string `json:"text"`
+		}
+		if err := json.Unmarshal(c.Body, &body); err != nil {
+			t.Fatalf("decode call %d: %v", i, err)
+		}
+		// In UTF-16 code units, which is how Telegram counts: the dash in
+		// each line is three bytes and one unit.
+		if n := len(utf16.Encode([]rune(body.Text))); n > 4096 || n == 0 {
+			t.Errorf("call %d carries %d code units", i, n)
+		}
+		// Every piece of a private reply goes to the same private chat.
+		if body.ChatID != "42" {
+			t.Errorf("call %d went to chat %q, want the member's own", i, body.ChatID)
+		}
 	}
 }

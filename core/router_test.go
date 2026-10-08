@@ -1046,3 +1046,136 @@ func (f *fakeSender) ProposeRestore(
 		Treasury: treasury, Destination: f.draftTo, Amount: 1, CreatedBy: by,
 	})
 }
+
+// harnessWithout is a harness for a deployment missing some of what it could
+// have been given.
+func harnessWithout(t *testing.T, u Unavailable) *harness {
+	t.Helper()
+	h := newHarness(t, true)
+	svc, err := New(Config{
+		Store: h.store, Sender: h.sender, Admins: fakeAdmins{admin: true},
+		Network: "testnet", Unavailable: u,
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	h.svc = svc
+	return h
+}
+
+func offered(cmds []chat.Command) map[string]bool {
+	out := make(map[string]bool, len(cmds))
+	for _, c := range cmds {
+		out[c.Name] = true
+	}
+	return out
+}
+
+// TestACommandTheDeploymentCannotServeIsNotOffered: somebody reads the menu to
+// find out what they can do. An entry that can only answer "not on this
+// deployment" is a wrong answer to that, and there used to be nine of them on a
+// deployment with the defaults.
+func TestACommandTheDeploymentCannotServeIsNotOffered(t *testing.T) {
+	everything := offered(newHarness(t, true).svc.Commands())
+
+	cases := map[string]struct {
+		without Unavailable
+		gone    []string
+	}{
+		"no connectors":     {Unavailable{Connectors: true}, []string{"connector", "connectors", "read", "payroll"}},
+		"no contract calls": {Unavailable{ContractCalls: true}, []string{"contract", "contracts", "invoke", "restore"}},
+		"no model":          {Unavailable{FreeText: true}, []string{"send"}},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			h := harnessWithout(t, c.without)
+			got := offered(h.svc.Commands())
+
+			gone := make(map[string]bool, len(c.gone))
+			for _, cmd := range c.gone {
+				gone[cmd] = true
+				if !everything[cmd] {
+					t.Fatalf("/%s is not a command at all; the test is checking nothing", cmd)
+				}
+				if got[cmd] {
+					t.Errorf("/%s is published to the platforms, and can do nothing here", cmd)
+				}
+			}
+			// And nothing else went with them.
+			for cmd := range everything {
+				if !gone[cmd] && !got[cmd] {
+					t.Errorf("/%s was withdrawn too, and needs none of what is missing", cmd)
+				}
+			}
+
+			space := fmt.Sprintf("-43%04d", len(name)+len(c.gone))
+			if err := h.handle(t, message(space, commandSetup, "Acme DAO")); err != nil {
+				t.Fatalf("setup: %v", err)
+			}
+
+			// Not in /help,
+			h.out = &fakeReplier{}
+			if err := h.handle(t, message(space, "help", "")); err != nil {
+				t.Fatalf("help: %v", err)
+			}
+			help := h.out.only(t).Text
+			for _, cmd := range c.gone {
+				if strings.Contains(help, "/"+cmd+" ") {
+					t.Errorf("/help lists /%s:\n%s", cmd, help)
+				}
+			}
+
+			// and answered like any other command that does not exist, rather
+			// than with a refusal that implies it might work tomorrow.
+			h.out = &fakeReplier{}
+			if err := h.handle(t, message(space, c.gone[0], "")); err != nil {
+				t.Fatalf("/%s: %v", c.gone[0], err)
+			}
+			if body := h.out.only(t).Text; !strings.Contains(body, "I don't know /"+c.gone[0]) {
+				t.Errorf("reply to a command this deployment lacks:\n%s", body)
+			}
+		})
+	}
+}
+
+// TestWithNoModelASentenceIsToldSo: the alternative was handing it to a decoder
+// with nothing behind it and apologising for the failure every time, as if
+// trying again might help — under a /help that invited people to try.
+func TestWithNoModelASentenceIsToldSo(t *testing.T) {
+	h := harnessWithout(t, Unavailable{FreeText: true})
+	if err := h.handle(t, message("-430901", commandSetup, "Acme DAO")); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	h.out = &fakeReplier{}
+	if err := h.handle(t, message("-430901", "", "send 5 to ada")); err != nil {
+		t.Fatalf("free text: %v", err)
+	}
+	if body := h.out.only(t).Text; body != noModelReply {
+		t.Errorf("reply:\n%s", body)
+	}
+	if got := len(h.sender.sent()); got != 0 {
+		t.Errorf("the sentence reached the payment path %d times with no model to read it", got)
+	}
+
+	h.out = &fakeReplier{}
+	if err := h.handle(t, message("-430901", "help", "")); err != nil {
+		t.Fatalf("help: %v", err)
+	}
+	if body := h.out.only(t).Text; strings.Contains(body, "in your own words") {
+		t.Errorf("/help invites a sentence nothing can read:\n%s", body)
+	}
+
+	// With one, both are as they were.
+	h = newHarness(t, true)
+	if err := h.handle(t, message("-430902", commandSetup, "Acme DAO")); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	h.out = &fakeReplier{}
+	if err := h.handle(t, message("-430902", "help", "")); err != nil {
+		t.Fatalf("help: %v", err)
+	}
+	if body := h.out.only(t).Text; !strings.Contains(body, "in your own words") {
+		t.Errorf("/help no longer mentions free text where it works:\n%s", body)
+	}
+}

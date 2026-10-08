@@ -33,8 +33,22 @@ type command struct {
 	// but a guild administrator can edit those, and Telegram's command scopes
 	// are only a hint to the autocomplete menu.
 	minRole chat.Role
-	run     func(ctx context.Context, s *Service, r *request) error
+	// needs is what the deployment must have been given for this command to
+	// do anything. One that needs something the deployment lacks is not
+	// registered at all: not in the menu, not in /help, and answered like any
+	// other command that does not exist.
+	needs capability
+	run   func(ctx context.Context, s *Service, r *request) error
 }
+
+// capability is something a deployment has only if it was configured to.
+type capability uint8
+
+const (
+	needsFreeText capability = 1 << iota
+	needsConnectors
+	needsContractCalls
+)
 
 func (s *Service) registerCommands() {
 	cmds := []*command{
@@ -77,6 +91,12 @@ func (s *Service) registerCommands() {
 	s.commands = make(map[string]*command, len(cmds))
 	s.catalog = make([]chat.Command, 0, len(cmds))
 	for _, c := range cmds {
+		if s.unavailable.lacks(c.needs) {
+			// A command that can only answer "not on this deployment" is a
+			// dead button. Somebody reads the menu to find out what they can
+			// do, and every such entry is a wrong answer to that.
+			continue
+		}
 		s.commands[c.name] = c
 		s.catalog = append(s.catalog, chat.Command{
 			Name:        c.name,
@@ -220,7 +240,9 @@ func (s *Service) help(ctx context.Context, r *request) error {
 		}
 		fmt.Fprintf(&b, "  /%s — %s\n", c.Name, c.Description)
 	}
-	b.WriteString("\nOr just tell me what you want to send, in your own words.")
+	if !s.unavailable.FreeText {
+		b.WriteString("\nOr just tell me what you want to send, in your own words.")
+	}
 	return r.reply(ctx, b.String())
 }
 
