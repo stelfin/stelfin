@@ -17,6 +17,7 @@ import (
 
 	"github.com/stelfin/stelfin/api"
 	"github.com/stelfin/stelfin/chat"
+	"github.com/stelfin/stelfin/connector"
 	"github.com/stelfin/stelfin/identity"
 	"github.com/stelfin/stelfin/internal/money"
 	"github.com/stelfin/stelfin/internal/pgtest"
@@ -77,8 +78,11 @@ func (r *fakeReplier) only(t *testing.T) chat.Reply {
 
 // fakeSender records the free-text messages routed to the payment path.
 type fakeSender struct {
-	mu         sync.Mutex
-	calls      []api.Scope
+	mu    sync.Mutex
+	calls []api.Scope
+	// sentences are the words HandleSend was given, which have to be exactly
+	// what the person wrote and nothing of the command around them.
+	sentences  []string
 	linked     []string
 	treasuries []string
 	// treasuryErr is what PrepareTreasuryLink returns, so a test can stand in
@@ -97,14 +101,25 @@ type fakeSender struct {
 	executed   []store.ProposalID
 	reclaimErr error
 	reclaimed  []string
+
+	// What the connector commands are given back, and what they asked for.
+	observation connector.Observation
+	readErr     error
+	proposeErr  error
+	draftTo     string
+	selectors   []string
+	grantsAsked []string
+	contractErr error
+	invoked     []string
 }
 
 func (f *fakeSender) HandleSend(
-	_ context.Context, scope api.Scope, _ chat.Inbound, _ api.Replier, _ api.Linker,
+	_ context.Context, scope api.Scope, m chat.Inbound, _ api.Replier, _ api.Linker,
 ) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, scope)
+	f.sentences = append(f.sentences, m.Args)
 	return nil
 }
 
@@ -764,4 +779,162 @@ func TestNewValidatesConfig(t *testing.T) {
 			t.Errorf("%s: accepted", name)
 		}
 	}
+}
+
+// The connector methods of the fake write real rows, for the same reason
+// ProposePayment does: the commands read them back through the store, and a
+// fake that kept its own map would let them pass without the constraints that
+// make them true. What is faked is everything outside the database — the
+// connector itself, and the signing.
+
+func (f *fakeSender) SheetsAccount() string { return "stelfin@example.iam.gserviceaccount.com" }
+
+func (f *fakeSender) RegisterConnector(
+	ctx context.Context, scope api.Scope, by store.MemberID, name, kind string,
+) (store.Connector, error) {
+	switch kind {
+	case store.ConnectorSheets, store.ConnectorMCP, store.ConnectorWebhook:
+	default:
+		return store.Connector{}, api.ErrConnectorKind
+	}
+	if strings.ToLower(name) != name || strings.ContainsAny(name, " _") {
+		return store.Connector{}, api.ErrConnectorName
+	}
+	return f.db.RegisterConnector(ctx, store.RegisterConnectorParams{
+		Org: scope.Org, Name: name, Kind: kind, Ready: kind == store.ConnectorSheets, CreatedBy: by,
+	})
+}
+
+func (f *fakeSender) PrepareGrant(
+	ctx context.Context, scope api.Scope, _ store.IdentityID, _ store.MemberID,
+	name string, treasury store.TreasuryID, perHour int,
+) (*api.GrantRequest, error) {
+	row, err := f.db.ConnectorByName(ctx, scope.Org, name)
+	if err != nil {
+		return nil, err
+	}
+	if !row.Ready {
+		return nil, api.ErrConnectorNotReady
+	}
+	if perHour == 0 {
+		perHour = api.DefaultGrantRate
+	}
+	tr, err := f.db.Treasury(ctx, scope.Org, treasury)
+	if err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	f.grantsAsked = append(f.grantsAsked, fmt.Sprintf("%s@%d", name, perHour))
+	f.mu.Unlock()
+	return &api.GrantRequest{
+		Challenge: &api.LinkChallenge{Hash: strings.Repeat("c", 64)},
+		Connector: row, Treasury: tr, PerHour: perHour,
+		Statement: "stelfin-connector-grant-1\nconnector\t" + name + "\nmay\tread.range\n" +
+			fmt.Sprintf("rate\t%d calls an hour\n", perHour) + "surface\tabc\n",
+	}, nil
+}
+
+func (f *fakeSender) ReadConnector(
+	ctx context.Context, scope api.Scope, name, selector string,
+) (connector.Observation, store.Connector, error) {
+	row, err := f.db.ConnectorByName(ctx, scope.Org, name)
+	if err != nil {
+		return connector.Observation{}, store.Connector{}, err
+	}
+	if f.readErr != nil {
+		return connector.Observation{}, row, f.readErr
+	}
+	f.mu.Lock()
+	f.selectors = append(f.selectors, selector)
+	f.mu.Unlock()
+	return f.observation, row, nil
+}
+
+func (f *fakeSender) DraftPayroll(
+	ctx context.Context, scope api.Scope, by store.MemberID, name, selector, memo string,
+) (store.Draft, error) {
+	row, err := f.db.ConnectorByName(ctx, scope.Org, name)
+	if err != nil {
+		return store.Draft{}, err
+	}
+	if f.readErr != nil {
+		return store.Draft{}, f.readErr
+	}
+	f.mu.Lock()
+	f.selectors = append(f.selectors, selector)
+	f.mu.Unlock()
+	return f.db.SaveDraft(ctx, store.Draft{
+		Org: scope.Org, Connector: row.ID, Selector: selector, Memo: memo,
+		Rows: []store.DraftRow{
+			{Line: 2, Amount: "100.0000000", Destination: f.draftTo, SaidAmount: "100", SaidDestination: f.draftTo},
+			{Line: 3, Amount: "50.5000000", Destination: f.draftTo, SaidAmount: "50.50", SaidDestination: f.draftTo},
+		},
+		Total: 1_505_000_000, CreatedBy: by,
+	})
+}
+
+func (f *fakeSender) ProposeDraft(
+	ctx context.Context, scope api.Scope, id store.DraftID, treasury store.TreasuryID, by store.MemberID,
+) (*api.ProposalView, store.Draft, error) {
+	draft, err := f.db.OpenDraft(ctx, scope.Org, id)
+	if err != nil {
+		return nil, store.Draft{}, err
+	}
+	if f.proposeErr != nil {
+		return nil, draft, f.proposeErr
+	}
+	view, err := f.ProposePayment(ctx, scope, api.ProposePaymentParams{
+		Treasury: treasury, Destination: f.draftTo, Amount: draft.Total, CreatedBy: by,
+	})
+	if err != nil {
+		return nil, draft, err
+	}
+	if err := f.db.ResolveDraft(ctx, scope.Org, id, "proposed", view.Proposal.ID); err != nil {
+		return view, draft, err
+	}
+	return view, draft, nil
+}
+
+func (f *fakeSender) AllowContract(
+	ctx context.Context, scope api.Scope, by store.MemberID, address, label string,
+) (store.AllowedContract, error) {
+	if f.contractErr != nil {
+		return store.AllowedContract{}, f.contractErr
+	}
+	return f.db.AllowContract(ctx, store.AllowedContract{
+		Org: scope.Org, Label: label, Address: address, Executable: "stellar_asset",
+	}, by)
+}
+
+func (f *fakeSender) ProposeInvoke(
+	ctx context.Context, scope api.Scope, treasury store.TreasuryID,
+	label, function, arguments string, by store.MemberID,
+) (*api.ProposalView, error) {
+	if _, err := f.db.AllowedContractByLabel(ctx, scope.Org, label); err != nil {
+		return nil, err
+	}
+	if f.contractErr != nil {
+		return nil, f.contractErr
+	}
+	f.mu.Lock()
+	f.invoked = append(f.invoked, label+"."+function+" "+arguments)
+	f.mu.Unlock()
+	return f.ProposePayment(ctx, scope, api.ProposePaymentParams{
+		Treasury: treasury, Destination: f.draftTo, Amount: 1, CreatedBy: by,
+	})
+}
+
+func (f *fakeSender) ProposeRestore(
+	ctx context.Context, scope api.Scope, treasury store.TreasuryID,
+	label, function, arguments string, by store.MemberID,
+) (*api.ProposalView, error) {
+	if _, err := f.db.AllowedContractByLabel(ctx, scope.Org, label); err != nil {
+		return nil, err
+	}
+	if f.contractErr != nil {
+		return nil, f.contractErr
+	}
+	return f.ProposePayment(ctx, scope, api.ProposePaymentParams{
+		Treasury: treasury, Destination: f.draftTo, Amount: 1, CreatedBy: by,
+	})
 }

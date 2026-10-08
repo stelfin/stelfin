@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -14,7 +15,8 @@ import (
 )
 
 // payMessage builds a /pay with its options filled in, which is how it arrives
-// from Discord and from Telegram's own command menu.
+// from Discord. Telegram delivers the same command as text; see
+// TestPayReadsItsArgumentsFromText.
 func payMessage(space, amount, to string) chat.Inbound {
 	m := message(space, "pay", "")
 	m.Options = map[string]string{"amount": amount, "to": to}
@@ -60,6 +62,59 @@ func TestPayOpensAProposalAndHandsOutALink(t *testing.T) {
 	}
 	if open.Kind != "payment" {
 		t.Errorf("kind = %q", open.Kind)
+	}
+}
+
+// TestPayReadsItsArgumentsFromText: Telegram has no structured options, so a
+// /pay that read only those could answer nothing but its own usage line there.
+func TestPayReadsItsArgumentsFromText(t *testing.T) {
+	h := newHarness(t, true)
+	_, tr := proposerIn(t, h, "-429001")
+	to := keypair.MustRandom().Address()
+
+	if err := h.handle(t, message("-429001", "pay", "250 to "+to+" march invoice")); err != nil {
+		t.Fatalf("pay: %v", err)
+	}
+	if body := h.out.only(t).Text; !strings.Contains(body, "/approve#") {
+		t.Fatalf("reply does not carry a signing link:\n%s", body)
+	}
+	if _, ok, err := h.store.OpenProposal(context.Background(), tr.Org, tr.ID); err != nil || !ok {
+		t.Fatalf("open proposal: %v (found %v)", err, ok)
+	}
+}
+
+func TestPayArguments(t *testing.T) {
+	cases := map[string]struct {
+		args string
+		want map[string]string
+	}{
+		"positional":        {"250 GABC", map[string]string{"amount": "250", "to": "GABC"}},
+		"with to":           {"250 to GABC", map[string]string{"amount": "250", "to": "GABC"}},
+		"with a memo":       {"250 GABC march invoice", map[string]string{"amount": "250", "to": "GABC", "memo": "march invoice"}},
+		"named":             {"amount:250 to:GABC", map[string]string{"amount": "250", "to": "GABC"}},
+		"named, any order":  {"to:GABC amount:250", map[string]string{"amount": "250", "to": "GABC"}},
+		"named memo":        {"250 GABC memo:for the audit", map[string]string{"amount": "250", "to": "GABC", "memo": "for the audit"}},
+		"a named treasury":  {"250 GABC treasury:ops", map[string]string{"amount": "250", "to": "GABC", "treasury": "ops"}},
+		"nothing":           {"", map[string]string{}},
+		"an amount, alone":  {"250", map[string]string{"amount": "250"}},
+		"to with no target": {"250 to", map[string]string{"amount": "250"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := payArguments(chat.Inbound{Command: "pay", Args: tc.args})
+			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Errorf("payArguments(%q) = %v, want %v", tc.args, got, tc.want)
+			}
+		})
+	}
+
+	// Structured options win outright: a platform that delivers them has
+	// already said what each value is.
+	got := payArguments(chat.Inbound{
+		Options: map[string]string{"amount": "5", "to": "GDEF"}, Args: "999 GABC",
+	})
+	if got["amount"] != "5" || got["to"] != "GDEF" {
+		t.Errorf("options did not take precedence: %v", got)
 	}
 }
 
@@ -297,5 +352,35 @@ func TestProposalsLists(t *testing.T) {
 	body := h.out.only(t).Text
 	if !strings.Contains(body, "payment") || !strings.Contains(body, "open") {
 		t.Errorf("listing does not describe the proposal:\n%s", body)
+	}
+}
+
+// TestAFailedCommandIsNotSilence: an error that reaches only the log looks,
+// from the chat, exactly like a bot that is not there. The member is told it
+// failed and that nothing changed — and none of the error's own text, which can
+// carry addresses and upstream URLs.
+func TestAFailedCommandIsNotSilence(t *testing.T) {
+	h := newHarness(t, true)
+	proposerIn(t, h, "-429002")
+	to := keypair.MustRandom().Address()
+	if err := h.handle(t, payMessage("-429002", "10", to)); err != nil {
+		t.Fatalf("pay: %v", err)
+	}
+	h.out = &fakeReplier{}
+
+	h.sender.executeErr = errors.New(`load account GABC: Get "https://horizon.example/accounts/GABC": TLS handshake timeout`)
+	err := h.handle(t, message("-429002", "execute", ""))
+	if err == nil {
+		t.Fatal("the failure was swallowed; it has to reach the log")
+	}
+
+	body := h.out.only(t).Text
+	if !strings.Contains(body, "Nothing was sent or changed") {
+		t.Errorf("reply does not say what state things are in:\n%s", body)
+	}
+	for _, leak := range []string{"horizon.example", "GABC", "TLS"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("reply leaks %q from the internal error:\n%s", leak, body)
+		}
 	}
 }

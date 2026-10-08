@@ -56,12 +56,15 @@ func (s *Service) Handle(ctx context.Context, m chat.Inbound, out api.Replier, l
 	// read. Everything else is silence — answering would be talking to a room
 	// that never asked.
 	if !registered {
-		if m.Command != commandSetup {
+		if m.Command != commandSetup && m.Command != commandConnect {
 			return nil
 		}
 		claimed, err := s.claimDelivery(ctx, m)
 		if err != nil || !claimed {
 			return err
+		}
+		if m.Command == commandConnect {
+			return s.connectHere(ctx, &request{msg: m, actor: m.Actor, out: out})
 		}
 		return s.runSetup(ctx, m, out)
 	}
@@ -110,8 +113,36 @@ func (s *Service) Handle(ctx context.Context, m chat.Inbound, out api.Replier, l
 		return req.reply(ctx, fmt.Sprintf(
 			"/%s needs the %s role in this workspace.", cmd.name, cmd.minRole))
 	}
-	return cmd.run(ctx, s, req)
+	if err := cmd.run(ctx, s, req); err != nil {
+		if errors.Is(err, api.ErrReadOnly) {
+			// Not a failure, and not worth an error in the log every time
+			// somebody tries: the deployment is doing what it was told to.
+			return req.reply(ctx, readOnlyReply)
+		}
+		// Still returned, so it is logged with everything in it. But the person
+		// who typed the command is told something too: an error that reaches
+		// only the log looks, from the chat, exactly like a bot that is not
+		// there. Nothing of the error itself goes in the reply — it can carry
+		// addresses, SQL and upstream URLs.
+		if replyErr := req.reply(ctx, commandFailedReply); replyErr != nil {
+			return fmt.Errorf("%w (and the reply saying so failed: %v)", err, replyErr)
+		}
+		return err
+	}
+	return nil
 }
+
+// readOnlyReply answers anything that would build or submit while the
+// deployment's kill switch is on.
+const readOnlyReply = "stelfin is in read-only mode right now, so I can't start or submit anything. " +
+	"Nothing is lost — proposals and their signatures are kept, and you can still look. " +
+	"Whoever runs this deployment turned it on, and will turn it off."
+
+// commandFailedReply is all a member is told when a command fails for a reason
+// that is not theirs. It promises only what is true of every command here:
+// anything that moves money needs a signature that was never collected.
+const commandFailedReply = "Something went wrong on my side, so I stopped. " +
+	"Nothing was sent or changed — please try that again in a moment."
 
 // claimDelivery records the delivery, reporting whether this caller won it.
 //

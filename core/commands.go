@@ -57,10 +57,15 @@ func (s *Service) registerCommands() {
 		},
 	}
 
+	cmds = append(cmds, s.roleCommands()...)
 	cmds = append(cmds, s.linkCommands()...)
 	cmds = append(cmds, s.treasuryCommands()...)
 	cmds = append(cmds, s.proposalCommands()...)
 	cmds = append(cmds, s.reclaimCommands()...)
+	cmds = append(cmds, s.provisioningCommands()...)
+	cmds = append(cmds, s.workspaceCommands()...)
+	cmds = append(cmds, s.connectorCommands()...)
+	cmds = append(cmds, s.contractCommands()...)
 
 	s.commands = make(map[string]*command, len(cmds))
 	s.catalog = make([]chat.Command, 0, len(cmds))
@@ -169,10 +174,10 @@ func (s *Service) setupHere(ctx context.Context, r *request) error {
 func (s *Service) whoami(ctx context.Context, r *request) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Workspace: %s (%s)\n", r.org.DisplayName, r.org.Network)
-	fmt.Fprintf(&b, "You: %s\n", r.actor.Ref())
+	fmt.Fprintf(&b, "You: member #%d (%s)\n", r.member.ID, r.actor.Ref())
 
 	if r.role == chat.RoleNone {
-		b.WriteString("Role: none yet — an admin here can give you one.\n")
+		fmt.Fprintf(&b, "Role: none yet — an admin here can give you one with /grant %d <role>.\n", r.member.ID)
 	} else {
 		fmt.Fprintf(&b, "Role: %s\n", r.role)
 	}
@@ -181,6 +186,14 @@ func (s *Service) whoami(ctx context.Context, r *request) error {
 		fmt.Fprintf(&b, "Wallet: %s (%s)\n", r.member.Address, r.member.AddressSource)
 	} else {
 		b.WriteString("Wallet: not linked yet.\n")
+	}
+	// A wallet stelfin set up is a second, separate thing: it is what a message
+	// in the member's own words is paid from, and it is not the address they
+	// proved with /link.
+	if provisioned, err := s.store.AddressForOwner(ctx, r.org.ID, r.actor.Ref()); err == nil {
+		fmt.Fprintf(&b, "Wallet set up by stelfin: %s\n", provisioned)
+	} else if !errors.Is(err, store.ErrAddressNotTracked) {
+		return err
 	}
 
 	b.WriteString("\nYour role decides what I'll offer you. " +

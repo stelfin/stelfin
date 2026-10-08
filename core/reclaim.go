@@ -8,6 +8,7 @@ import (
 
 	"github.com/stelfin/stelfin/api"
 	"github.com/stelfin/stelfin/chat"
+	"github.com/stelfin/stelfin/ledger/store"
 )
 
 // reclaimLinkLifetime bounds the link that hands an account back.
@@ -23,11 +24,22 @@ const reclaimLinkLifetime = 15 * time.Minute
 // account costs the operator reserve permanently; a cap with no way back is
 // still a leak, just a slower one.
 func (s *Service) reclaim(ctx context.Context, r *request) error {
-	if !r.member.HasAddress() {
-		return r.reply(ctx, "You don't have an account here to hand back.")
+	// The wallet stelfin set up for them, which is recorded against who they
+	// are in chat — not the address they proved with /link, which is theirs and
+	// was never the operator's to take back. Looking at the linked one first
+	// meant a provisioned wallet could not be found at all.
+	address, err := s.store.AddressForOwner(ctx, r.org.ID, r.actor.Ref())
+	switch {
+	case errors.Is(err, store.ErrAddressNotTracked):
+		if !r.member.HasAddress() {
+			return r.reply(ctx, "You don't have an account here to hand back.")
+		}
+		address = r.member.Address
+	case err != nil:
+		return err
 	}
 
-	reclaim, err := s.sender.PrepareReclaim(ctx, r.scope, r.member.Address)
+	reclaim, err := s.sender.PrepareReclaim(ctx, r.scope, address)
 	switch {
 	case errors.Is(err, api.ErrNothingToReclaim):
 		// Their own wallet is theirs. Building them a transaction that deletes

@@ -30,14 +30,13 @@ func (s *Service) pay(ctx context.Context, r *request) error {
 		return err
 	}
 
-	amountText := strings.TrimSpace(r.msg.Options["amount"])
-	destination := strings.TrimSpace(r.msg.Options["to"])
-	memo := strings.TrimSpace(r.msg.Options["memo"])
+	args := payArguments(r.msg)
+	amountText, destination, memo := args["amount"], args["to"], args["memo"]
 	if amountText == "" || destination == "" {
 		// Free text is the decoder's job, not this command's. A slash command
 		// that guessed at "5k to the auditor" would be a second, worse decoder
 		// with none of the re-checking the real one does.
-		return r.reply(ctx, "Try: /pay amount:250 to:GABC…")
+		return r.reply(ctx, "Try: /pay 250 to GABC…")
 	}
 
 	amount, err := money.Parse(amountText)
@@ -59,7 +58,16 @@ func (s *Service) pay(ctx context.Context, r *request) error {
 		Memo:        memo,
 		CreatedBy:   r.member.ID,
 	})
+	var over *api.CeilingError
+	var notReady *api.DestinationError
 	switch {
+	case errors.As(err, &over):
+		return r.reply(ctx, overCeilingReply(over))
+	case errors.As(err, &notReady):
+		return r.reply(ctx, fmt.Sprintf(
+			"I haven't put that to the signers, because it wouldn't land: %s %s.\n\n"+
+				"Better to find that out now than after everyone has signed. Once the "+
+				"destination is ready, run /pay again.", notReady.Address, notReady.Reason))
 	case errors.Is(err, store.ErrProposalAlreadyOpen):
 		// Not a queue-discipline preference. Two open envelopes from one
 		// account reserve the same sequence number, so whichever executes first
@@ -99,6 +107,22 @@ func (s *Service) pay(ctx context.Context, r *request) error {
 			"/execute %d once it has the weight.",
 		view.Proposal.ID, treasuryName(treasury), what,
 		view.Need, view.Have, link, view.Proposal.ID, view.Proposal.ID))
+}
+
+// overCeilingReply says which limit a proposal ran into and who can change it.
+func overCeilingReply(e *api.CeilingError) string {
+	what := fmt.Sprintf("more than %s in one proposal", e.Limit.Display())
+	if e.Window == "day" {
+		what = fmt.Sprintf("more than %s in 24 hours (this would make %s)", e.Limit.Display(), e.Asked.Display())
+	}
+	if e.Scope == "workspace" {
+		return fmt.Sprintf(
+			"I haven't put that to the signers: this workspace has said not to propose %s.\n\n"+
+				"An admin can change that with /limits.", what)
+	}
+	return fmt.Sprintf(
+		"I haven't put that to the signers: this deployment won't propose %s, "+
+			"whatever a workspace's own limits are. That's set by whoever runs it.", what)
 }
 
 // approve hands one member their own link to sign a proposal.
@@ -183,6 +207,59 @@ func (s *Service) proposals(ctx context.Context, r *request) error {
 	return r.reply(ctx, b.String())
 }
 
+// payArguments reads /pay's arguments from wherever the platform put them.
+//
+// Discord delivers them as structured options. Telegram has no such thing: a
+// command is a word followed by text, so there the same four values have to be
+// read out of Args, or /pay is a command that can only ever answer with its own
+// usage line.
+//
+// The text form is deliberately rigid — an amount, an optional "to", an
+// address, then a memo — with "name:value" accepted for any of them. It is a
+// fixed grammar and not a guess: anything looser is the decoder's job, and the
+// decoder's output gets re-checked against what was typed where this does not.
+func payArguments(m chat.Inbound) map[string]string {
+	out := make(map[string]string, 4)
+	for _, key := range []string{"amount", "to", "memo", "treasury"} {
+		if v := strings.TrimSpace(m.Options[key]); v != "" {
+			out[key] = v
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+
+	words := strings.Fields(m.Args)
+	for i := 0; i < len(words); i++ {
+		w := words[i]
+		if key, value, ok := strings.Cut(w, ":"); ok {
+			switch key = strings.ToLower(key); key {
+			case "memo":
+				// A memo is prose, so it runs to the end of the line.
+				rest := append([]string{value}, words[i+1:]...)
+				out["memo"] = strings.TrimSpace(strings.Join(rest, " "))
+				return out
+			case "amount", "to", "treasury":
+				out[key] = value
+				continue
+			}
+		}
+		switch {
+		case out["amount"] == "":
+			out["amount"] = w
+		case out["to"] == "":
+			if strings.EqualFold(w, "to") {
+				continue
+			}
+			out["to"] = w
+		default:
+			out["memo"] = strings.Join(words[i:], " ")
+			return out
+		}
+	}
+	return out
+}
+
 // namedProposal resolves the proposal a command refers to.
 //
 // With no number given, the treasury's one open proposal — because there can
@@ -231,6 +308,9 @@ func (s *Service) namedProposal(ctx context.Context, r *request) (*api.ProposalV
 // caller has nothing left to do.
 func (s *Service) soleTreasury(ctx context.Context, r *request) (store.Treasury, error) {
 	named := strings.TrimSpace(r.msg.Options["treasury"])
+	if named == "" && r.msg.Command == "pay" {
+		named = payArguments(r.msg)["treasury"]
+	}
 
 	list, err := s.store.Treasuries(ctx, r.org.ID)
 	if err != nil {

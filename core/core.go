@@ -27,6 +27,7 @@ import (
 
 	"github.com/stelfin/stelfin/api"
 	"github.com/stelfin/stelfin/chat"
+	"github.com/stelfin/stelfin/connector"
 	"github.com/stelfin/stelfin/identity"
 	"github.com/stelfin/stelfin/ledger/store"
 	"github.com/stelfin/stelfin/settlement"
@@ -48,6 +49,19 @@ type Sender interface {
 	LoadProposal(ctx context.Context, scope api.Scope, id store.ProposalID) (*api.ProposalView, error)
 	ExecuteProposal(ctx context.Context, scope api.Scope, id store.ProposalID, by store.IdentityID) (*settlement.Result, error)
 	PrepareReclaim(ctx context.Context, scope api.Scope, address string) (*api.Reclaim, error)
+	RegisterConnector(ctx context.Context, scope api.Scope, by store.MemberID, name, kind string) (store.Connector, error)
+	PrepareGrant(ctx context.Context, scope api.Scope, identity store.IdentityID, by store.MemberID,
+		name string, treasury store.TreasuryID, perHour int) (*api.GrantRequest, error)
+	ReadConnector(ctx context.Context, scope api.Scope, name, selector string) (connector.Observation, store.Connector, error)
+	DraftPayroll(ctx context.Context, scope api.Scope, by store.MemberID, name, selector, memo string) (store.Draft, error)
+	ProposeDraft(ctx context.Context, scope api.Scope, id store.DraftID, treasury store.TreasuryID,
+		by store.MemberID) (*api.ProposalView, store.Draft, error)
+	SheetsAccount() string
+	AllowContract(ctx context.Context, scope api.Scope, by store.MemberID, address, label string) (store.AllowedContract, error)
+	ProposeInvoke(ctx context.Context, scope api.Scope, treasury store.TreasuryID,
+		label, function, arguments string, by store.MemberID) (*api.ProposalView, error)
+	ProposeRestore(ctx context.Context, scope api.Scope, treasury store.TreasuryID,
+		label, function, arguments string, by store.MemberID) (*api.ProposalView, error)
 	Challenges() *identity.Challenges
 }
 
