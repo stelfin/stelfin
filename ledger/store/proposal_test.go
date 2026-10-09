@@ -190,9 +190,13 @@ func TestApprovalAfterExpiryIsRefused(t *testing.T) {
 	ctx := context.Background()
 	tn := newTenant(t, s, "pr-expired")
 	tr := linkTreasury(t, s, tn, 1)
-	p := newProposal(t, s, tn, tr, 10*time.Millisecond)
+	// A quarter of a second, and not ten milliseconds: the expiry is worked
+	// out here and the row is stamped by the database, and on a busy machine
+	// the insert alone can take longer than a window that short — which makes
+	// the row one that expired before it was created, and is refused as that.
+	p := newProposal(t, s, tn, tr, 250*time.Millisecond)
 
-	time.Sleep(30 * time.Millisecond)
+	time.Sleep(400 * time.Millisecond)
 
 	err := s.AddSignature(ctx, tn.org.ID, p.ID, ProposalSignature{
 		Signer: keypair.MustRandom().Address(), Signature: signature(8), Weight: 1,
@@ -261,9 +265,11 @@ func TestExpireProposalsFreesTheSlot(t *testing.T) {
 	ctx := context.Background()
 	tn := newTenant(t, s, "pr-sweep")
 	tr := linkTreasury(t, s, tn, 1)
-	p := newProposal(t, s, tn, tr, 10*time.Millisecond)
+	// A window long enough to survive a slow insert: see
+	// TestApprovalAfterExpiryIsRefused.
+	p := newProposal(t, s, tn, tr, 250*time.Millisecond)
 
-	time.Sleep(30 * time.Millisecond)
+	time.Sleep(400 * time.Millisecond)
 
 	if _, err := s.ExpireProposals(ctx); err != nil {
 		t.Fatalf("expire: %v", err)
@@ -295,9 +301,11 @@ func TestAnExpiredProposalDoesNotHoldTheSlot(t *testing.T) {
 	ctx := context.Background()
 	tn := newTenant(t, s, "pr-nosweep")
 	tr := linkTreasury(t, s, tn, 1)
-	stale := newProposal(t, s, tn, tr, 10*time.Millisecond)
+	// A window long enough to survive a slow insert: see
+	// TestApprovalAfterExpiryIsRefused.
+	stale := newProposal(t, s, tn, tr, 250*time.Millisecond)
 
-	time.Sleep(30 * time.Millisecond)
+	time.Sleep(400 * time.Millisecond)
 
 	// Nothing has swept. It is not offered as the open one,
 	if _, open, err := s.OpenProposal(ctx, tn.org.ID, tr.ID); err != nil || open {
