@@ -224,14 +224,24 @@ func transferRecord(event protocol.EventInfo) (Record, error) {
 		return record, nil
 	}
 
+	movement := Movement{
+		From: from, To: to,
+		AssetType: assetType, AssetCode: code, AssetIssuer: issuer,
+	}
+
+	// From here on, a failure is a failure to read how much. It goes on the
+	// movement rather than stopping the source: see Movement.Unreadable.
 	var value xdr.ScVal
 	if err := xdr.SafeUnmarshalBase64(event.ValueXDR, &value); err != nil {
-		return Record{}, fmt.Errorf("ingestion: event %s has an undecodable value: %w",
-			event.ID, err)
+		movement.Unreadable = fmt.Errorf("event %s has an undecodable value: %w", event.ID, err)
+		record.Movements = []Movement{movement}
+		return record, nil
 	}
-	amount, err := stroopsOf(value)
+	amount, err := stroopsOf(amountIn(value))
 	if err != nil {
-		return Record{}, fmt.Errorf("ingestion: event %s: %w", event.ID, err)
+		movement.Unreadable = fmt.Errorf("event %s: %w", event.ID, err)
+		record.Movements = []Movement{movement}
+		return record, nil
 	}
 	if amount.Sign() <= 0 {
 		// A zero or negative transfer moves nothing. Recorded as a no-op rather
@@ -240,12 +250,28 @@ func transferRecord(event protocol.EventInfo) (Record, error) {
 		return record, nil
 	}
 
-	record.Movements = []Movement{{
-		From: from, To: to,
-		AssetType: assetType, AssetCode: code, AssetIssuer: issuer,
-		Amount: amount,
-	}}
+	movement.Amount = amount
+	record.Movements = []Movement{movement}
 	return record, nil
+}
+
+// amountIn finds the amount in a transfer event's data.
+//
+// It is the data itself, or — since the network began carrying a destination's
+// memo alongside it — a map with the amount under "amount" and the memo beside
+// it. Both are the same transfer of the same amount; the second merely says
+// more about where it was going. A value that is neither is returned as it is,
+// for the caller to refuse.
+func amountIn(v xdr.ScVal) xdr.ScVal {
+	if v.Type != xdr.ScValTypeScvMap || v.Map == nil || *v.Map == nil {
+		return v
+	}
+	for _, entry := range **v.Map {
+		if entry.Key.Type == xdr.ScValTypeScvSymbol && entry.Key.Sym != nil && string(*entry.Key.Sym) == "amount" {
+			return entry.Val
+		}
+	}
+	return v
 }
 
 func decodeTopics(event protocol.EventInfo) ([]xdr.ScVal, error) {

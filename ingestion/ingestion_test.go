@@ -345,23 +345,136 @@ func TestCursorHoldsAtAFailedRecord(t *testing.T) {
 	ctx := context.Background()
 	stranger := keypair.MustRandom().Address()
 
-	// The user has no balance, so a withdrawal cannot post.
+	// A payment of nothing is not something the network produces, and a
+	// record that says so cannot be posted.
 	f.horizon.pages = map[string]operations.OperationsPage{
 		"": page(
 			payment("good-op", stranger, f.userAddr, "5.0000000"),
-			payment("bad-op", f.userAddr, stranger, "999.0000000"),
+			payment("bad-op", f.userAddr, stranger, "0.0000000"),
 		),
 	}
 
 	_, err := f.ing.Once(ctx, f.src)
 	if err == nil {
-		t.Fatal("expected an error: the overdrawing record cannot post")
-	}
-	if !errors.Is(err, ledger.ErrInsufficientFunds) {
-		t.Errorf("error = %v, want ErrInsufficientFunds", err)
+		t.Fatal("expected an error: a record moving nothing cannot post")
 	}
 	if cursor := f.cursor(t); cursor != "good-op" {
 		t.Errorf("cursor = %q, want %q: it must not advance past the record that failed", cursor, "good-op")
+	}
+}
+
+// kinds lists the kinds of entry in a workspace's books, oldest first.
+func (f *fixture) kinds(t *testing.T) []string {
+	t.Helper()
+	rows, err := testPool.Query(context.Background(),
+		`SELECT kind FROM ledger_transactions WHERE org_id = $1 ORDER BY id`, int64(f.org))
+	must(t, err, "list entries")
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var kind string
+		must(t, rows.Scan(&kind), "scan kind")
+		out = append(out, kind)
+	}
+	return out
+}
+
+// TestMoneyHeldBeforeTheBooksBeganIsAnOpeningBalance is the case every real
+// member is: somebody links a wallet that already has money in it, and spends
+// some.
+//
+// The books have never seen that money arrive, and an account in them may not
+// go negative, so the payment could not be recorded — and a record that cannot
+// be recorded holds the cursor. That stopped ingestion for the whole source,
+// which is every workspace's, for good. The network let the wallet pay; what
+// was short was the books.
+func TestMoneyHeldBeforeTheBooksBeganIsAnOpeningBalance(t *testing.T) {
+	f := newFixture(t, nil)
+	ctx := context.Background()
+	stranger := keypair.MustRandom().Address()
+
+	// The first thing these books ever see this wallet do is spend.
+	f.horizon.pages = map[string]operations.OperationsPage{
+		"":       page(payment("spend", f.userAddr, stranger, "20.0000000")),
+		"spend":  page(payment("income", stranger, f.userAddr, "7.0000000")),
+		"income": page(payment("spend-again", f.userAddr, stranger, "10.0000000")),
+	}
+
+	for _, step := range []string{"the payment", "what came after it", "a second overdraw"} {
+		if _, err := f.ing.Once(ctx, f.src); err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+	}
+	// Not stopped: the cursor is past all three.
+	if cursor := f.cursor(t); cursor != "spend-again" {
+		t.Fatalf("cursor = %q; ingestion did not get past a wallet that had money before it was linked", cursor)
+	}
+
+	// Twenty it must have held, shown by its spending twenty. Then seven
+	// arrived where the books could see, and ten went: three more it must
+	// have held. Each written down as what it is, and nothing else invented.
+	want := []string{"opening", "withdrawal", "deposit", "opening", "withdrawal"}
+	if got := f.kinds(t); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("the books read %v, want %v", got, want)
+	}
+	var opened int64
+	must(t, testPool.QueryRow(ctx, `
+		SELECT COALESCE(sum(e.amount), 0)
+		  FROM ledger_entries e JOIN ledger_transactions x ON x.id = e.transaction_id
+		 WHERE x.org_id = $1 AND x.kind = 'opening' AND e.account_id = $2`,
+		int64(f.org), int64(f.member)).Scan(&opened), "sum openings")
+	if got, want := money.Stroops(opened), money.MustParse("23"); got != want {
+		t.Errorf("opening balances come to %s, want %s", got, want)
+	}
+	if got := f.balance(t); got != 0 {
+		t.Errorf("the wallet's balance in the books is %s; it has spent all it was seen to hold", got)
+	}
+	// What crossed the boundary is what the network showed crossing it: 30
+	// out, 7 in. The opening balances are the other side of that, not extra.
+	ext, err := f.store.Balance(ctx, f.org, f.external, f.usdc)
+	must(t, err, "external balance")
+	if ext != 0 {
+		t.Errorf("the outside world's balance is %s, want it to net to zero", ext)
+	}
+
+	// Read again from the start, nothing is booked twice.
+	must(t, f.ing.saveCursor(ctx, f.src.Name(), ""), "rewind")
+	for range 3 {
+		if _, err := f.ing.Once(ctx, f.src); err != nil {
+			t.Fatalf("replay: %v", err)
+		}
+	}
+	if got := f.kinds(t); len(got) != len(want) {
+		t.Errorf("after a replay the books read %v", got)
+	}
+}
+
+// And between two accounts in one workspace: the one that pays is opened, the
+// one that is paid is simply paid.
+func TestAnOpeningBalanceForAPaymentInsideAWorkspace(t *testing.T) {
+	f := newFixture(t, nil)
+	ctx := context.Background()
+
+	treasury, err := f.store.EnsureAccount(ctx, f.org, ledger.AccountTreasury, "", "ops")
+	must(t, err, "ensure treasury")
+	treasuryAddr := keypair.MustRandom().Address()
+	must(t, f.ing.Track(ctx, f.org, treasuryAddr, treasury, store.RoleTreasury), "track treasury")
+
+	// A member puts forty into the treasury, from a wallet these books have
+	// never seen paid.
+	f.horizon.pages = map[string]operations.OperationsPage{
+		"": page(payment("put-in", f.userAddr, treasuryAddr, "40.0000000")),
+	}
+	if _, err := f.ing.Once(ctx, f.src); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	if got := f.kinds(t); fmt.Sprint(got) != "[opening send]" {
+		t.Errorf("the books read %v, want an opening balance and then the payment", got)
+	}
+	held, err := f.store.Balance(ctx, f.org, treasury, f.usdc)
+	must(t, err, "treasury balance")
+	if held != money.MustParse("40") || f.balance(t) != 0 {
+		t.Errorf("treasury holds %s and the member %s; want 40 and nothing", held, f.balance(t))
 	}
 }
 

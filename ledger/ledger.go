@@ -75,6 +75,10 @@ const (
 	TxReserveRelease TxKind = "reserve_release"
 	TxWithdrawal     TxKind = "withdrawal"
 	TxTrade          TxKind = "trade"
+	// TxOpening is money an account turned out to hold that these books never
+	// saw arrive: what was there before anybody here was watching. Its own
+	// kind, so that it is not read as a deposit made on the day it was found.
+	TxOpening TxKind = "opening"
 )
 
 type (

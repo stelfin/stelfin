@@ -258,20 +258,116 @@ func TestStartingWithNoCursorNeedsADeliberateChoice(t *testing.T) {
 // int64 stroops. Truncating would record a different, smaller payment that
 // every check downstream would agree with.
 func TestAnAmountTooLargeIsRefused(t *testing.T) {
+	ctx := context.Background()
+	db := store.New(testPool)
+	org := newOrg(t, db, "")
+	treasury, err := db.EnsureAccount(ctx, org.ID, ledger.AccountTreasury, "", "treasury")
+	must(t, err, "ensure treasury")
+	_, err = db.EnsureAccount(ctx, org.ID, ledger.AccountExternal, "", "external")
+	must(t, err, "ensure external")
+	// An address of this test's own: one address is watched for one
+	// workspace, and another test here watches the usual one.
+	raw, err := strkey.Decode(strkey.VersionByteAccountID, keypair.MustRandom().Address())
+	must(t, err, "decode")
+	ours, err := strkey.Encode(strkey.VersionByteContract, raw)
+	must(t, err, "encode")
+	must(t, db.TrackAddress(ctx, org.ID, ours, treasury, store.RoleTreasury), "track")
+
+	const tooLarge = "170141183460469231731687303715884105727"
+	stranger := func() xdr.ScVal { return scAccount(t, keypair.MustRandom().Address()) }
+
 	api := &fakeEvents{resp: protocol.GetEventsResponse{
 		Events: []protocol.EventInfo{
-			transferEvent(t, cursorAt(100, 0),
-				scAccount(t, keypair.MustRandom().Address()),
-				scAccount(t, keypair.MustRandom().Address()),
-				"native", "170141183460469231731687303715884105727"),
+			// Between two addresses nobody here has heard of. A token with
+			// eighteen decimal places does this with a handful of coins.
+			transferEvent(t, cursorAt(100, 0), stranger(), stranger(), "native", tooLarge),
+			// And to an address this deployment watches.
+			transferEvent(t, cursorAt(100, 1), stranger(), scContract(t, ours), "native", tooLarge),
+			transferEvent(t, cursorAt(100, 2), stranger(), scContract(t, ours), "native", "5"),
 		},
 		OldestLedger: 50,
 	}}
-	src, _ := NewTransferSource(api, "transfers", 50)
+	src, _ := NewTransferSource(api, t.Name(), 50)
 
-	_, err := src.Fetch(context.Background(), "", 200)
+	// The source reads all three and stops for none: it cannot know whose
+	// money any of it is.
+	records, err := src.Fetch(ctx, "", 200)
+	must(t, err, "fetch")
+	if len(records) != 3 || len(records[0].Movements) != 1 ||
+		!errors.Is(records[0].Movements[0].Unreadable, ErrAmountTooLarge) {
+		t.Fatalf("read %+v", records)
+	}
+
+	// Applied: the strangers' transfer is passed over and the cursor moves
+	// on. The one to the watched address stops everything behind it, which is
+	// right — the books would otherwise be wrong by an amount nobody knows.
+	ing, err := New(db, testPool, Config{PageSize: 200})
+	must(t, err, "new ingester")
+	n, err := ing.Once(ctx, src)
 	if !errors.Is(err, ErrAmountTooLarge) {
-		t.Fatalf("error = %v, want ErrAmountTooLarge", err)
+		t.Fatalf("error = %v, want ErrAmountTooLarge for the transfer to a watched address", err)
+	}
+	if n != 1 {
+		t.Fatalf("consumed %d records before stopping, want the strangers' one", n)
+	}
+	cursor, err := ing.loadCursor(ctx, t.Name())
+	must(t, err, "cursor")
+	if cursor != cursorAt(100, 0) {
+		t.Errorf("cursor = %q; it should rest on the strangers' transfer, past which it could not go", cursor)
+	}
+}
+
+// TestTheAmountIsReadInEitherFormTheNetworkSendsIt: since the network began
+// carrying a destination's memo with a transfer, the event's data is a map
+// with the amount in it. It is the same transfer. Read as a shape nobody
+// recognised, the first one anywhere on the network stopped this source for
+// every workspace on it — found on testnet, by an event between strangers.
+func TestTheAmountIsReadInEitherFormTheNetworkSendsIt(t *testing.T) {
+	from, to := keypair.MustRandom().Address(), keypair.MustRandom().Address()
+
+	withMemo := transferEvent(t, cursorAt(100, 0), scAccount(t, from), scAccount(t, to), "native", "1")
+	memo := xdr.Uint64(42)
+	entries := xdr.ScMap{
+		{Key: scSym(t, "amount"), Val: scI128(t, "75000000")},
+		{Key: scSym(t, "to_muxed_id"), Val: xdr.ScVal{Type: xdr.ScValTypeScvU64, U64: &memo}},
+	}
+	asMap := &entries
+	withMemo.ValueXDR = encode(t, xdr.ScVal{Type: xdr.ScValTypeScvMap, Map: &asMap})
+
+	// A map with no amount in it, and a value that is not a number at all.
+	// Neither can be read; neither stops the source.
+	noAmount := transferEvent(t, cursorAt(100, 1), scAccount(t, from), scAccount(t, to), "native", "1")
+	only := xdr.ScMap{{Key: scSym(t, "to_muxed_id"), Val: xdr.ScVal{Type: xdr.ScValTypeScvU64, U64: &memo}}}
+	onlyMap := &only
+	noAmount.ValueXDR = encode(t, xdr.ScVal{Type: xdr.ScValTypeScvMap, Map: &onlyMap})
+
+	garbled := transferEvent(t, cursorAt(100, 2), scAccount(t, from), scAccount(t, to), "native", "1")
+	garbled.ValueXDR = "not xdr"
+
+	api := &fakeEvents{resp: protocol.GetEventsResponse{
+		Events: []protocol.EventInfo{withMemo, noAmount, garbled}, OldestLedger: 50,
+	}}
+	src, _ := NewTransferSource(api, "transfers", 50)
+	records, err := src.Fetch(context.Background(), "", 200)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("%d records, want all three", len(records))
+	}
+
+	got := records[0].Movements
+	if len(got) != 1 || got[0].Unreadable != nil || got[0].Amount != money.MustParse("7.5") ||
+		got[0].From != from || got[0].To != to {
+		t.Errorf("a transfer with a memo was read as %+v", got)
+	}
+	for i, r := range records[1:] {
+		if len(r.Movements) != 1 || r.Movements[0].Unreadable == nil || r.Movements[0].Amount != 0 {
+			t.Errorf("unreadable event %d was read as %+v", i+1, r.Movements)
+		}
+		if r.Movements[0].From != from || r.Movements[0].To != to {
+			t.Errorf("unreadable event %d lost who it was between: %+v", i+1, r.Movements[0])
+		}
 	}
 }
 

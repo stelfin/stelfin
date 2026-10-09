@@ -251,6 +251,15 @@ func (i *Ingester) applyMovement(
 		return nil
 	}
 
+	if movement.Unreadable != nil {
+		// Somebody's here, and how much cannot be said. This is the case worth
+		// stopping for: skipping it would leave the books wrong by an amount
+		// nobody knows, with nothing recording that they are.
+		return fmt.Errorf(
+			"ingestion: record %s moves money for an address this deployment watches, "+
+				"and how much cannot be read: %w", record.ID, movement.Unreadable)
+	}
+
 	if movement.Amount.Sign() <= 0 {
 		return fmt.Errorf("ingestion: record %s has non-positive amount %s",
 			record.ID, movement.Amount)
@@ -276,7 +285,7 @@ func (i *Ingester) applyMovement(
 	}
 
 	for _, e := range entries {
-		_, err = i.store.Post(ctx, ledger.PostRequest{
+		req := ledger.PostRequest{
 			Org: e.org,
 			// Derived from the chain's own identifier, so replaying a page
 			// cannot post the same movement twice. Unique per org, which is
@@ -287,11 +296,80 @@ func (i *Ingester) applyMovement(
 			ExternalRef:    record.TxHash,
 			OccurredAt:     record.OccurredAt,
 			Postings:       e.postings,
-		})
+		}
+		_, err = i.store.Post(ctx, req)
+		if errors.Is(err, ledger.ErrInsufficientFunds) && fromTracked && e.org == from.Org {
+			// The network let this account pay, so it had the money. What is
+			// short is the books.
+			if err = i.open(ctx, record, key, from, asset, movement.Amount); err == nil {
+				_, err = i.store.Post(ctx, req)
+			}
+		}
 		if err != nil {
 			return fmt.Errorf("ingestion: post record %s for org %d: %w", record.ID, e.org, err)
 		}
 	}
+	return nil
+}
+
+// open books the money an account has just been seen to spend and was never
+// seen to receive, as an opening balance.
+//
+// These books begin when an address is first watched, and most addresses were
+// not empty then: a wallet somebody links has a history, and so may a treasury.
+// The first time one pays out what arrived before the watching began, a ledger
+// that refuses to let an account go negative refuses to record the payment —
+// and a record that cannot be posted holds the cursor where it is. That used
+// to be the end of ingestion: for that source, for every workspace on it, for
+// good, because one member with money already in their wallet had spent some.
+//
+// The payment happened. The network is the authority for that, and for the
+// balance it was paid from. So the shortfall is written down as what it is,
+// from outside, under its own kind, and the payment is then posted like any
+// other. Nothing is invented: the amount is exactly what the network has just
+// shown the account must have held.
+//
+// It is logged, each time. For a linked wallet it is routine and happens once
+// per asset. For an account stelfin created and has watched since, it means
+// something was missed, and somebody should be able to see that it was.
+func (i *Ingester) open(
+	ctx context.Context, record Record, key string,
+	from store.TrackedAddress, asset ledger.AssetID, amount money.Stroops,
+) error {
+	held, err := i.store.Balance(ctx, from.Org, from.Account, asset)
+	if err != nil {
+		return err
+	}
+	short := amount - held
+	if short <= 0 {
+		// Not short after all: something else has been posted since. The
+		// caller tries again.
+		return nil
+	}
+	external, err := i.externalFor(ctx, from.Org)
+	if err != nil {
+		return err
+	}
+	_, err = i.store.Post(ctx, ledger.PostRequest{
+		Org: from.Org,
+		// The amount is part of the key. A retry that finds the same shortfall
+		// is the same entry; one that finds a different shortfall is a
+		// different fact, and must not be refused as a reused key.
+		IdempotencyKey: fmt.Sprintf("%s:opening:%d", key, int64(short)),
+		Kind:           ledger.TxOpening,
+		OccurredAt:     record.OccurredAt,
+		Postings: []ledger.Posting{
+			{Account: from.Account, Asset: asset, Amount: short},
+			{Account: external, Asset: asset, Amount: -short},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	i.log.Info("an account spent money these books had not seen arrive; "+
+		"the difference is booked as an opening balance",
+		"org", from.Org, "address", from.Address, "role", from.Role,
+		"amount", short.String(), "record", record.ID)
 	return nil
 }
 

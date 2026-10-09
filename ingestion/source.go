@@ -62,6 +62,19 @@ type Movement struct {
 	AssetIssuer string
 
 	Amount money.Stroops
+
+	// Unreadable says why the amount could not be read, when it could not.
+	// Amount is then zero and means nothing.
+	//
+	// Carried here and not returned as an error by the source, because the
+	// source cannot know whether it matters. It reads every transfer on the
+	// network, nearly all of them between addresses nobody here has heard of,
+	// in tokens nobody here holds. An amount this ledger cannot represent, on
+	// a token with eighteen decimal places, between two strangers, is not this
+	// deployment's problem — and treating it as one stops every workspace's
+	// books at that event for good. Whether to stop is decided where it is
+	// known whose money it is: see applyMovement.
+	Unreadable error
 }
 
 // Source produces records in order, from a cursor.
