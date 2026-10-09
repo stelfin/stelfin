@@ -790,6 +790,130 @@ func TestWithoutSorobanTheContractCommandsAreNotOffered(t *testing.T) {
 	}
 }
 
+// On Discord a command cannot be followed by words: what it can be told is
+// what it declares. So where a treasury can be a contract, the commands that
+// may need to say which treasury, or which asset, declare that they can be
+// told — and where none can be, their menus are what they always were.
+func TestTheCommandsDeclareWhatTheyMayNeedToBeTold(t *testing.T) {
+	options := func(svc *Service, command string) []string {
+		for _, c := range svc.Commands() {
+			if c.Name != command {
+				continue
+			}
+			var names []string
+			for i, o := range c.Options {
+				names = append(names, o.Name)
+				// Discord refuses a command whose required options do not
+				// all come first.
+				if o.Required && i > 0 && !c.Options[i-1].Required {
+					t.Errorf("/%s lists required option %q after an optional one", command, o.Name)
+				}
+				if len(o.Description) > 100 {
+					t.Errorf("/%s option %q has a description of %d characters; Discord allows 100", command, o.Name, len(o.Description))
+				}
+			}
+			if len(c.Description) > 100 {
+				t.Errorf("/%s has a description of %d characters; Discord allows 100", command, len(c.Description))
+			}
+			return names
+		}
+		t.Fatalf("/%s is not offered", command)
+		return nil
+	}
+
+	with := newHarness(t, true).svc
+	for command, want := range map[string]string{
+		"approve": "[id treasury]",
+		"execute": "[id treasury]",
+		"cancel":  "[id treasury]",
+		"pay":     "[amount to memo treasury asset]",
+	} {
+		if got := fmt.Sprint(options(with, command)); got != want {
+			t.Errorf("/%s takes %s, want %s", command, got, want)
+		}
+	}
+	// Every command the service offers is within what a platform will take.
+	for _, c := range with.Commands() {
+		options(with, c.Name)
+	}
+
+	db := store.New(testPool)
+	without, err := New(Config{
+		Store: db, Sender: &fakeSender{db: db}, Admins: fakeAdmins{admin: true}, Network: "testnet",
+		Unavailable: Unavailable{ContractTreasuries: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for command, want := range map[string]string{
+		"approve": "[id]", "execute": "[id]", "cancel": "[id]", "pay": "[amount to memo treasury]",
+	} {
+		if got := fmt.Sprint(options(without, command)); got != want {
+			t.Errorf("with no contract treasuries, /%s takes %s, want %s", command, got, want)
+		}
+	}
+}
+
+// The same commands on Discord, where everything arrives as an option: the
+// treasury is named, and so is the asset.
+func TestOnDiscordTheTreasuryAndAssetArriveAsOptions(t *testing.T) {
+	h := newHarness(t, true)
+	space := nextSpace()
+	org, _, _ := heldByContract(t, h, space)
+	treasuryFor(t, h, org)
+	h.sender.chain.proposals[3] = open(3, "GA", 0, 0)
+	to := keypair.MustRandom().Address()
+
+	ask := func(command string, options map[string]string) string {
+		t.Helper()
+		m := message(space, command, "")
+		m.Options = options
+		h.out = &fakeReplier{}
+		if err := h.handle(t, m); err != nil {
+			t.Fatalf("/%s %v: %v", command, options, err)
+		}
+		return h.out.only(t).Text
+	}
+
+	mentions(t, ask("approve", map[string]string{"id": "3"}), "more than one treasury")
+	mentions(t, ask("approve", map[string]string{"id": "3", "treasury": "ops"}), "/call#", "proposal 3 of ops")
+	mentions(t, ask("execute", map[string]string{"id": "3", "treasury": "ops"}), "can't be carried out yet")
+	mentions(t, ask("cancel", map[string]string{"id": "3", "treasury": "ops"}), "only that wallet can withdraw it")
+
+	mentions(t, ask("pay", map[string]string{"amount": "5", "to": to, "treasury": "ops", "asset": "XLM", "memo": "for the audit"}),
+		"/call#", "ops's voters")
+	if note := h.sender.chain.notes[len(h.sender.chain.notes)-1]; note != "for the audit" {
+		t.Errorf("the note is %q", note)
+	}
+
+	// An account pays in one asset. Asked for another it says so, and
+	// proposes nothing — it does not quietly pay the usual one.
+	before := len(h.sender.sent())
+	body := ask("pay", map[string]string{"amount": "5", "to": to, "treasury": "main", "asset": "XLM"})
+	mentions(t, body, "main is an account", "sends USDC and nothing else", "haven't proposed")
+	if list, _ := h.store.Proposals(context.Background(), org.ID, 10); len(list) != 0 {
+		t.Errorf("a payment in the wrong asset was proposed anyway: %+v", list)
+	}
+	_ = before
+	// Asked for the asset it does pay in, it pays.
+	mentions(t, ask("pay", map[string]string{"amount": "5", "to": to, "treasury": "main", "asset": "USDC"}), "Proposal #")
+}
+
+// What the approver role does beyond what the bot will offer is said when the
+// role is given.
+func TestGrantingApproverSaysWhatItMeans(t *testing.T) {
+	h := newHarness(t, true)
+	space := nextSpace()
+	org := setUpWorkspace(t, h, space)
+	bo := grantRole(t, h, org, "77", chat.RoleObserver)
+
+	mentions(t, h.say(t, space, "grant", fmt.Sprintf("%d approver", bo)),
+		"an approver", "first voters", "/create-treasury", "is not changed")
+	if body := h.say(t, space, "grant", fmt.Sprintf("%d observer", bo)); strings.Contains(body, "first voters") {
+		t.Errorf("an observer was told they would vote:\n%s", body)
+	}
+}
+
 func TestSharesAreReadExactly(t *testing.T) {
 	for text, want := range map[string]uint32{
 		"60": 6_000, "60%": 6_000, "66.67": 6_667, "0.01": 1, "100": 10_000, " 50.5% ": 5_050,

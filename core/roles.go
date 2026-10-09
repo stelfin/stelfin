@@ -108,11 +108,19 @@ func (s *Service) setRole(ctx context.Context, r *request, who string, role chat
 	if role == chat.RoleNone {
 		return r.reply(ctx, fmt.Sprintf("%s has no role here now.", memberName(target)))
 	}
-	return r.reply(ctx, fmt.Sprintf(
+	body := fmt.Sprintf(
 		"%s is now %s here.\n\n"+
 			"That decides what I'll offer them. Whether a signature of theirs counts "+
 			"is decided on chain, by the treasury's own signers.",
-		memberName(target), withArticle(role)))
+		memberName(target), withArticle(role))
+	if role.AtLeast(chat.RoleApprover) && !s.unavailable.ContractTreasuries {
+		// The one thing the role does beyond what the bot will offer, said
+		// when it is given and not left to be discovered.
+		body += "\n\nIt also makes them one of the first voters in any treasury created " +
+			"here with /create-treasury, if they have a wallet by then. A treasury that " +
+			"already exists is not changed: its voters are its own to change."
+	}
+	return r.reply(ctx, body)
 }
 
 // members lists who the workspace has seen and what each may ask for.

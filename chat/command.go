@@ -5,11 +5,17 @@ package chat
 // Ordered, so a check is a comparison rather than a set membership test.
 //
 // The rule these encode, and the one worth stating loudly: a role decides who
-// the bot will talk to. It does not decide who can spend. Approver means "the
-// bot will offer you the approval link"; whether that approval counts is
-// decided by the treasury's on-chain signer list and thresholds, which the
+// the bot will talk to. It does not decide who can spend. Whether an approval
+// counts is decided on chain — by a treasury account's signer list and
+// thresholds, or by a treasury contract's own list of voters — which the
 // network enforces and this process cannot influence. Any change that lets a
-// platform role stand in for a signature is the bug that loses a treasury.
+// role here stand in for a signature is the bug that loses a treasury.
+//
+// So a link to sign is offered to anyone with a role, not only to approvers:
+// the signature either counts or it does not, and no role makes it. What
+// approver does mean is who a workspace has named as its deciders. When it
+// creates a treasury held by a contract, they are who its first voters are —
+// after which that list is the contract's, and changes by its voters' vote.
 type Role uint8
 
 const (

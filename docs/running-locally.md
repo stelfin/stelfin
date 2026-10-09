@@ -163,7 +163,7 @@ bot's replies open somebody else's page.
 | a group admin | `/setup Acme DAO` | The group becomes a workspace and they become its admin. |
 | anyone | `/whoami` | Their member number, role and linked wallet. |
 | anyone | `/link G…` | A link to a page where they sign a challenge proving the address is theirs. |
-| an admin | `/grant 12 approver` | Member #12 gets a role. Roles: observer, proposer, approver, admin. On Discord, pick the person instead. |
+| an admin | `/grant 12 approver` | Member #12 gets a role. Roles: observer, proposer, approver, admin. On Discord, pick the person instead. A role decides what the bot offers somebody, never whether their signature counts. Approvers are also who the first voters are in a treasury made with `/create_treasury`. |
 | an admin | `/link_treasury G…` | A link to a page where the account's signers prove control, with the weight a payment needs. |
 | a proposer | `/pay 250 to G… march invoice` | A proposal, and their own link to sign it. |
 | any signer | `/approve` | Their own link to sign the open proposal. |
@@ -220,7 +220,14 @@ sign their own call; stelfin pays the fee.
 | anyone with a role | `/proposals` | Each treasury's proposals. A contract numbers its own. |
 
 With both kinds of treasury in one workspace, a command about a numbered
-proposal is asked which: `treasury:ops`.
+proposal is asked which: `treasury:ops`. On Discord that is an option of the
+command, as `asset` is on `/pay`.
+
+What a contract treasury receives and pays is recorded in the workspace's
+books from the token contract's own events, which needs
+`STELFIN_SOROBAN_START_LEDGER` set once, to the ledger the books should begin
+at. A wallet that had money before it was linked is given an opening balance
+the first time it spends some.
 
 A role decides what the bot will offer someone. It never decides whether a
 signature counts — that is the treasury account's own signer list, enforced by

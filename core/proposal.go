@@ -33,7 +33,30 @@ func (s *Service) pay(ctx context.Context, r *request) error {
 		return s.payFromContract(ctx, r, treasury)
 	}
 
-	args := payArguments(r.msg)
+	// An account pays in the asset this deployment is set up with, and this
+	// command has no way to say another. Asked for one, it says so. Paying the
+	// usual asset to somebody who asked for a different one would be the
+	// command doing something other than what it was told.
+	extra, rest := named(r.msg, "asset")
+	if asked := extra["asset"]; asked != "" {
+		usual, _ := s.sender.TreasuryAsset("")
+		wanted, err := s.sender.TreasuryAsset(asked)
+		if err != nil || usual == nil || wanted.IsNative() != usual.IsNative() ||
+			wanted.GetCode() != usual.GetCode() || wanted.GetIssuer() != usual.GetIssuer() {
+			sends := "its usual asset"
+			if usual != nil && !usual.IsNative() {
+				sends = usual.GetCode()
+			}
+			return r.reply(ctx, fmt.Sprintf(
+				"%s is an account, and /pay from an account sends %s and nothing else, so I "+
+					"haven't proposed that. A treasury held by a contract can pay in any asset it holds.",
+				treasuryName(treasury), sends))
+		}
+	}
+	line := r.msg
+	line.Args = strings.Join(rest, " ")
+
+	args := payArguments(line)
 	amountText, destination, memo := args["amount"], args["to"], args["memo"]
 	if amountText == "" || destination == "" {
 		// Free text is the decoder's job, not this command's. A slash command
@@ -558,25 +581,43 @@ func bulleted(items []string) string {
 
 // proposalCommands are registered alongside the rest.
 func (s *Service) proposalCommands() []*command {
+	// What a command about a numbered proposal can be told, beyond the number.
+	//
+	// Which treasury, where treasuries can be contracts: each numbers its own
+	// proposals, so "3" alone stops being enough once a workspace has two.
+	// Declared as an option because on Discord an option is the only way to
+	// say anything — a command there cannot be followed by words — and a bot
+	// that asks "which treasury?" with no way to be answered is a dead end.
+	// Left off where no treasury can be a contract, so those menus are what
+	// they were.
+	number := []chat.Option{{Name: "id", Description: "The proposal number", Type: chat.OptString}}
+	payment := []chat.Option{
+		{Name: "amount", Description: "How much", Type: chat.OptString, Required: true},
+		{Name: "to", Description: "The G… account to pay", Type: chat.OptString, Required: true},
+		{Name: "memo", Description: "A note that goes on chain", Type: chat.OptString},
+		{Name: "treasury", Description: "Which treasury, if there are several", Type: chat.OptString},
+	}
+	if !s.unavailable.ContractTreasuries {
+		number = append(number, chat.Option{
+			Name: "treasury", Description: "Which treasury, if there are several", Type: chat.OptString,
+		})
+		payment = append(payment, chat.Option{
+			Name: "asset", Description: "XLM or an asset code, for a treasury held by a contract", Type: chat.OptString,
+		})
+	}
+
 	return []*command{
 		{
 			name:        "pay",
 			description: "Propose a payment from the treasury",
-			options: []chat.Option{
-				{Name: "amount", Description: "How much", Type: chat.OptString, Required: true},
-				{Name: "to", Description: "The G… account to pay", Type: chat.OptString, Required: true},
-				{Name: "memo", Description: "A note that goes on chain", Type: chat.OptString},
-				{Name: "treasury", Description: "Which treasury, if there are several", Type: chat.OptString},
-			},
-			minRole: chat.RoleProposer,
-			run:     func(ctx context.Context, s *Service, r *request) error { return s.pay(ctx, r) },
+			options:     payment,
+			minRole:     chat.RoleProposer,
+			run:         func(ctx context.Context, s *Service, r *request) error { return s.pay(ctx, r) },
 		},
 		{
 			name:        "approve",
-			description: "Get your own link to sign an open proposal",
-			options: []chat.Option{
-				{Name: "id", Description: "The proposal number", Type: chat.OptString},
-			},
+			description: "Get your own link to sign an open proposal, or vote for one",
+			options:     number,
 			// Observer, not approver. This hands somebody a link; the account's
 			// signer list decides whether their signature counts, and a
 			// platform role standing in for that is the bug that loses a
@@ -586,10 +627,8 @@ func (s *Service) proposalCommands() []*command {
 		},
 		{
 			name:        "execute",
-			description: "Submit a proposal that has the signatures it needs",
-			options: []chat.Option{
-				{Name: "id", Description: "The proposal number", Type: chat.OptString},
-			},
+			description: "Carry out a proposal that has the signatures or votes it needs",
+			options:     number,
 			// Deliberately open. Collecting the signatures is the
 			// authorisation; requiring a particular person to press the button
 			// would make this deployment a liveness dependency for somebody
@@ -600,9 +639,7 @@ func (s *Service) proposalCommands() []*command {
 		{
 			name:        "cancel",
 			description: "Withdraw an open proposal",
-			options: []chat.Option{
-				{Name: "id", Description: "The proposal number", Type: chat.OptString},
-			},
+			options:     number,
 			// Whoever may propose may take back what they proposed. Whether
 			// this particular proposal is theirs to take back is checked
 			// against the proposal itself, not against a role.

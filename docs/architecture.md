@@ -471,8 +471,20 @@ a contract has no list of what it holds, so each token has to be asked, and a
 token nobody asked about is not shown as zero, it is not shown. A treasury that
 is archived for want of rent is brought back by the first call to it, at that
 call's expense, which may be more than the ceiling the server will bid. And the
-events the contract publishes are not read into the ledger here: a contract
-treasury's history is on the network, and `/proposals` reads it from there.
+events the treasury contract itself publishes — proposed, voted, decided — are
+not read into the ledger here: that history is on the network, and `/proposals`
+reads it from there. What is read is the money: a contract treasury's address
+is watched, and the token contract's `transfer` events to and from it are
+booked like any other movement.
+
+Two things about the books are worth knowing before reading them. They begin
+when an address is first watched, so an account that held money before then is
+given an **opening balance** the first time it is seen to spend some — an entry
+of its own kind, for exactly what the network showed it must have held. And the
+token-event source reads every transfer on the network to find the few that are
+somebody's here; one it cannot read is passed over when it is between
+strangers, and stops the source only when it involves a watched address, where
+skipping it would leave the books wrong by an amount nobody knows.
 
 Three things about swaps are decisions rather than gaps. A swap is a path
 payment the treasury makes to itself, and nothing else is called one. It has no
