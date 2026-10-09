@@ -255,20 +255,57 @@ func (s *Store) ProposalNotes(
 	return out, rows.Err()
 }
 
-// AddContractTreasury records a treasury held by a contract.
+// AddContractTreasury records a treasury held by a contract, and gives it a
+// place in the books.
 //
 // Not a proof of control in the way a classic treasury's row is, because there
 // is nothing to prove with a signature: a contract treasury is controlled by
 // whoever its own member list says, and that is read from the contract every
 // time it matters. What the row records is that this workspace works with this
 // contract.
+//
+// The place in the books is what lets its money be followed. A contract is
+// paid and pays through token contracts, which say so in events; ingestion
+// reads those and records the ones that touch an address it has been told to
+// watch. Without this the treasury's deposits and payments would pass through
+// the one stream that could see them and be skipped as nobody's.
+//
+// One transaction for all three, so that a treasury is never recorded and
+// unwatched.
 func (s *Store) AddContractTreasury(
 	ctx context.Context, org ledger.OrgID, address, label string, by IdentityID,
 ) (Treasury, error) {
-	return linkTreasuryTx(ctx, s.pool, LinkTreasuryParams{
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Treasury{}, fmt.Errorf("store: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	treasury, err := linkTreasuryTx(ctx, tx, LinkTreasuryParams{
 		Org: org, Kind: TreasuryContract, Address: address, Label: label,
 		Contract: address, VerifiedBy: by,
 	})
+	if err != nil {
+		return Treasury{}, err
+	}
+
+	// Named for what the workspace calls it, or by its address when it calls
+	// it nothing: a workspace's treasury accounts are told apart by name.
+	name := label
+	if name == "" {
+		name = address
+	}
+	account, err := ensureAccountTx(ctx, tx, org, ledger.AccountTreasury, "", name)
+	if err != nil {
+		return Treasury{}, err
+	}
+	if err := trackAddressTx(ctx, tx, org, address, account, RoleTreasury); err != nil {
+		return Treasury{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Treasury{}, fmt.Errorf("store: record contract treasury %s: %w", address, err)
+	}
+	return treasury, nil
 }
 
 // ContractTreasuryAddresses lists every treasury held by a contract, in every

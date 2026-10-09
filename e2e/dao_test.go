@@ -78,6 +78,14 @@ func TestContractTreasuryEndToEnd(t *testing.T) {
 	port := freePort(t)
 	base := fmt.Sprintf("http://localhost:%d", port)
 
+	// Where the books begin. A contract's money moves in token events, and
+	// the server reads those from a ledger it has to be given: here, the one
+	// the network is on as this test starts, so everything below is after it.
+	root, err := horizon.Root()
+	if err != nil {
+		t.Fatalf("read the network's latest ledger: %v", err)
+	}
+
 	startServer(t, base, map[string]string{
 		"STELFIN_HTTP_ADDR":               fmt.Sprintf("127.0.0.1:%d", port),
 		"STELFIN_BASE_URL":                base,
@@ -85,6 +93,7 @@ func TestContractTreasuryEndToEnd(t *testing.T) {
 		"STELFIN_NETWORK":                 "testnet",
 		"STELFIN_HORIZON_URL":             horizonURL,
 		"STELFIN_SOROBAN_RPC_URL":         sorobanURL,
+		"STELFIN_SOROBAN_START_LEDGER":    fmt.Sprint(root.HorizonSequence),
 		"STELFIN_TREASURY_SEED":           operator.Seed(),
 		"STELFIN_WEBAUTH_SEED":            webAuth.Seed(),
 		"STELFIN_ASSET_CODE":              "USDC",
@@ -273,6 +282,39 @@ func TestContractTreasuryEndToEnd(t *testing.T) {
 	mustContain(t, final, "It has been carried out.")
 	mustContain(t, final, "2 · pay 3.00 XLM")
 	mustContain(t, final, "It was withdrawn or stopped.")
+
+	// ---- The books. Nothing above was a payment the classic network would
+	// show: the deposit and the payout were both a token contract moving
+	// money, said in events. The server reads those, and its own record of
+	// the treasury should come to what the treasury holds — forty in, twelve
+	// out — without anybody having told it either number.
+	booked := ""
+	for attempt := 0; attempt < 45; attempt++ {
+		err := db.Pool.QueryRow(context.Background(), `
+			SELECT b.balance::text
+			  FROM ledger_balances b
+			  JOIN ledger_accounts a ON a.id = b.account_id
+			  JOIN assets s ON s.id = b.asset_id
+			 WHERE a.kind = 'treasury' AND a.name = 'ops' AND s.code = 'XLM'`).Scan(&booked)
+		if err == nil && booked == "280000000" {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if booked != "280000000" {
+		t.Fatalf("the books have the treasury holding %q stroops of XLM, want 280000000 (28 XLM)", booked)
+	}
+	// Ada's forty came out of a wallet that held it before she linked it,
+	// which the books had never seen. That used to stop ingestion where it
+	// stood. It is an opening balance now, and said to be one.
+	var openings int
+	if err := db.Pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM ledger_transactions WHERE kind = 'opening'`).Scan(&openings); err != nil {
+		t.Fatal(err)
+	}
+	if openings != 1 {
+		t.Fatalf("%d opening balance(s) in the books, want the one for the wallet that deposited", openings)
+	}
 
 	// ---- Keeping it alive. The treasury's entries have a lifetime the
 	// network charges for, and the server tops them up on a timer. Nothing

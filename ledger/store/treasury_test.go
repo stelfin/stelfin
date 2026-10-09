@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stellar/go-stellar-sdk/keypair"
+	"github.com/stellar/go-stellar-sdk/strkey"
 )
 
 // linkTreasury links a fresh classic treasury to tn's org.
@@ -367,5 +368,82 @@ func TestOrgCarriesItsProposalWindow(t *testing.T) {
 			int64(tn.org.ID), bad); err == nil {
 			t.Errorf("accepted a proposal window of %s", bad)
 		}
+	}
+}
+
+// A treasury held by a contract is recorded with a place in the books and its
+// address watched, all at once: its money moves through token events, and one
+// that was recorded and not watched would have them read and skipped.
+func TestAContractTreasuryIsRecordedAndWatched(t *testing.T) {
+	s := New(testPool)
+	ctx := context.Background()
+	tn := newTenant(t, s, "contract-treasury")
+
+	raw, _ := strkey.Decode(strkey.VersionByteAccountID, keypair.MustRandom().Address())
+	address, _ := strkey.Encode(strkey.VersionByteContract, raw)
+
+	treasury, err := s.AddContractTreasury(ctx, tn.org.ID, address, "ops", 0)
+	if err != nil {
+		t.Fatalf("AddContractTreasury: %v", err)
+	}
+	if treasury.Kind != TreasuryContract || treasury.Address != address || treasury.Contract != address {
+		t.Errorf("recorded %+v", treasury)
+	}
+
+	tracked, ok, err := s.TrackedAddress(ctx, address)
+	if err != nil || !ok {
+		t.Fatalf("the treasury's address is not watched: %v (found %v)", err, ok)
+	}
+	if tracked.Org != tn.org.ID || tracked.Role != RoleTreasury {
+		t.Errorf("watched as %+v", tracked)
+	}
+	var kind, name string
+	if err := testPool.QueryRow(ctx,
+		`SELECT kind, name FROM ledger_accounts WHERE id = $1 AND org_id = $2`,
+		int64(tracked.Account), int64(tn.org.ID)).Scan(&kind, &name); err != nil {
+		t.Fatalf("its account: %v", err)
+	}
+	if kind != "treasury" || name != "ops" {
+		t.Errorf("booked to a %s account called %q", kind, name)
+	}
+
+	// Recorded again — a workspace adding what it already has — is the same
+	// treasury, the same account and the same watch.
+	again, err := s.AddContractTreasury(ctx, tn.org.ID, address, "ops", 0)
+	if err != nil || again.ID != treasury.ID {
+		t.Errorf("a second time: %+v, %v", again, err)
+	}
+	addresses, err := s.ContractTreasuryAddresses(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, a := range addresses {
+		if a == address {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("listed %d times among the contract treasuries", count)
+	}
+
+	// Another workspace cannot take it, and its failed attempt leaves nothing
+	// of its own behind in the books.
+	other := newTenant(t, s, "contract-treasury-other")
+	accounts := func() (n int) {
+		t.Helper()
+		if err := testPool.QueryRow(ctx,
+			`SELECT count(*) FROM ledger_accounts WHERE org_id = $1`,
+			int64(other.org.ID)).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	before := accounts()
+	if _, err := s.AddContractTreasury(ctx, other.org.ID, address, "theirs", 0); !errors.Is(err, ErrNoTreasury) {
+		t.Fatalf("another workspace adding it: %v", err)
+	}
+	if after := accounts(); after != before {
+		t.Errorf("a refused treasury left %d account(s) behind in the other workspace's books", after-before)
 	}
 }
