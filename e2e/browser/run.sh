@@ -18,8 +18,11 @@ hold="$work/hold.txt"
 	--no-first-run --window-size=900,1400 about:blank >"$work/chrome.log" 2>&1 &
 chrome=$!
 
+# The one test that holds its state open. The package's other test walks a
+# treasury held by a contract on its own; here that would only be minutes spent
+# before the first page, and the pages it needs are held by this one.
 E2E_HOLD=${E2E_HOLD:-15m} E2E_HOLD_FILE="$hold" \
-	"$GO" test -tags=e2e ./e2e/ -count=1 -timeout 40m >"$work/e2e.log" 2>&1 &
+	"$GO" test -tags=e2e ./e2e/ -run '^TestTreasuryPaymentEndToEnd$' -count=1 -timeout 40m >"$work/e2e.log" 2>&1 &
 test=$!
 
 cleanup() {

@@ -82,6 +82,7 @@ const (
 	carolID = int64(4203) // has no wallet; writes in her own words
 	daveID  = int64(4204) // the same, in a real browser, when E2E_HOLD is set
 	eveID   = int64(4205) // brings her own wallet, and signs in it
+	gailID  = int64(4206) // votes in a treasury held by a contract, in a real browser
 
 	// Discord. A different platform, with ids from a different space.
 	discordApp   = "880000000000000001"
@@ -764,8 +765,19 @@ func TestTreasuryPaymentEndToEnd(t *testing.T) {
 	}}, issuer)
 
 	// Asked with no floor, the market's answer and no proposal.
+	//
+	// Asked again if the market has not heard of the order yet. Horizon
+	// answers a quote from an order book it builds a ledger or so behind the
+	// ledger itself, so for a few seconds after an order lands the true answer
+	// is still "nobody is offering that" — and the bot gives it.
 	usdcBefore := balance(t, horizon, treasury.Address(), usdc)
-	reply = chat.ask(adaID, "ada", "/swap 10 USDC to EURC")
+	for attempt := 0; attempt < 10; attempt++ {
+		reply = chat.ask(adaID, "ada", "/swap 10 USDC to EURC")
+		if !strings.Contains(reply, "Nobody on this network is offering") {
+			break
+		}
+		time.Sleep(3 * time.Second)
+	}
 	mustContain(t, reply, "about 5.00 EURC")
 	mustContain(t, reply, "Nothing has been proposed")
 	// A floor above what the market offers would fail on the ledger, and is
@@ -877,6 +889,12 @@ func holdForABrowser(t *testing.T, chat *group, base string, w world) {
 	note("eve seed:       %s", w.eve.Seed())
 	note("confirm (eve):  %s/confirm#%s", base,
 		linkToken(t, chat.ask(eveID, "eve", "send 1 to "+w.recipient), base, "confirm"))
+
+	// A treasury held by a contract, for the page a member signs a call on.
+	// Made last of the things above, because once a workspace has two
+	// treasuries a command about "the open proposal" is asked which it means —
+	// and before Dave's link below, which is good for two minutes.
+	holdAContractTreasury(t, chat, base, w, note)
 
 	// Dave has no wallet. His three pages come one at a time, because each
 	// depends on what he did on the one before: the account his browser made,

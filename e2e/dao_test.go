@@ -346,6 +346,64 @@ func extendOnTestnet(t *testing.T, payer *keypair.Full, treasury string) {
 	t.Logf("extended for %s of rent; it now has %d ledgers left", prepared.ResourceFee, after[0].Remaining)
 }
 
+// holdAContractTreasury leaves a treasury held by a contract, with one
+// proposal open in it, and two calls waiting for a browser to sign them: a
+// vote and a new proposal, each for a different wallet.
+//
+// Different wallets on purpose. An account has one sequence number, so two
+// calls waiting for the same wallet are built for the same one and only the
+// first to be signed can land — which the server says when it hands out the
+// second link, and which is no state to leave a page-walk in.
+func holdAContractTreasury(
+	t *testing.T, chat *group, base string, w world, note func(format string, args ...any),
+) {
+	t.Helper()
+
+	// Ada signs for the classic treasury with a key and no account. A call to
+	// a contract has to come from one.
+	fund(t, w.horizon, w.ada.Address())
+	gail := funded(t, w.horizon, "gail")
+	chat.ask(gailID, "gail", "/whoami")
+	linkWallet(t, chat, base, gailID, "gail", gail)
+	grant(t, chat, gailID, "gail", "approver")
+
+	reply := chat.ask(adaID, "ada", "/create-treasury votes voting:30m timelock:30s recipients:"+w.recipient)
+	mustContain(t, reply, "votes is created, and held by a contract at")
+	mustContain(t, reply, gail.Address())
+	treasury := regexp.MustCompile(`\bC[A-Z2-7]{55}\b`).FindString(reply)
+	if treasury == "" {
+		t.Fatalf("the reply does not say where the treasury is:\n%s", reply)
+	}
+
+	// The first proposal is made here, by Ada, so that there is something for
+	// the browser to vote on.
+	reply = chat.ask(adaID, "ada", "/pay 1 to "+w.recipient+" asset:XLM treasury:votes")
+	if opened := memberCall(t, base, linkToken(t, reply, base, "call")).send(t, base, w.ada); opened.Proposal != 1 {
+		t.Fatalf("the held treasury's first proposal is numbered %d", opened.Proposal)
+	}
+
+	note("contract treasury: %s", treasury)
+	note("gail seed:      %s", gail.Seed())
+	note("call vote (gail): %s/call#%s", base,
+		linkToken(t, chat.ask(gailID, "gail", "/approve 1 treasury:votes"), base, "call"))
+	note("call propose (ada): %s/call#%s", base,
+		linkToken(t, chat.ask(adaID, "ada", "/pay 2 to "+w.recipient+" asset:XLM treasury:votes for the browser"), base, "call"))
+}
+
+// fund asks friendbot to create an account for an address that has a key and
+// nothing else.
+func fund(t *testing.T, h *horizonclient.Client, address string) {
+	t.Helper()
+	var err error
+	for attempt := 0; attempt < 4; attempt++ {
+		if _, err = h.Fund(address); err == nil {
+			return
+		}
+		time.Sleep(3 * time.Second)
+	}
+	t.Fatalf("friendbot fund %s: %v", address, err)
+}
+
 // linkWallet walks one member through proving a wallet is theirs.
 func linkWallet(t *testing.T, chat *group, base string, id int64, name string, wallet *keypair.Full) {
 	t.Helper()

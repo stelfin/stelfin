@@ -343,6 +343,80 @@ answer = await tryAddress("https://horizon-testnet.stellar.org/");
 check("a public address that serves no rows is tried, and reported as not useful",
   answer.includes("did not answer usefully") && (await setup.run(`return ${shown("setup")}`)), answer);
 
+// ---- A call to a treasury contract: a vote, signed by the wallet in the browser.
+//
+// A treasury held by a contract is not signed for like the one above. Nobody
+// adds a signature to an envelope: each member makes their own call, and this
+// page is where one is signed. It reads the call out of the envelope against
+// the contract's interface and says in words what it is.
+
+const contractTreasury = await held("contract treasury");
+const gailSeed = await held("gail seed");
+const vote = await open("call (vote)", await held("call vote (gail)"), { seed: gailSeed });
+await vote.until(`${shown("call")} || ${refused}`, "the call");
+check("call page read a vote out of the envelope",
+  (await vote.text("heading")) === "Vote for proposal 1",
+  (await vote.run(`return ${refused}`)) ? (await vote.text("alert")).replace(/\s+/g, " ") : await vote.text("heading"));
+check("it shows the vote as the contract will take it",
+  /Proposal\s+1/.test(await vote.text("reading")) && /Your vote\s+For/.test(await vote.text("reading")),
+  (await vote.text("reading")).replace(/\s+/g, " "));
+check("it names the treasury the call is to", (await vote.text("treasury")).includes(contractTreasury), await vote.text("treasury"));
+// What proposal 1 does is on the ledger, not in the transaction being signed.
+check("what stelfin says about the proposal is shown apart, as unchecked",
+  (await vote.run(`return ${shown("said")}`)) && (await vote.text("saidText")).includes("pay 1.00 XLM") &&
+    (await vote.text("saidNote")).includes("has not checked"),
+  (await vote.text("saidText")).replace(/\s+/g, " "));
+check("a vote carries no note, and none is shown as checked", !(await vote.run(`return ${shown("noteBox")}`)));
+check("the token is gone from the address bar", !(await vote.run("return location.href")).includes("#"));
+await vote.until(`${shown("walletOffer")} || ${shown("noWallet")}`, "the page to look for a wallet");
+check("a wallet in the browser is offered for the call", await vote.run(`return ${shown("walletOffer")} && !${shown("noWallet")}`));
+await vote.run(`document.getElementById("walletSign").click()`);
+await vote.until(`${shown("done")} || ${refused}`, "the vote to land");
+check("call page sent a vote signed by the wallet in the browser",
+  (await vote.text("doneHeading")) === "Your vote is in", await outcome(vote, "done"));
+check("the vote can be looked up",
+  await vote.run(`const a = document.getElementById("explorer"); return !a.hidden && a.href.includes("/explorer/testnet/tx/")`));
+
+// ---- And a proposal, signed outside the page and pasted back.
+
+const propose = await open("call (propose)", await held("call propose (ada)"));
+await propose.until(`${shown("call")} || ${refused}`, "the call");
+check("call page read a proposal out of the envelope",
+  (await propose.text("heading")) === "Propose a payment",
+  (await propose.run(`return ${refused}`)) ? (await propose.text("alert")).replace(/\s+/g, " ") : await propose.text("heading"));
+// The token is XLM, and the page says so only because it worked the token's
+// contract out from the asset itself.
+check("it shows what would be paid, in an asset it named for itself",
+  /Pay\s+2\.00 XLM/.test(await propose.text("reading")), (await propose.text("reading")).replace(/\s+/g, " ").slice(0, 120));
+// The note is the proposer's words, sent by the server, and is shown as the
+// proposal's own only because it hashes to the commitment in the envelope.
+check("the proposer's note is shown as checked against the call",
+  (await propose.run(`return ${shown("noteBox")}`)) && (await propose.text("noteText")) === "for the browser",
+  await propose.text("noteText"));
+// The page gives an extension a few seconds to answer before deciding there
+// is none, so the notice is waited for and not looked for at once.
+await propose.until(`${shown("walletOffer")} || ${shown("noWallet")}`, "the page to look for a wallet");
+check("with no wallet in the browser, the page says so and offers the envelope",
+  await propose.run(`return ${shown("noWallet")} && !${shown("walletOffer")} && document.getElementById("envelope").value.length > 100`));
+
+// Pasting back what was copied, unsigned, is the obvious mistake.
+await propose.run(paste("signed_xdr", await propose.run(`return document.getElementById("envelope").value`), "submit"));
+await propose.until(shown("alert"), "the unsigned notice");
+check("an unsigned paste is said to be unsigned, and can be corrected",
+  (await propose.text("alert")).includes("not signed") && (await propose.run(`return ${shown("call")}`)),
+  (await propose.text("alert")).replace(/\s+/g, " "));
+// Signed by a wallet that is not the one the call is from.
+await propose.run(paste("signed_xdr", await propose.run(signedWith("envelope", gailSeed)), "submit"));
+await propose.until(`document.getElementById("alert").innerText.includes("could not be used") || ${shown("done")}`, "the refusal");
+check("another wallet's signature is refused before anything is sent",
+  (await propose.run(`return ${shown("call")}`)) && !(await propose.run(`return ${shown("done")}`)),
+  (await propose.text("alert")).replace(/\s+/g, " "));
+await propose.run(paste("signed_xdr", await propose.run(signedWith("envelope", await held("ada seed"))), "submit"));
+await propose.until(`${shown("done")} || ${refused}`, "the proposal to land");
+check("call page opened a proposal signed outside it",
+  (await propose.text("doneHeading")) === "Proposal 2 is open", await outcome(propose, "done"));
+check("it says how the others vote on it", (await propose.text("doneLede")).includes("/approve 2"));
+
 // Dave's last two pages depend on the wallet his browser made on the first.
 if (!enrolled) {
   check("confirm and reclaim pages", false, "not reached: there is no wallet to pay from or hand back");
