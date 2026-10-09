@@ -160,6 +160,21 @@ func (s *Store) ClaimMemberCall(
 	}
 }
 
+// WaitingMemberCalls counts the calls an owner has been handed and has not yet
+// sent, that could still be.
+func (s *Store) WaitingMemberCalls(ctx context.Context, org ledger.OrgID, ownerRef string) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM member_calls
+		 WHERE org_id = $1 AND owner_ref = $2
+		   AND submitted_at IS NULL AND expires_at > now()`,
+		int64(org), ownerRef).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("store: waiting calls for %s: %w", ownerRef, err)
+	}
+	return n, nil
+}
+
 // ReleaseMemberCall undoes a claim, for a call the network turned away before
 // it reached a ledger.
 //

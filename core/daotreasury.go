@@ -16,6 +16,7 @@ import (
 	"github.com/stelfin/stelfin/contracts/treasuryabi"
 	"github.com/stelfin/stelfin/internal/money"
 	"github.com/stelfin/stelfin/ledger/store"
+	"github.com/stelfin/stelfin/settlement"
 )
 
 // A treasury held by a contract, from chat.
@@ -190,6 +191,14 @@ func (s *Service) callLink(ctx context.Context, r *request, prepared *api.Prepar
 	if minutes < 1 {
 		minutes = 1
 	}
+	// A wallet has one sequence number, and every link waiting for it was
+	// built for the same one. Said now, while it is a choice, rather than on a
+	// page after the second signature.
+	if waiting, err := s.sender.WaitingCalls(ctx, r.scope); err == nil && waiting > 1 {
+		after += "\n\nYou have another link from me still waiting. Sign them one at a time: " +
+			"each was built for your wallet as it stood, so once one is sent the other is out of " +
+			"date. Just ask for it again."
+	}
 	return r.reply(ctx, fmt.Sprintf(
 		"%s\n\nSign it here, within %d minutes:\n%s\n\n"+
 			"The page reads the call back out of the transaction itself and says what it does. "+
@@ -236,6 +245,24 @@ func (s *Service) refusedOnChain(
 				"enough of it, or has no trustline for it. /balance shows what it holds.")
 	case errors.As(err, &refusal):
 		return true, r.reply(ctx, s.refusalText(refusal.Code, treasury, r.member))
+
+	// The network's own refusals, which are nobody's vote and nobody's typo.
+	// Each is said as what it is, because the alternative is "something went
+	// wrong" for a thing that will go wrong the same way every time.
+	case errors.Is(err, settlement.ErrArchivedState):
+		return true, r.reply(ctx,
+			"Part of this treasury has been archived by the network: its rent ran out while nobody "+
+				"was using it. Nothing is lost, and nothing can use it until it is restored, which "+
+				"costs XLM and isn't something I do unasked. Tell whoever runs this deployment.")
+	case errors.Is(err, settlement.ErrResourceFeeTooHigh):
+		return true, r.reply(ctx,
+			"The network wants more in fees for that call than this deployment will pay for one. "+
+				"I haven't built it. Whoever runs this deployment can tell you why; it is usually rent.")
+	case errors.Is(err, settlement.ErrSimulationFailed):
+		return true, r.reply(ctx,
+			"The network wouldn't run that call, for a reason that isn't the treasury's own, so I "+
+				"haven't built it and nothing was sent. If it names an asset, that asset may have "+
+				"no contract on this network yet — XLM always does.")
 	}
 	return false, err
 }
@@ -589,7 +616,8 @@ func (s *Service) payFromContract(ctx context.Context, r *request, treasury stor
 	// The asset is this kind of treasury's to name and no part of the classic
 	// command, so it is taken out of the line before the rest is read: left
 	// in, the last words of a line are a memo, and "asset:XLM" would be one.
-	extra, rest := named(r.msg, "asset")
+	// The treasury's name goes with it, having already said which this is.
+	extra, rest := named(r.msg, "asset", "treasury")
 	line := r.msg
 	line.Args = strings.Join(rest, " ")
 	args := payArguments(line)

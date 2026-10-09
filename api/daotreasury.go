@@ -71,6 +71,11 @@ var (
 	// refused there. It spent the signer's sequence number and nothing else.
 	ErrCallFailedOnChain = errors.New("api: the contract refused the call on chain")
 
+	// ErrCallStale reports a call that can never be sent: the wallet it was
+	// built for has sent something else since, so the sequence number it
+	// reserves is used. Asking again builds a fresh one.
+	ErrCallStale = errors.New("api: that call is out of date")
+
 	// ErrNoWallet reports a member with no address to call from.
 	ErrNoWallet = errors.New("api: this member has no wallet here")
 
@@ -994,6 +999,21 @@ func (s *Service) LoadMemberCall(ctx context.Context, scope Scope, hash string) 
 	return &MemberCallView{Call: call, Treasury: treasury, Description: described, Assets: assets}, nil
 }
 
+// WaitingCalls is how many calls this member has been handed and not yet
+// sent.
+//
+// It matters because of one fact about an account: it has one sequence number.
+// Two calls built for the same wallet before either is sent are built for the
+// same one, and the second to be signed can never land. That is nobody's
+// mistake, and it is better said when the second link is handed out than
+// discovered on a page.
+func (s *Service) WaitingCalls(ctx context.Context, scope Scope) (int, error) {
+	if err := scope.check(); err != nil {
+		return 0, err
+	}
+	return s.store.WaitingMemberCalls(ctx, scope.Org, scope.OwnerRef)
+}
+
 // MemberCallResult is what became of a call a member signed.
 type MemberCallResult struct {
 	// Hash is what landed: the fee bump around the member's call.
@@ -1061,6 +1081,11 @@ func (s *Service) SubmitMemberCall(
 
 	res, err := s.settle.SubmitSorobanFeeBump(ctx, signedBump)
 	switch {
+	case errors.Is(err, settlement.ErrBadSequence):
+		// Turned away, and for the one reason no second attempt puts right:
+		// the wallet has moved on. The claim stays, because this envelope is
+		// finished — what whoever signed it needs is a new one.
+		return nil, fmt.Errorf("%w: %s: %v", ErrCallStale, hash, err)
 	case errors.Is(err, settlement.ErrRejected), errors.Is(err, settlement.ErrTryAgainLater):
 		// Turned away before it reached a ledger: nothing was spent, and the
 		// same envelope may be offered again — with a signature that verifies,

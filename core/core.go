@@ -96,6 +96,7 @@ type Sender interface {
 	PayAction(asset txnbuild.Asset, to string, amount money.Stroops) (treasuryabi.Action, error)
 	TreasuryAsset(text string) (txnbuild.Asset, error)
 	DescribeAction(a treasuryabi.Action) string
+	WaitingCalls(ctx context.Context, scope api.Scope) (int, error)
 }
 
 // Config wires the router.

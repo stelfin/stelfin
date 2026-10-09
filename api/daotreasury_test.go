@@ -51,9 +51,11 @@ type chain struct {
 	creations int
 
 	sendStatus string
-	sent       []string
-	failed     bool
-	landedWith *xdr.ScVal
+	// errorResult is what a submission turned away comes back with.
+	errorResult string
+	sent        []string
+	failed      bool
+	landedWith  *xdr.ScVal
 }
 
 func newChain() *chain {
@@ -115,7 +117,7 @@ func (c *chain) SendTransaction(
 	_ context.Context, req protocol.SendTransactionRequest,
 ) (protocol.SendTransactionResponse, error) {
 	c.sent = append(c.sent, req.Transaction)
-	return protocol.SendTransactionResponse{Status: c.sendStatus}, nil
+	return protocol.SendTransactionResponse{Status: c.sendStatus, ErrorResultXDR: c.errorResult}, nil
 }
 
 func (c *chain) GetTransaction(
@@ -414,6 +416,10 @@ func TestARejectedCallCanBeOfferedAgainAndAFailedOneCannot(t *testing.T) {
 		t.Fatalf("it should still be there to sign properly: %v", err)
 	}
 
+	if n, err := f.svc.WaitingCalls(ctx, f.scope); err != nil || n != 1 {
+		t.Errorf("waiting calls: %d, %v; want the one that was turned away and released", n, err)
+	}
+
 	// Signed properly, it lands — and the contract refuses it there.
 	f.chain.sendStatus, f.chain.failed = stellarcore.TXStatusPending, true
 	right := signEnvelope(t, view.Call.XDR, f.wallet)
@@ -427,6 +433,61 @@ func TestARejectedCallCanBeOfferedAgainAndAFailedOneCannot(t *testing.T) {
 	call, err := f.store.MemberCall(ctx, f.scope.Org, f.scope.OwnerRef, prepared.Hash)
 	if err != nil || !call.Failed || call.LandedHash == "" {
 		t.Errorf("recorded as %+v (%v)", call, err)
+	}
+}
+
+// A call built for a sequence number the wallet has since used can never be
+// sent. It is not offered again, and whoever signed it is told it is out of
+// date, not that their signature was wrong.
+func TestACallTheWalletHasMovedPastIsOutOfDate(t *testing.T) {
+	f := newDaoFixture(t, "stale")
+	ctx := context.Background()
+	fee := f.treasuryFixture.treasury.Address()
+	to := keypair.MustRandom().Address()
+
+	// Two links for one wallet, neither signed yet: the same sequence number.
+	first, err := f.svc.ProposeOnChain(ctx, f.scope, f.treasury, f.who, payTo(t, f, to), "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := f.svc.ProposeOnChain(ctx, f.scope, f.treasury, f.who, payTo(t, f, to), "two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := f.svc.WaitingCalls(ctx, f.scope); n != 2 {
+		t.Fatalf("%d calls waiting, want 2", n)
+	}
+	a, _ := f.svc.LoadMemberCall(ctx, f.scope, first.Hash)
+	b, _ := f.svc.LoadMemberCall(ctx, f.scope, second.Hash)
+	if a.Description.Sequence != b.Description.Sequence {
+		t.Fatalf("the premise: both are built for one sequence number (%s, %s)",
+			a.Description.Sequence, b.Description.Sequence)
+	}
+
+	if _, err := f.svc.SubmitMemberCall(ctx, f.scope, signEnvelope(t, a.Call.XDR, f.wallet), fee, f.signFeeBump); err != nil {
+		t.Fatalf("the first: %v", err)
+	}
+
+	// The network's answer to the second, for a wallet that has moved on.
+	badSeq := xdr.TransactionResultCodeTxBadSeq
+	stale, _ := xdr.MarshalBase64(xdr.TransactionResult{Result: xdr.TransactionResultResult{
+		Code: xdr.TransactionResultCodeTxFeeBumpInnerFailed,
+		InnerResultPair: &xdr.InnerTransactionResultPair{
+			Result: xdr.InnerTransactionResult{Result: xdr.InnerTransactionResultResult{Code: badSeq}},
+		},
+	}})
+	f.chain.sendStatus, f.chain.errorResult = stellarcore.TXStatusError, stale
+
+	signed := signEnvelope(t, b.Call.XDR, f.wallet)
+	if _, err := f.svc.SubmitMemberCall(ctx, f.scope, signed, fee, f.signFeeBump); !errors.Is(err, ErrCallStale) {
+		t.Fatalf("the second: %v, want ErrCallStale", err)
+	}
+	// Finished: not there to be signed again, and not counted as waiting.
+	if _, err := f.svc.SubmitMemberCall(ctx, f.scope, signed, fee, f.signFeeBump); !errors.Is(err, store.ErrCallSubmitted) {
+		t.Errorf("offered again: %v", err)
+	}
+	if n, _ := f.svc.WaitingCalls(ctx, f.scope); n != 0 {
+		t.Errorf("%d calls still counted as waiting", n)
 	}
 }
 

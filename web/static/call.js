@@ -75,8 +75,8 @@
         ];
       case 410:
         return [
-          "This call has expired.",
-          "A call is built against the treasury as it stood, and stays valid for a few minutes. Ask stelfin again in your chat and it will build a fresh one.",
+          "This call can no longer be sent.",
+          "It was built a few minutes ago, for your wallet and the treasury as they stood then, and one of them has moved on — most often because you signed something else from this wallet in the meantime. Nothing was sent. Ask stelfin again in your chat and it will build a fresh one.",
           false,
         ];
       case 400:
@@ -304,6 +304,23 @@
     // transaction — checked here before anything is sent, whichever way it
     // was made.
     async function send(signedXDR) {
+      // The two mistakes a paste invites, each said as what it is. Pasting
+      // back what was copied, unsigned, is the commonest thing to do on a page
+      // with two boxes.
+      let offered;
+      try {
+        offered = StellarSdk.TransactionBuilder.fromXDR(signedXDR, passphrase);
+      } catch (_) {
+        notice("That could not be read.",
+          "It should be the signed envelope your wallet gave back: one long line of letters and digits. Nothing was sent.", true);
+        return false;
+      }
+      if (!offered.signatures || offered.signatures.length === 0) {
+        notice("That envelope is not signed.",
+          "It is the one this page gave you, unchanged. Sign it in your wallet, then paste what the wallet gives back. Nothing was sent.", true);
+        return false;
+      }
+
       let checked;
       try {
         checked = StelfinWallet.addOne(data.xdr, signedXDR, passphrase, member, member);

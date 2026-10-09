@@ -52,6 +52,12 @@ func someContract() string {
 	return address
 }
 
+// WaitingCalls is how many calls the fake has handed out. None of them is
+// ever sent, so all of them are waiting.
+func (f *fakeSender) WaitingCalls(context.Context, api.Scope) (int, error) {
+	return f.chain.calls, nil
+}
+
 func (f *fakeSender) prepared() (*api.PreparedCall, error) {
 	if f.chain.refuse != nil {
 		return nil, f.chain.refuse
@@ -434,6 +440,11 @@ func TestAContractsRefusalIsExplained(t *testing.T) {
 		api.ErrWalletNotOnChain:      "not on the network yet",
 		api.ErrContractTreasuriesOff: "no Soroban RPC",
 		&api.TokenRefusal{Code: 10}:  "token wouldn't make that transfer",
+		// The network's own, each of which would otherwise be "something
+		// went wrong" every time it was tried.
+		fmt.Errorf("%w: HostError: Error(Storage, MissingValue)", settlement.ErrSimulationFailed): "may have no contract on this network yet",
+		&settlement.ArchivedStateError{}:                          "archived by the network",
+		fmt.Errorf("%w: 9 XLM", settlement.ErrResourceFeeTooHigh): "more in fees",
 	} {
 		h.sender.chain.refuse = refusal
 		if body := h.say(t, space, "deposit", "5 XLM"); !strings.Contains(body, want) {
@@ -642,8 +653,15 @@ func TestSpendAndDepositAreTheMembersOwnCalls(t *testing.T) {
 	_, _, wallet := heldByContract(t, h, space)
 	to := keypair.MustRandom().Address()
 
-	mentions(t, h.say(t, space, "spend", "20 to "+to), "/call#", "on your signature alone", "not a proposal")
-	mentions(t, h.say(t, space, "deposit", "100 XLM"), "/call#", "from your wallet "+wallet, "into ops")
+	first := h.say(t, space, "spend", "20 to "+to)
+	mentions(t, first, "/call#", "on your signature alone", "not a proposal")
+	if strings.Contains(first, "another link") {
+		t.Errorf("the only link somebody holds was said to be one of two:\n%s", first)
+	}
+	// A second link for the same wallet before the first is signed: both are
+	// built for one sequence number, and it is said while it is still a choice.
+	mentions(t, h.say(t, space, "deposit", "100 XLM"), "/call#", "from your wallet "+wallet, "into ops",
+		"another link from me still waiting", "one at a time")
 	mentions(t, h.say(t, space, "deposit", ""), "How much?")
 	mentions(t, h.say(t, space, "spend", ""), "Try: /spend 20 to")
 	mentions(t, h.say(t, space, "deposit", "5 DOGE"), "I don't know which DOGE you mean")
@@ -671,6 +689,21 @@ func TestWithBothKindsOfTreasuryTheCommandAsksWhich(t *testing.T) {
 	}
 	mentions(t, h.say(t, space, "approve", "3 treasury:ops"), "/call#", "proposal 3 of ops")
 	mentions(t, h.say(t, space, "approve", "3 treasury:"+contract.Address), "/call#")
+	// A payment says which too, and it does not matter where in the line: the
+	// name is not part of the note, and neither is the asset.
+	to := keypair.MustRandom().Address()
+	for _, line := range []string{
+		"5 to " + to + " treasury:ops asset:XLM for the audit",
+		"5 to " + to + " asset:XLM treasury:ops for the audit",
+		"5 to " + to + " asset:XLM for the audit treasury:ops",
+	} {
+		mentions(t, h.say(t, space, "pay", line), "/call#", "ops's voters")
+		if note := h.sender.chain.notes[len(h.sender.chain.notes)-1]; note != "for the audit" {
+			t.Errorf("/pay %s: the note is %q", line, note)
+		}
+	}
+	mentions(t, h.say(t, space, "pay", "5 to "+to), "more than one treasury")
+
 	// Named, the classic one is read exactly as it was before there was a
 	// second: by the number this deployment gave its proposal.
 	mentions(t, h.say(t, space, "approve", "3 treasury:main"), "no proposal #3")

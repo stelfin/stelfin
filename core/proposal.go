@@ -496,9 +496,14 @@ func (s *Service) namedProposal(ctx context.Context, r *request) (*api.ProposalV
 // A zero-valued Treasury with a nil error means a reply was already sent — the
 // caller has nothing left to do.
 func (s *Service) soleTreasury(ctx context.Context, r *request) (store.Treasury, error) {
-	named := strings.TrimSpace(r.msg.Options["treasury"])
-	if named == "" && r.msg.Command == "pay" {
-		named = payArguments(r.msg)["treasury"]
+	name := strings.TrimSpace(r.msg.Options["treasury"])
+	if name == "" && r.msg.Command == "pay" {
+		// Wherever in the line it was written. /pay's own reading takes
+		// everything after the address as a memo, so a treasury named after
+		// some other "name:value" word would otherwise be read as prose and
+		// the command would ask which treasury it had just been told.
+		args, _ := named(r.msg, "treasury")
+		name = args["treasury"]
 	}
 
 	list, err := s.store.Treasuries(ctx, r.org.ID)
@@ -509,7 +514,7 @@ func (s *Service) soleTreasury(ctx context.Context, r *request) (store.Treasury,
 	case len(list) == 0:
 		return store.Treasury{}, r.reply(ctx,
 			"No treasury is linked here yet. An admin can run /link-treasury GABC… first.")
-	case named == "":
+	case name == "":
 		if len(list) > 1 {
 			var b strings.Builder
 			b.WriteString("This workspace has more than one treasury. Say which:\n")
@@ -522,11 +527,11 @@ func (s *Service) soleTreasury(ctx context.Context, r *request) (store.Treasury,
 	}
 
 	for _, t := range list {
-		if t.Address == named || strings.EqualFold(t.Label, named) {
+		if t.Address == name || strings.EqualFold(t.Label, name) {
 			return t, nil
 		}
 	}
-	return store.Treasury{}, r.reply(ctx, fmt.Sprintf("I don't know a treasury called %q here.", named))
+	return store.Treasury{}, r.reply(ctx, fmt.Sprintf("I don't know a treasury called %q here.", name))
 }
 
 func treasuryName(t store.Treasury) string {

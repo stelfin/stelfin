@@ -744,7 +744,10 @@ func (s *Server) writeError(w http.ResponseWriter, err error) {
 		http.Error(w, "not found", http.StatusNotFound)
 	case errors.Is(err, ErrAlreadySubmitted), errors.Is(err, store.ErrCallSubmitted):
 		http.Error(w, "already submitted", http.StatusConflict)
-	case errors.Is(err, ErrExpired), errors.Is(err, store.ErrCallExpired):
+	case errors.Is(err, ErrExpired), errors.Is(err, store.ErrCallExpired), errors.Is(err, ErrCallStale):
+		// Gone, either way: past its time, or built for a wallet that has
+		// since moved on. Neither can be sent, and both are put right the
+		// same way, by asking for a fresh one.
 		http.Error(w, "expired", http.StatusGone)
 	case errors.Is(err, ErrContractTreasuriesOff):
 		http.Error(w, "contract treasuries are not available", http.StatusServiceUnavailable)
