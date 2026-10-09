@@ -38,11 +38,11 @@ Telegram ─┐                                   ┌─ Horizon  (classic)
 Discord  ─┘        │           │              └─ Soroban RPC (contracts)
                    │           ├─ ledger  (Postgres, double-entry, org-scoped)
                    │           ├─ identity (SEP-10, roles)
-                   │           ├─ signer   (operator / external / smart account)
+                   │           ├─ signer   (operator / external)
                    │           └─ connector (Sheets, MCP client)
                    │
                    └─ web  ── the browser that verifies and signs
-                              (confirm · enroll · link · approve)
+                              (confirm · enroll · link · approve · reclaim · call)
 
 mcpserver ── read-only and propose-only tools, for agents outside
 contracts ── dao_treasury · connector_registry  (Rust, one Cargo workspace)
@@ -99,11 +99,11 @@ sequence zero and is structurally unsubmittable. Proving control of an M-of-N
 treasury uses `VerifyChallengeTxThreshold`, so it takes the same signatures a
 payment would.
 
-**Signing.** One interface, four implementations: the operator's key (local, or
-remote), an *external* signer that contributes nothing and reports how much
-weight is still needed, and a smart-account signer whose completeness comes from
-simulating `__check_auth`. The router has no branch that returns a key-holding
-signer for a DAO treasury.
+**Signing.** One interface: the operator's key, and an *external* signer that
+contributes nothing and reports how much weight is still needed. The router has
+no branch that returns a key-holding signer for a DAO treasury. A treasury held
+by a contract does not come through it at all — nobody collects signatures for
+one; see "Treasuries held by a contract" below.
 
 **Description.** The server sends a canonical description of a transaction and
 the browser re-derives the same description from the XDR, comparing bytes. The
@@ -161,6 +161,59 @@ recipient and revoking another proposal — and they are how members use it.
 that has passed and cleared its timelock. Restricting it to the bot would make
 our uptime a treasury liveness dependency, which is the worst property a
 treasury tool can have.
+
+### Treasuries held by a contract
+
+A workspace's treasury is one of two kinds, and they are signed for in
+different ways. A classic account is one envelope that enough of its signers
+sign. A `dao_treasury` has no envelope to pass round: each member makes their
+own call to it — propose, vote, withdraw, spend, deposit — from their own
+wallet, and the contract counts.
+
+So the server collects nothing and decides nothing. For each command it builds
+the one call that member asked for, with their address as its source; proves by
+simulation that the contract would take it, so that what the contract refuses is
+refused before anybody signs and with the contract's own reason; records it by
+its hash; and hands that member a link. The page (`/call`) derives the
+description from the envelope like every other, then reads the call against the
+contract's interface, which is pinned in the page, and says in words what it
+does — or refuses, for any call other than one a member makes to this treasury
+from this wallet. The member signs; the server wraps the signed call in a fee
+bump the operator pays, and sends it. A call is accepted only if it hashes to
+one this server built for whoever is submitting it, and is sent once.
+
+The server holds one key in this and it is not a member's. A *relay* account —
+the operator's, unless `STELFIN_RELAY_SEED` names another — sends the calls
+nobody has to sign for: creating a treasury, and carrying out a proposal the
+members have passed. The contract gives it no authority; it takes `execute`
+from anybody.
+
+Nothing about a treasury is cached. Who its voters are, what it may pay, and
+whether a proposal passed are read from the contract each time they are needed,
+by simulation. The one thing stored is a proposer's note, and it is shown only
+when it hashes to the commitment the contract holds for that proposal.
+
+What a page cannot check is said to be unchecked. A vote names a proposal by
+its number; what that proposal does is on the ledger and not in the transaction
+being signed. The page shows what stelfin says about it in a box of its own,
+and nothing the page asserts depends on it.
+
+Three programs have to agree about how the contract's values look on the wire:
+the contract, the Go that builds calls (`contracts/treasuryabi`), and the page
+that reads them (`web/static/treasury.js`). Each is tested against one file,
+`contracts/dao-treasury/testdata/abi.tsv`, which the contract's own suite
+writes from its real types.
+
+**Lifetime.** Ledger entries are rented by the byte and archived when the rent
+runs out; on testnet a new entry gets seven days. A treasury renews its own
+small state as it is used. It does not renew its code, which is tens of
+kilobytes shared by every treasury: doing that inside a member's call put a
+thirty-five XLM bid in the transaction that creates a treasury. The server
+keeps the code and each treasury's instance alive from outside instead — at
+start and every six hours, topping up whatever has under three days left, a
+little at a time, with a ceiling of two XLM on any one extension. What it
+spends is logged. A deployment that stops running stops paying, and its code is
+archived within the week; uploading it again brings it back.
 
 **`connector_registry`** holds capability grants — connector id, capabilities, a
 digest of the approved surface, limits, a validity window, and revocation as a
@@ -402,14 +455,24 @@ seen the bot would actually do. Fixed; listed for the same reason as the others.
 
 ### What is next
 
-**Contract-held treasuries.** The `dao_treasury` they need is written and
-uploaded: no single key can move its funds or change its rules without a passed
-vote. Nothing in the server creates one or votes in one yet.
+Nothing on this list is waiting to be built. What is left is what no test here
+can be: the bot driven from a real Telegram group and a real Discord server,
+with real wallets, by people who did not write it.
 
 Built since this list was first written, and no longer on it: signing with
 Freighter beside paste; a decoder for any provider speaking the OpenAI format,
-with a fixed grammar behind it; `/balance`; and treasury trustlines and swaps
-as proposals.
+with a fixed grammar behind it; `/balance`; treasury trustlines and swaps as
+proposals; and treasuries held by a contract its members vote in.
+
+Three things about contract treasuries are limits rather than gaps, and are
+said here so that nobody finds them out. Only assets this deployment can name —
+XLM and the one it is configured with — are shown in such a treasury's balance:
+a contract has no list of what it holds, so each token has to be asked, and a
+token nobody asked about is not shown as zero, it is not shown. A treasury that
+is archived for want of rent is brought back by the first call to it, at that
+call's expense, which may be more than the ceiling the server will bid. And the
+events the contract publishes are not read into the ledger here: a contract
+treasury's history is on the network, and `/proposals` reads it from there.
 
 Three things about swaps are decisions rather than gaps. A swap is a path
 payment the treasury makes to itself, and nothing else is called one. It has no
@@ -451,8 +514,10 @@ oversights:
 
 ## Not yet designed
 
-- Confirming a Soroban contract call honestly in a browser that cannot, in
-  general, re-derive what the call will do.
+- Confirming an arbitrary Soroban contract call honestly in a browser that
+  cannot, in general, re-derive what the call will do. Done for one contract,
+  `dao_treasury`, whose interface the page pins; a third-party contract called
+  with `/invoke` is still shown value by value and not interpreted.
 - Concurrent proposals against one treasury (CAP-21 preconditions).
 - A remote signer for the operator key.
 - Compliance: Travel Rule, sanctions screening, SEP-12 KYC.

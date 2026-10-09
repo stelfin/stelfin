@@ -1,6 +1,6 @@
 // Package signer is the seam between stelfin and anything that holds a key.
 //
-// One interface, four implementations, and the interesting one signs nothing.
+// One interface, and the interesting implementation of it signs nothing.
 //
 // A DAO's treasury is signed for by its own members, on their own devices, with
 // keys this process never sees. So the "signer" for a treasury is the one that
@@ -122,14 +122,18 @@ type Router struct {
 	operator Signer
 	webAuth  Signer
 	treasury TreasuryLookup
-	auth     AuthChecker
 }
 
 // TreasuryLookup reports how a treasury signs.
 //
 // An interface rather than a store dependency, so this package stays about
-// signing: what it needs to know is "single, multisig, or smart account", and
-// where the numbers come from is somebody else's concern.
+// signing: what it needs to know is who an account's signers are and what it
+// takes to spend, and where the numbers come from is somebody else's concern.
+//
+// An account, always. A treasury held by a contract is not signed for through
+// here at all: nobody collects signatures for one. Each of its members makes
+// their own call to the contract from their own wallet, and the contract
+// counts — see api/daotreasury.go.
 type TreasuryLookup interface {
 	// SignerSet returns the account's signers and thresholds as the network
 	// currently reports them.
@@ -147,9 +151,6 @@ type Set struct {
 	// Medium is the threshold a payment needs. The one that matters for almost
 	// everything a treasury does.
 	Medium int32
-	// Contract is set when the account is a Soroban smart account, whose
-	// authorisation is decided by contract code rather than by weight.
-	Contract string
 }
 
 // Config wires a router.
@@ -162,10 +163,6 @@ type Config struct {
 	WebAuth Signer
 	// Treasuries reports how each treasury signs.
 	Treasuries TreasuryLookup
-	// Auth decides whether a Soroban smart account authorises an envelope.
-	// Optional: without it, a contract-controlled treasury reports
-	// ErrAuthUndecidable rather than a guess.
-	Auth AuthChecker
 }
 
 // NewRouter returns a Router.
@@ -183,7 +180,6 @@ func NewRouter(cfg Config) (*Router, error) {
 		operator: cfg.Operator,
 		webAuth:  cfg.WebAuth,
 		treasury: cfg.Treasuries,
-		auth:     cfg.Auth,
 	}, nil
 }
 
@@ -216,9 +212,6 @@ func (r *Router) Sign(ctx context.Context, req Request) (Response, error) {
 		set, err := r.treasury.SignerSet(ctx, req.Org, req.Account)
 		if err != nil {
 			return Response{}, err
-		}
-		if set.Contract != "" {
-			return NewSmartAccount(set.Contract, r.auth).Sign(ctx, req)
 		}
 		return NewExternal(set).Sign(ctx, req)
 
