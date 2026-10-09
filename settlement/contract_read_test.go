@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stellar/go-stellar-sdk/keypair"
@@ -389,6 +390,52 @@ func TestPrepareCreateReportsTheNewAddress(t *testing.T) {
 	} {
 		if _, err := c.PrepareCreate(context.Background(), req); err == nil {
 			t.Errorf("%s: prepared anyway", name)
+		}
+	}
+}
+
+// A rejection for a used sequence number is told apart from every other kind,
+// whether it is the transaction's own or the one a fee bump carried: it is the
+// one rejection no second attempt can put right.
+func TestARejectionForAUsedSequenceNumberIsToldApart(t *testing.T) {
+	result := func(outer xdr.TransactionResultCode, inner *xdr.TransactionResultCode) string {
+		r := xdr.TransactionResult{Result: xdr.TransactionResultResult{Code: outer}}
+		if inner != nil {
+			r.Result.InnerResultPair = &xdr.InnerTransactionResultPair{
+				Result: xdr.InnerTransactionResult{Result: xdr.InnerTransactionResultResult{Code: *inner}},
+			}
+		} else if outer == xdr.TransactionResultCodeTxFailed {
+			r.Result.Results = &[]xdr.OperationResult{}
+		}
+		return encoded(t, r)
+	}
+	badSeq, badAuth := xdr.TransactionResultCodeTxBadSeq, xdr.TransactionResultCodeTxBadAuth
+
+	cases := map[string]struct {
+		xdr   string
+		stale bool
+		says  string
+	}{
+		"its own sequence":       {result(badSeq, nil), true, "TxBadSeq"},
+		"inside a fee bump":      {result(xdr.TransactionResultCodeTxFeeBumpInnerFailed, &badSeq), true, "TxBadSeq"},
+		"a bad signature":        {result(badAuth, nil), false, "TxBadAuth"},
+		"a bad signature inside": {result(xdr.TransactionResultCodeTxFeeBumpInnerFailed, &badAuth), false, "TxBadAuth"},
+		"nothing readable":       {"not xdr", false, "undecodable"},
+	}
+	for name, c := range cases {
+		rpc := &fakeRPC{send: protocol.SendTransactionResponse{
+			Status: stellarcore.TXStatusError, ErrorResultXDR: c.xdr,
+		}}
+		_, err := sorobanClient(t, rpc).SubmitSoroban(context.Background(), contractCall(t))
+		if !errors.Is(err, ErrRejected) {
+			t.Errorf("%s: %v, want a rejection", name, err)
+			continue
+		}
+		if errors.Is(err, ErrBadSequence) != c.stale {
+			t.Errorf("%s: stale = %v, want %v (%v)", name, !c.stale, c.stale, err)
+		}
+		if !strings.Contains(err.Error(), c.says) {
+			t.Errorf("%s: the error does not carry %q: %v", name, c.says, err)
 		}
 	}
 }

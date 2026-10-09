@@ -293,8 +293,11 @@ func (c *Client) sendSoroban(
 		return Result{}, fmt.Errorf("%w (hash %s)", ErrTryAgainLater, hash)
 
 	case stellarcore.TXStatusError:
-		return Result{}, fmt.Errorf("%w: %s",
-			ErrRejected, describeCoreError(resp.ErrorResultXDR))
+		code := describeCoreError(resp.ErrorResultXDR)
+		if badSequence(resp.ErrorResultXDR) {
+			return Result{}, fmt.Errorf("%w: %w: %s", ErrRejected, ErrBadSequence, code)
+		}
+		return Result{}, fmt.Errorf("%w: %s", ErrRejected, code)
 
 	default:
 		return Result{}, fmt.Errorf("settlement: unrecognised submission status %q", resp.Status)
@@ -429,6 +432,47 @@ func returnValueOf(metaXDR string) string {
 	return encoded
 }
 
+// ErrBadSequence reports a transaction rejected because its source account
+// has moved on: something else from that account was included first.
+//
+// Always alongside ErrRejected, and worth telling apart from the rest of what
+// that covers. A bad signature can be put right and the same envelope offered
+// again. An envelope built for a sequence number that has been used cannot be
+// made valid by anybody, ever — so "try again" is the wrong thing to tell
+// whoever signed it.
+var ErrBadSequence = errors.New("settlement: the transaction's sequence number has been used")
+
+// rejection reads the result of a transaction refused before inclusion, and
+// what was inside it if it was a fee bump. Either is the zero value when the
+// result cannot be read.
+func rejection(resultXDR string) (outer xdr.TransactionResultCode, inner *xdr.TransactionResultCode, ok bool) {
+	if resultXDR == "" {
+		return 0, nil, false
+	}
+	var result xdr.TransactionResult
+	if err := xdr.SafeUnmarshalBase64(resultXDR, &result); err != nil {
+		return 0, nil, false
+	}
+	if pair := result.Result.InnerResultPair; pair != nil {
+		code := pair.Result.Result.Code
+		inner = &code
+	}
+	return result.Result.Code, inner, true
+}
+
+// badSequence reports whether a rejection was for a used sequence number, on
+// the transaction itself or on the one a fee bump carried.
+func badSequence(resultXDR string) bool {
+	outer, inner, ok := rejection(resultXDR)
+	if !ok {
+		return false
+	}
+	if outer == xdr.TransactionResultCodeTxBadSeq {
+		return true
+	}
+	return inner != nil && *inner == xdr.TransactionResultCodeTxBadSeq
+}
+
 // describeCoreError turns a TransactionResult XDR into something a log can
 // carry. Best effort: a garbled result should not replace the failure with a
 // decoding failure.
@@ -436,11 +480,16 @@ func describeCoreError(resultXDR string) string {
 	if resultXDR == "" {
 		return "no result returned"
 	}
-	var result xdr.TransactionResult
-	if err := xdr.SafeUnmarshalBase64(resultXDR, &result); err != nil {
+	outer, inner, ok := rejection(resultXDR)
+	if !ok {
 		return "undecodable result"
 	}
-	return result.Result.Code.String()
+	if inner != nil {
+		// A fee bump's own code says only that what it carried was refused.
+		// Why is one level down, and is the part anybody can act on.
+		return outer.String() + " (" + inner.String() + ")"
+	}
+	return outer.String()
 }
 
 // ArchivedStateError reports a call that needs archived state restored first,
