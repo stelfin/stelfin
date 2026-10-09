@@ -160,6 +160,8 @@ func (s *Server) Routes() http.Handler {
 	// Readiness: could this instance do its job right now. For a person or a
 	// monitor asking why the bot is quiet.
 	mux.HandleFunc("GET /ready", s.handleReady)
+	// What this deployment says about itself to anything that asks the domain.
+	mux.HandleFunc("GET /.well-known/stellar.toml", s.handleStellarTOML)
 	// "/{$}" matches only the exact root path, not a catch-all subtree — the
 	// marketing site lives elsewhere now (a separate Next.js app), so this
 	// binary's job at "/" is just to send a stray visitor there rather than
