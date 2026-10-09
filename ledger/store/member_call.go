@@ -255,3 +255,28 @@ func (s *Store) AddContractTreasury(
 		Contract: address, VerifiedBy: by,
 	})
 }
+
+// ContractTreasuryAddresses lists every treasury held by a contract, in every
+// workspace.
+//
+// Across tenants on purpose, and only addresses: it is for keeping the
+// contracts alive on the network, which is the deployment's job and says
+// nothing about whose each one is.
+func (s *Store) ContractTreasuryAddresses(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT address FROM org_treasuries WHERE kind = $1 ORDER BY id`, TreasuryContract)
+	if err != nil {
+		return nil, fmt.Errorf("store: contract treasuries: %w", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var address string
+		if err := rows.Scan(&address); err != nil {
+			return nil, fmt.Errorf("store: scan contract treasury: %w", err)
+		}
+		out = append(out, address)
+	}
+	return out, rows.Err()
+}

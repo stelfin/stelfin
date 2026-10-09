@@ -388,6 +388,15 @@ func Run(log *slog.Logger) error {
 		defer ingesting.Done()
 		sweepProposals(ctx, db.ExpireProposals, proposalSweepInterval, log)
 	}()
+	// And, where treasuries are held by a contract, keeping that contract
+	// from running out of lifetime on the network.
+	if treasuries != nil {
+		ingesting.Add(1)
+		go func() {
+			defer ingesting.Done()
+			keepContractsAlive(ctx, svc.KeepContractsAlive, keepAliveInterval, log)
+		}()
+	}
 	// And telling each chat platform what it needs telling: where to deliver,
 	// and what the commands are. Idempotent, so it happens on every start
 	// rather than being a deploy step someone has to remember, and beside the

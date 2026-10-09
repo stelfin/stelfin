@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -12,9 +13,12 @@ import (
 
 	"github.com/stellar/go-stellar-sdk/clients/horizonclient"
 	"github.com/stellar/go-stellar-sdk/keypair"
+	"github.com/stellar/go-stellar-sdk/network"
+	"github.com/stellar/go-stellar-sdk/xdr"
 
 	"github.com/stelfin/stelfin/contracts"
 	"github.com/stelfin/stelfin/internal/pgtest"
+	"github.com/stelfin/stelfin/settlement"
 )
 
 // TestContractTreasuryEndToEnd walks a treasury held by a contract, on
@@ -269,6 +273,77 @@ func TestContractTreasuryEndToEnd(t *testing.T) {
 	mustContain(t, final, "It has been carried out.")
 	mustContain(t, final, "2 · pay 3.00 XLM")
 	mustContain(t, final, "It was withdrawn or stopped.")
+
+	// ---- Keeping it alive. The treasury's entries have a lifetime the
+	// network charges for, and the server tops them up on a timer. Nothing
+	// here will run long enough to see that timer matter, so the operation it
+	// sends is sent once by hand: read how long the treasury has left, pay for
+	// a little more, and read it again.
+	extendOnTestnet(t, payee, treasury)
+}
+
+// extendOnTestnet proves the network takes the extension the keeper sends,
+// for a real entry, and that the lifetime read back afterwards is longer.
+func extendOnTestnet(t *testing.T, payer *keypair.Full, treasury string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	client, err := settlement.New(settlement.Config{
+		HorizonURL: horizonURL, NetworkPassphrase: network.TestNetworkPassphrase,
+	})
+	if err != nil {
+		t.Fatalf("settlement client: %v", err)
+	}
+	client, err = client.DialSoroban(sorobanURL, nil)
+	if err != nil {
+		t.Fatalf("dial soroban: %v", err)
+	}
+	instance, err := settlement.ContractInstanceKey(treasury)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned, _ := contracts.Lookup(contracts.DAOTreasury, contracts.Testnet)
+	code, err := settlement.ContractCodeKey(pinned.WasmHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := client.Lives(ctx, []xdr.LedgerKey{instance, code})
+	if err != nil {
+		t.Fatalf("read lifetimes: %v", err)
+	}
+	if !before[0].Found || !before[1].Found {
+		t.Fatalf("the treasury (%+v) or its code (%+v) is not on the network", before[0], before[1])
+	}
+	t.Logf("the treasury has %d ledgers left and its code %d", before[0].Remaining, before[1].Remaining)
+
+	// The treasury's own entry, which is small, by a hundred ledgers: a few
+	// minutes more, for a fraction of a cent.
+	reach := before[0].Remaining + 100
+	prepared, err := client.PrepareExtension(ctx, payer.Address(), []xdr.LedgerKey{instance}, reach, 5_000_000)
+	if err != nil {
+		t.Fatalf("prepare extension: %v", err)
+	}
+	signed, err := prepared.Transaction.Sign(network.TestNetworkPassphrase, payer)
+	if err != nil {
+		t.Fatalf("sign extension: %v", err)
+	}
+	res, err := client.SubmitSoroban(ctx, signed)
+	if err != nil || res.Failed {
+		t.Fatalf("the network did not take the extension: %+v, %v", res, err)
+	}
+
+	after, err := client.Lives(ctx, []xdr.LedgerKey{instance})
+	if err != nil {
+		t.Fatalf("read lifetime again: %v", err)
+	}
+	// Ledgers closed while this ran, so "longer" is judged with that in hand:
+	// it has to have gained most of what was paid for.
+	if after[0].Remaining+60 < reach {
+		t.Fatalf("paid to reach %d ledgers and the treasury has %d", reach, after[0].Remaining)
+	}
+	t.Logf("extended for %s of rent; it now has %d ledgers left", prepared.ResourceFee, after[0].Remaining)
 }
 
 // linkWallet walks one member through proving a wallet is theirs.
