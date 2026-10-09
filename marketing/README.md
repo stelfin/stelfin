@@ -86,14 +86,33 @@ one thing neither reaches is the travelling dots on the world map, which are
 SMIL `<animateMotion>` and have no CSS hook at all; they carry an `.arc-dots`
 class that the reduced-motion block hides outright.
 
-## The call to action
+## The call to action, and going live
 
-There is deliberately no "Add to Telegram" button. The bot is not reachable
-yet, and a dead call to action spends the one moment a visitor was willing to
-act. Switching it on is two edits, and they must happen together:
+The site does not link to a bot until it is told where one is, and it is told
+by the environment at build time, not by an edit:
 
-1. `PRIMARY_CTA` in `lib/data/site.ts`
-2. the `get-started` answer in `lib/data/faqs.ts`, which currently says nothing
-   is live yet
+| Variable | What it is |
+|---|---|
+| `NEXT_PUBLIC_STELFIN_TELEGRAM_BOT` | The bot's Telegram username, with or without `@`. |
+| `NEXT_PUBLIC_STELFIN_DISCORD_APP_ID` | The Discord application's id. |
+| `NEXT_PUBLIC_STELFIN_ASSET_ISSUER` | The issuer the server is configured with (`STELFIN_ASSET_ISSUER`). |
 
-Both carry comments saying so.
+With neither of the first two set, the site is closed: every button leads to
+the source, and the last FAQ answer says nothing is live. Set either, in the
+Vercel project's settings, and redeploy, and three things change together —
+the buttons become the bot's (`lib/data/site.ts`), the "how do I get started"
+answer becomes instructions (`lib/data/faqs.ts`), and the "Try it on testnet"
+section appears with a link in the nav. They change together on purpose: a live
+button above an answer saying nothing is live is worse than either alone.
+
+A value that is not the shape of a username or an application id is treated as
+not set. The safe way to be wrong here is to stay closed.
+
+The third variable decides one step. "Get test USDC" sends a visitor to
+Circle's faucet, which hands out Circle's testnet USDC; it is shown only when
+the issuer given is Circle's, because for a server configured with any other
+issuer that would be the wrong token.
+
+Set them only once the bot answers. The server and this site deploy
+separately, and the site should not say "open in Telegram" on a day the bot is
+not there to be opened.

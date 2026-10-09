@@ -5,7 +5,8 @@ import { useRef } from "react";
 import { MagneticCta } from "@/components/ui/magnetic-cta";
 import { MaskReveal } from "@/components/interactive/mask-reveal";
 import { Reveal } from "@/components/interactive/reveal";
-import { PRIMARY_CTA } from "@/lib/data/site";
+import { SecondaryCta } from "@/components/ui/secondary-cta";
+import { PRIMARY_CTA, SECONDARY_CTA } from "@/lib/data/site";
 
 export function ClosingCta() {
   const ref = useRef<HTMLDivElement | null>(null);
@@ -54,6 +55,7 @@ export function ClosingCta() {
                 />
                 {PRIMARY_CTA.label}
               </MagneticCta>
+              {SECONDARY_CTA && <SecondaryCta cta={SECONDARY_CTA} className="md:!px-9 md:!py-4 md:text-lg" />}
             </div>
           </Reveal>
         </motion.div>

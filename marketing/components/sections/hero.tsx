@@ -7,7 +7,8 @@ import { WorldConnections } from "@/components/ui/world-connections";
 import { MaskReveal } from "@/components/interactive/mask-reveal";
 import { CtaIcon } from "@/components/ui/cta-icon";
 import { fadeUp } from "@/lib/animation/variants";
-import { PRIMARY_CTA } from "@/lib/data/site";
+import { SecondaryCta } from "@/components/ui/secondary-cta";
+import { PRIMARY_CTA, SECONDARY_CTA } from "@/lib/data/site";
 
 export function Hero() {
   const ref = useRef<HTMLDivElement | null>(null);
@@ -61,6 +62,8 @@ export function Hero() {
               <CtaIcon kind={PRIMARY_CTA.kind} />
               <span>{PRIMARY_CTA.label}</span>
             </MagneticCta>
+
+            {SECONDARY_CTA && <SecondaryCta cta={SECONDARY_CTA} className="md:!px-8 md:!py-4 md:text-lg" />}
 
             <a
               href="#how-it-works"

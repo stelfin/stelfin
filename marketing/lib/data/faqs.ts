@@ -1,8 +1,24 @@
+import { BOT, LIVE } from "@/lib/data/site";
+
 export interface FaqItem {
   id: string;
   question: string;
   answer: string;
 }
+
+// The last answer on the page, in its two states. Which one is shown follows
+// from whether the site has been told where the bot is — the same switch that
+// decides what the buttons do, so the two cannot disagree. See lib/data/site.ts.
+const WHERE =
+  BOT.telegram && BOT.discord
+    ? "your Telegram group or your Discord server"
+    : BOT.telegram
+      ? "your Telegram group"
+      : "your Discord server";
+
+const GET_STARTED = LIVE
+  ? `Add stelfin to ${WHERE} with the button on this page, and have an admin of the group run /setup there. Each person who will sign then runs /link to prove a wallet is theirs. It runs on Stellar's test network, so nothing you move is real money: the steps under "Try it on testnet" get you a wallet and test funds.`
+  : "The Telegram and Discord bots are being built in the open right now, and the source link on this page is the honest answer until they are ready. Nothing here is live yet.";
 
 export const FAQS: FaqItem[] = [
   {
@@ -55,12 +71,7 @@ export const FAQS: FaqItem[] = [
   },
   {
     id: "get-started",
-    // GO-LIVE: this answer and PRIMARY_CTA in lib/data/site.ts are the two
-    // edits that switch the site on when the bot is reachable. Change them
-    // together; a live CTA above an answer saying nothing is live is worse
-    // than either alone.
     question: "How do I get started?",
-    answer:
-      "The Telegram and Discord bots are being built in the open right now, and the source link on this page is the honest answer until they are ready. Nothing here is live yet.",
+    answer: GET_STARTED,
   },
 ];

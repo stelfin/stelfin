@@ -8,6 +8,8 @@ import { SecuritySection } from "@/components/sections/security-section";
 import { ConnectorsSection } from "@/components/sections/connectors-section";
 import { FaqSection } from "@/components/sections/faq-section";
 import { ClosingCta } from "@/components/sections/closing-cta";
+import { TryItSection } from "@/components/sections/try-it-section";
+import { LIVE } from "@/lib/data/site";
 
 export default function HomePage() {
   return (
@@ -20,6 +22,8 @@ export default function HomePage() {
         <ProposalsSection />
         <SecuritySection />
         <ConnectorsSection />
+        {/* Only once there is a bot to try. See lib/data/site.ts. */}
+        {LIVE && <TryItSection />}
         <FaqSection />
         <ClosingCta />
       </main>
