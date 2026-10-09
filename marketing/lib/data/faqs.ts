@@ -24,6 +24,12 @@ export const FAQS: FaqItem[] = [
       "The way your treasury already works. stelfin reads the signing weights off the account and collects approvals until the transaction has the weight it needs. Nothing is submitted before that threshold, and anyone can see who has signed and who has not.",
   },
   {
+    id: "contract-treasury",
+    question: "Does the treasury have to be a multisig account?",
+    answer:
+      "No. stelfin can also create a treasury that is a contract on Stellar, which its members vote in. Each member votes from their own wallet; the contract counts the votes, holds the money, and makes a passed proposal wait before it is paid, so there is time to stop one. Nobody holds a key over it: not whoever created it, and not us.",
+  },
+  {
     id: "custodial",
     question: "Can stelfin move the treasury without us?",
     answer:
