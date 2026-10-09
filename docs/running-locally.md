@@ -197,6 +197,31 @@ bot's replies open somebody else's page.
 | an admin | `/agent-token payroll-bot propose` | A token that may also write drafts, marked as the agent's, for a member to propose. |
 | an admin | `/grant approver` as a reply | On Telegram, grant the person whose message you reply to. |
 
+A treasury can also be a contract its members vote in. These need
+`STELFIN_SOROBAN_RPC_URL`, and are not in the menu without it. Every one that
+changes anything ends with a link for whoever typed it, to a page where they
+sign their own call; stelfin pays the fee.
+
+| Who | Types | What happens |
+|---|---|---|
+| an admin | `/create_treasury ops` | Creates a treasury contract. Its voters are the approvers here who have a wallet, one vote each. Options: `voting:3d timelock:1d quorum:50 approval:60 recipients:G…,G…`. |
+| an admin with a vote in it | `/link_treasury C…` | Adds a treasury contract that already exists, if it runs this deployment's code and the contract says they are a voter. |
+| anyone with a wallet | `/deposit 100 XLM` | Moves their own money into it. |
+| a proposer | `/pay 250 to G… asset:XLM march invoice` | Proposes a payment, to an address on the treasury's list. |
+| a voter | `/approve 3`, `/reject 3` | Votes for or against proposal 3. Once each. |
+| anyone with a role | `/execute 3` | Carries it out, once it has passed and its timelock has run. Says why not, otherwise. |
+| whoever proposed it | `/cancel 3` | Withdraws it while it is open. Nobody else can. |
+| a proposer | `/stop 3` | Proposes stopping a proposal that has passed. Takes effect when it passes, with no timelock. |
+| a proposer | `/allow G…`, `/disallow G…` | Proposes adding or removing an address the treasury may pay. |
+| a proposer | `/voter #12 weight:2` | Proposes giving member #12 a vote of that weight. `weight:0` takes it away. An address works in place of the number. |
+| anyone with a role | `/rules` | The rules, the voters and the recipients, read from the contract. |
+| a proposer | `/rules timelock:2d limit:50 window:1d` | Proposes changing the rules. What is not named stays as it is. |
+| a voter | `/spend 20 to G…` | Pays out on their signature alone, up to the allowance the voters set. None, by default. |
+| anyone with a role | `/proposals` | Each treasury's proposals. A contract numbers its own. |
+
+With both kinds of treasury in one workspace, a command about a numbered
+proposal is asked which: `treasury:ops`.
+
 A role decides what the bot will offer someone. It never decides whether a
 signature counts — that is the treasury account's own signer list, enforced by
 the network.

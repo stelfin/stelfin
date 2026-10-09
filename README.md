@@ -11,8 +11,11 @@ before signing it.
 
 The bot never holds a member's key. It adapts to the signing authority the DAO
 already runs — a single signer or an M-of-N classic multisig — building and routing
-transactions while the network decides whether they are authorized. The operator's
-own key sponsors reserves and pays fees, and can move nothing else.
+transactions while the network decides whether they are authorized. Or the
+treasury can be a contract its members vote in, with no admin over it: each member
+signs their own vote from their own wallet, and the contract counts them, holds
+the money and enforces the wait. The operator's own key sponsors reserves and
+pays fees, and can move nothing else.
 
 Beyond treasury operations, stelfin is a place to connect the other tools a community
 already uses: a spreadsheet, somebody's MCP server, an endpoint that returns rows. A
@@ -25,10 +28,11 @@ browser re-derives what it signs, what was accepted on purpose — are in
 [docs/architecture.md](docs/architecture.md).
 
 > **Status: testnet.** The path from a chat message to a multisig payment on chain
-> works and is exercised end to end by `make e2e`, as are trustlines and swaps.
-> What is not built is listed in [docs/architecture.md](docs/architecture.md):
-> contract-held treasuries are next. Nothing here is on mainnet, and the server
-> refuses to start there unless told to in so many words.
+> works and is exercised end to end by `make e2e`, as are trustlines, swaps, and a
+> treasury held by a contract: created, funded, voted in, made to wait, and paid
+> out. What that leaves, and the limits that are decisions, are in
+> [docs/architecture.md](docs/architecture.md). Nothing here is on mainnet, and the
+> server refuses to start there unless told to in so many words.
 
 ---
 
@@ -138,6 +142,8 @@ descriptions; the essentials:
 | `STELFIN_MAINNET_ACK`            | Mainnet  | Must say `this deployment moves real funds`, or the server will not start on `public`.  |
 | `STELFIN_READONLY_FILE`          | No       | While a file exists at this path, nothing is built or submitted. No restart needed.      |
 | `STELFIN_CONTRACT_CALLS`         | No       | Allows calling allowlisted contracts. Off: such calls are not bounded by the ceilings.   |
+| `STELFIN_SOROBAN_RPC_URL`        | No       | A Soroban RPC endpoint. With it, a treasury can be a contract its members vote in.       |
+| `STELFIN_RELAY_SEED`             | No       | Sends the contract calls nobody signs for (create a treasury, carry out a passed proposal). Defaults to the treasury seed's account. The contract gives it no authority. |
 | `STELFIN_CONNECTOR_KEY`          | No       | Seals connector endpoints and tokens at rest. Enables MCP and webhook connectors.        |
 | `STELFIN_GOOGLE_SERVICE_ACCOUNT` | No       | Google service-account JSON (or `_FILE`). Enables spreadsheet connectors.                |
 | `STELFIN_CONFIRM_TOKEN_SECRET`   | Yes      | Signs confirmation links. `openssl rand -hex 32`.                                       |
