@@ -29,6 +29,35 @@ Tests bring up their own embedded Postgres — see `internal/pgtest` — so no
 local database or Docker setup is required. The first run downloads a Postgres
 binary and caches it under `$HOME`.
 
+### The parts `make check` does not cover
+
+`make check` is the Go and browser-script loop. Two other parts of the repo have
+their own toolchain and their own command, and CI runs all of them:
+
+| You changed          | You need                                  | Run                                                |
+| -------------------- | ----------------------------------------- | -------------------------------------------------- |
+| `contracts/` (Rust)  | Rust, and the `stellar` CLI to build WASM | `make test-contracts`, then `make build-contracts` |
+| `marketing/` (Next)  | Node                                      | `make check-web`                                   |
+| anything on testnet  | network access                            | `make e2e` (see [running locally](docs/running-locally.md)) |
+
+Contracts are deliberately outside `make check`: a first Rust build takes about ten
+minutes and would make the ordinary loop unusable for anyone touching Go. Run
+`make test-contracts` whenever a contract changes.
+
+A contract change has one more step. The committed WASM hashes in
+`contracts/deployments.json` and the README table are the proof of what is on
+chain, so if your change alters the built WASM the hash changes too. Open the PR
+with the code and the new hash from `make build-contracts`; **do not upload to
+testnet yourself and do not edit the upload transaction** — a maintainer does the
+upload, because it spends from the project's deployer account. `make test-deploy`
+(which reads the code back from testnet) will fail on your branch until then, and
+that is expected.
+
+## Reporting a vulnerability
+
+Do not open a public issue for a security problem. Follow
+[SECURITY.md](SECURITY.md).
+
 ## Workflow
 
 1. Fork the repo and create a branch off `main`.
@@ -81,9 +110,10 @@ feat(api): add enroll tokens, versioned separately from confirm tokens
 fix(ledger): correct rounding in double-entry balance check
 ```
 
-Common types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`. Common scopes
-match the top-level package touched: `api`, `ledger`, `settlement`,
-`ingestion`, `web`, `config`.
+Common types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`. Scopes match
+the top-level package touched: `api`, `core`, `chat`, `ledger`, `settlement`,
+`ingestion`, `identity`, `signer`, `connector`, `mcp`, `contracts`, `web` (the
+signing pages), `marketing` (the site), `config`, `e2e`, `deploy`.
 
 ## Pull request checklist
 
@@ -93,6 +123,8 @@ match the top-level package touched: `api`, `ledger`, `settlement`,
       updated together.
 - [ ] If the change touches the intent-verification scheme or custody model,
       [docs/architecture.md](docs/architecture.md) is updated to match.
+- [ ] If the change touches `contracts/` or `marketing/`, the matching command in
+      [the table above](#the-parts-make-check-does-not-cover) passes.
 - [ ] Commit messages follow the Conventional Commits format above.
 
 ## Questions
