@@ -89,7 +89,10 @@ services:
         sync: false
 
       # Signs SEP-10 challenges. Must be a different key from the treasury —
-      # it signs attacker-chosen material and holds nothing.
+      # it signs attacker-chosen material and holds nothing. Required once
+      # Telegram or Discord below is set: without it the deploy fails with
+      # "STELFIN_WEBAUTH_SEED is required once a chat platform is configured"
+      # and Render keeps serving the previous build.
       - key: STELFIN_WEBAUTH_SEED
         sync: false
 

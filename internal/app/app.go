@@ -187,9 +187,9 @@ func Run(log *slog.Logger) error {
 		log.Warn("no chat transport is configured; the webhook route will refuse every delivery")
 	}
 
-	// SEP-10 challenges, if a web-auth key is configured. Its absence is a
-	// missing capability rather than a missing dependency: the bot runs, and
-	// says linking is unavailable when someone asks for it.
+	// SEP-10 challenges, if a web-auth key is configured. It can be absent
+	// only on a deployment with no chat platform, where the signing pages are
+	// all there is: config.validate refuses to start a bot without it.
 	var challenges *identity.Challenges
 	if cfg.HasWebAuth() {
 		host := baseHost(cfg.BaseURL)
