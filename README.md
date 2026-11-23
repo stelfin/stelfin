@@ -2,9 +2,10 @@
 
 **A non-custodial DAO treasury bot on Stellar, run from Telegram and Discord.**
 
-**Site:** [stelfin.vercel.app](https://stelfin.vercel.app). Testnet only, not for
-real money. A public bot is not open yet; to try the flow today, run your own
-with [docs/running-locally.md](docs/running-locally.md).
+**Try it:** add [@stelfin_bot](https://t.me/stelfin_bot) to a Telegram group, or
+see [stelfin.vercel.app](https://stelfin.vercel.app). Testnet only, not for real
+money. Discord is not open yet; to run your own, see
+[docs/running-locally.md](docs/running-locally.md).
 
 stelfin lets a DAO act on-chain from the group chat it already lives in: payments,
 payroll, trustlines, swaps and contract calls, each a proposal that goes to the
